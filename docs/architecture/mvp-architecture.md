@@ -59,6 +59,7 @@ Pi also separates tool definition, tool execution, and active-tool selection. By
 
 ```text
 /
+├── Cargo.toml              # Rust workspace root
 ├── crates/
 │   ├── byte-core/          # SessionRunner, prompt/context, event model
 │   ├── byte-protocol/      # JSON-RPC commands, responses, RuntimeEvent, SessionView

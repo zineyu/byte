@@ -1,0 +1,19 @@
+[package]
+name = "byte-desktop"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[lib]
+name = "byte_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+byte-protocol = { path = "../../../crates/byte-protocol" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = [] }
+tokio = { version = "1", features = ["io-util", "process", "sync"] }

@@ -1,0 +1,35 @@
+{
+  "name": "byte-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "packageManager": "pnpm@10.33.0",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 1420",
+    "build": "pnpm run build:frontend",
+    "build:frontend": "tsc && vite build",
+    "build:daemon": "cargo build --manifest-path ../../Cargo.toml -p byte-daemon",
+    "typecheck": "tsc --noEmit",
+    "tauri": "tauri",
+    "tauri:dev": "pnpm run build:daemon && tauri dev",
+    "tauri:build": "pnpm run build:daemon -- --release && tauri build"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.9.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.9.0",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.1",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.6"
+  },
+  "pnpm": {
+    "overrides": {
+      "esbuild": "^0.28.1"
+    }
+  }
+}

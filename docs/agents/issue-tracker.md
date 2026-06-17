@@ -20,3 +20,18 @@ Create a GitHub issue.
 ## When a skill says "fetch the relevant ticket"
 
 Run `gh issue view <number> --comments`.
+
+## After closing an agent-implemented issue
+
+完成实现并通过验证后，建议更新关联 issue 并关闭：
+
+1. 在该 issue 下评论说明实现范围、验证结果和关键文件。
+2. 如果 issue 启用了验收清单，勾选已完成的条目。
+3. 关闭 issue 时引用本次变更涉及的主要文件或测试。
+
+示例关闭评论：
+
+> 已实现 issue #1 的最小骨架：
+> - `crates/byte-protocol` 与 `crates/byte-daemon` 提供 stdio JSONL JSON-RPC 与 `get_state`。
+> - `apps/desktop` 完成 Tauri v2 + React 桌面壳，可启动 daemon 并显示连接状态。
+> - 验证：`cargo test`、`pnpm run typecheck/build`、`pnpm audit` 均通过。
