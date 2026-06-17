@@ -1,0 +1,134 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag to use for manual runs, for example v0.1.0"
+        required: false
+        type: string
+      draft:
+        description: "Create the GitHub Release as a draft"
+        required: true
+        default: true
+        type: boolean
+      prerelease:
+        description: "Mark the GitHub Release as a prerelease"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package-desktop:
+    name: Package desktop (${{ matrix.platform }})
+    runs-on: ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - macos-latest
+          - ubuntu-22.04
+          - windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Detect Tauri desktop app
+        id: desktop
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f apps/desktop/package.json ] && [ -f apps/desktop/src-tauri/tauri.conf.json ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::apps/desktop Tauri app not found; skipping desktop packaging for this early repository state."
+          fi
+
+      - name: Resolve release metadata
+        if: steps.desktop.outputs.present == 'true'
+        id: release-meta
+        shell: bash
+        env:
+          RELEASE_TAG_INPUT: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            tag="${GITHUB_REF_NAME}"
+          elif [ -n "$RELEASE_TAG_INPUT" ]; then
+            tag="$RELEASE_TAG_INPUT"
+          else
+            tag="manual-${GITHUB_RUN_NUMBER}"
+          fi
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "name=Byte Agent $tag" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Node.js
+        if: steps.desktop.outputs.present == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Set up Rust toolchain
+        if: steps.desktop.outputs.present == 'true'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust builds
+        if: steps.desktop.outputs.present == 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri -> target
+
+      - name: Install Linux packaging dependencies
+        if: steps.desktop.outputs.present == 'true' && matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Install frontend dependencies
+        if: steps.desktop.outputs.present == 'true'
+        shell: bash
+        working-directory: apps/desktop
+        run: |
+          set -euo pipefail
+          corepack enable
+
+          if [ -f pnpm-lock.yaml ]; then
+            corepack prepare pnpm@latest --activate
+            pnpm install --frozen-lockfile
+          elif [ -f yarn.lock ]; then
+            yarn install --immutable
+          elif [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ]; then
+            npm ci
+          else
+            echo "::error::apps/desktop/package.json exists but no lockfile was found."
+            exit 1
+          fi
+
+      - name: Build and upload Tauri artifacts
+        if: steps.desktop.outputs.present == 'true'
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: apps/desktop
+          tagName: ${{ steps.release-meta.outputs.tag }}
+          releaseName: ${{ steps.release-meta.outputs.name }}
+          releaseDraft: ${{ github.event_name != 'workflow_dispatch' || inputs.draft }}
+          prerelease: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease }}

@@ -1,0 +1,242 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  repository-hygiene:
+    name: Repository hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate required documentation
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          required_files=(
+            AGENTS.md
+            CONTEXT.md
+            docs/architecture/mvp-architecture.md
+            docs/agents/domain.md
+            docs/agents/issue-tracker.md
+            docs/agents/triage-labels.md
+          )
+
+          for file in "${required_files[@]}"; do
+            if [ ! -s "$file" ]; then
+              echo "::error file=$file::Required documentation file is missing or empty"
+              exit 1
+            fi
+          done
+
+          adr_count="$(find docs/adr -maxdepth 1 -type f -name '*.md' | wc -l | tr -d ' ')"
+          if [ "$adr_count" -lt 7 ]; then
+            echo "::error::Expected at least 7 ADR files, found $adr_count"
+            exit 1
+          fi
+
+      - name: Basic Markdown sanity checks
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          found=0
+          while IFS= read -r -d '' file; do
+            found=1
+            if [ ! -s "$file" ]; then
+              echo "::error file=$file::Markdown file is empty"
+              exit 1
+            fi
+            if grep -n $'\r' "$file" >/tmp/crlf-lines.txt; then
+              echo "::error file=$file::Markdown file contains CRLF line endings"
+              cat /tmp/crlf-lines.txt
+              exit 1
+            fi
+          done < <(find . \
+            -path './.git' -prune -o \
+            -path './.jj' -prune -o \
+            -type f -name '*.md' -print0)
+
+          if [ "$found" -eq 0 ]; then
+            echo "::error::No Markdown files found"
+            exit 1
+          fi
+
+      - name: Guard against committed secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if grep -RInE \
+            --exclude-dir=.git \
+            --exclude-dir=.jj \
+            --exclude='*.lock' \
+            '(OPENAI_API_KEY|ANTHROPIC_API_KEY|AWS_SECRET_ACCESS_KEY|SECRET_KEY|PRIVATE_KEY|GITHUB_TOKEN)=[^[:space:]]+' \
+            .; then
+            echo "::error::Potential committed secret detected"
+            exit 1
+          fi
+
+  workflow-syntax:
+    name: Workflow syntax
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Parse workflow YAML
+        shell: bash
+        run: |
+          set -euo pipefail
+          ruby -e 'require "yaml"; Dir[".github/workflows/*.{yml,yaml}"].sort.each { |file| YAML.load_file(file); puts "parsed #{file}" }'
+
+  rust:
+    name: Rust quality gates
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Detect Rust workspace
+        id: rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f Cargo.toml ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No root Cargo.toml found; skipping Rust gates until the workspace is added."
+          fi
+
+      - name: Set up Rust toolchain
+        if: steps.rust.outputs.present == 'true'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Rust builds
+        if: steps.rust.outputs.present == 'true'
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check Rust formatting
+        if: steps.rust.outputs.present == 'true'
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy
+        if: steps.rust.outputs.present == 'true'
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Run Rust tests
+        if: steps.rust.outputs.present == 'true'
+        run: cargo test --workspace --all-targets
+
+  desktop-web:
+    name: Desktop web quality gates
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Detect Node project
+        id: node-project
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f apps/desktop/package.json ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+            echo "dir=apps/desktop" >> "$GITHUB_OUTPUT"
+          elif [ -f package.json ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+            echo "dir=." >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "dir=." >> "$GITHUB_OUTPUT"
+            echo "::notice::No package.json found; skipping Node/Tauri web gates until the app is added."
+          fi
+
+      - name: Set up Node.js
+        if: steps.node-project.outputs.present == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Node dependencies
+        if: steps.node-project.outputs.present == 'true'
+        id: node-install
+        shell: bash
+        working-directory: ${{ steps.node-project.outputs.dir }}
+        run: |
+          set -euo pipefail
+          corepack enable
+
+          if [ -f pnpm-lock.yaml ]; then
+            corepack prepare pnpm@latest --activate
+            pnpm install --frozen-lockfile
+            echo "pm=pnpm" >> "$GITHUB_OUTPUT"
+          elif [ -f yarn.lock ]; then
+            yarn install --immutable
+            echo "pm=yarn" >> "$GITHUB_OUTPUT"
+          elif [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ]; then
+            npm ci
+            echo "pm=npm" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::package.json exists but no lockfile was found. Commit pnpm-lock.yaml, yarn.lock, package-lock.json, or npm-shrinkwrap.json."
+            exit 1
+          fi
+
+      - name: Run Node quality gates
+        if: steps.node-project.outputs.present == 'true'
+        shell: bash
+        working-directory: ${{ steps.node-project.outputs.dir }}
+        run: |
+          set -euo pipefail
+          pm="${{ steps.node-install.outputs.pm }}"
+
+          run_script() {
+            local script="$1"
+            if node -e "const scripts = require('./package.json').scripts || {}; process.exit(scripts[process.argv[1]] ? 0 : 1)" "$script"; then
+              case "$pm" in
+                pnpm) pnpm run "$script" ;;
+                yarn) yarn "$script" ;;
+                npm) npm run "$script" ;;
+                *) echo "::error::Unknown package manager: $pm"; exit 1 ;;
+              esac
+            else
+              echo "::notice::No package.json script named '$script'; skipping."
+            fi
+          }
+
+          run_script lint
+          run_script typecheck
+          run_script test
+          run_script build
+
+      - name: Audit Node dependencies
+        if: steps.node-project.outputs.present == 'true'
+        shell: bash
+        working-directory: ${{ steps.node-project.outputs.dir }}
+        run: |
+          set -euo pipefail
+          pm="${{ steps.node-install.outputs.pm }}"
+
+          case "$pm" in
+            pnpm) pnpm audit --audit-level high ;;
+            yarn) yarn npm audit --severity high ;;
+            npm) npm audit --audit-level=high ;;
+            *) echo "::error::Unknown package manager: $pm"; exit 1 ;;
+          esac
