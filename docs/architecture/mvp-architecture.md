@@ -17,7 +17,7 @@ Byte Agent MVP is a desktop coding agent for a local code workspace. It uses a T
 ## 3. Key decisions
 
 - Agent runtime runs as an independent local Rust daemon, launched by the Tauri shell. See `docs/adr/0001-use-local-daemon-for-agent-runtime.md`.
-- Tauri and daemon communicate using LF-delimited JSON-RPC over stdio. See `docs/adr/0002-use-stdio-json-rpc-between-shell-and-daemon.md`.
+- Tauri and daemon communicate using LF-delimited JSON-RPC over a Unix Domain Socket. See `docs/adr/0008-use-unix-socket-json-rpc-between-shell-and-daemon.md`.
 - Runtime progress is event-driven, but persisted state is not full event sourcing. See `docs/adr/0003-use-runtime-event-stream-without-event-sourcing.md`.
 - MVP runs in unrestricted local agent mode. See `docs/adr/0004-use-unrestricted-local-agent-mode-for-mvp.md`.
 - Sessions are JSONL trees with `id` / `parent_id`. See `docs/adr/0005-store-sessions-as-jsonl-trees.md`.
@@ -29,12 +29,12 @@ Byte Agent MVP is a desktop coding agent for a local code workspace. It uses a T
 ```text
 React UI
   │
-  │ Tauri command bridge: start/stop daemon, stdio JSONL transport
+  │ Tauri command bridge: start/stop daemon, Unix socket JSONL transport
+  │ Tauri event bridge: daemon-event notifications
   ▼
 Tauri Desktop Shell
   │
-  │ LF-delimited JSON-RPC over stdio
-  ▼
+  │ LF-delimited JSON-RPC over Unix Domain Socket
 Rust Agent Daemon
   ├─ RpcServer
   ├─ SessionRunner
@@ -63,7 +63,7 @@ Pi also separates tool definition, tool execution, and active-tool selection. By
 ├── crates/
 │   ├── byte-core/          # SessionRunner, prompt/context, event model
 │   ├── byte-protocol/      # JSON-RPC commands, responses, RuntimeEvent, SessionView
-│   ├── byte-daemon/        # stdio server, process entrypoint
+│   ├── byte-daemon/        # Unix socket server, process entrypoint
 │   ├── byte-models/        # OpenAI-compatible provider, ModelProvider trait
 │   ├── byte-tools/         # read/write/edit/ls/grep/find/bash tools
 │   ├── byte-skills/        # Agent Skills discovery and activation
@@ -178,7 +178,7 @@ get_state
 set_model
 ```
 
-Responses are request/response JSON objects. Runtime events stream independently on stdout as JSONL records.
+Responses and runtime events share the local Unix socket as LF-delimited JSON-RPC frames. Commands use request/response objects correlated by `RpcId`; runtime events are JSON-RPC notifications with method `runtime_event`, which Tauri forwards to React as `daemon-event`.
 
 ## 9. Session storage
 

@@ -1,14 +1,24 @@
-use std::path::PathBuf;
+use std::collections::HashMap;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use byte_protocol::{
-    decode_json_line, encode_json_line, DaemonState, JsonRpcRequest, JsonRpcResponse, RpcId,
+    decode_json_line, encode_json_line, DaemonState, JsonRpcMessage, JsonRpcRequest,
+    JsonRpcResponse, RpcId, RuntimeEvent, RUNTIME_EVENT_METHOD,
 };
 use serde::Serialize;
-use tauri::{Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
-use tokio::sync::Mutex;
+#[cfg(unix)]
+use tokio::net::UnixStream;
+use tokio::process::{Child, Command};
+use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::task::JoinHandle;
+use tokio::time::sleep;
 
 struct AppState {
     daemon: Mutex<DaemonSupervisor>,
@@ -20,22 +30,16 @@ struct DaemonSupervisor {
 }
 
 impl DaemonSupervisor {
-    fn start() -> Self {
-        match DaemonClient::spawn() {
-            Ok(client) => Self {
-                client: Some(client),
-                last_error: None,
-            },
-            Err(error) => Self {
-                client: None,
-                last_error: Some(error),
-            },
+    fn new() -> Self {
+        Self {
+            client: None,
+            last_error: None,
         }
     }
 
-    async fn get_state(&mut self) -> DaemonConnectionView {
+    async fn get_state(&mut self, app_handle: AppHandle) -> DaemonConnectionView {
         if self.client.is_none() {
-            match DaemonClient::spawn() {
+            match DaemonClient::spawn(app_handle).await {
                 Ok(client) => {
                     self.client = Some(client);
                     self.last_error = None;
@@ -70,81 +74,22 @@ impl DaemonSupervisor {
 }
 
 struct DaemonClient {
-    _child: Child,
-    stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
+    child: Child,
+    socket_dir: PathBuf,
+    writer: mpsc::UnboundedSender<String>,
+    pending: Arc<Mutex<HashMap<RpcId, oneshot::Sender<JsonRpcResponse>>>>,
+    reader_task: JoinHandle<()>,
+    writer_task: JoinHandle<()>,
     next_request_id: u64,
 }
 
 impl DaemonClient {
-    fn spawn() -> Result<Self, String> {
-        let daemon_path = resolve_daemon_path();
-        let mut command = Command::new(&daemon_path);
-        command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .kill_on_drop(true);
-
-        let mut child = command
-            .spawn()
-            .map_err(|error| format!("failed to launch daemon at {daemon_path:?}: {error}"))?;
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| "failed to open daemon stdin".to_owned())?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| "failed to open daemon stdout".to_owned())?;
-
-        Ok(Self {
-            _child: child,
-            stdin,
-            stdout: BufReader::new(stdout),
-            next_request_id: 1,
-        })
+    async fn spawn(app_handle: AppHandle) -> Result<Self, String> {
+        spawn_daemon_client(app_handle).await
     }
 
     async fn get_state(&mut self) -> Result<DaemonState, String> {
-        let request_id = self.next_id();
-        let request = JsonRpcRequest::new(request_id.clone(), "get_state", None);
-        let request_line = encode_json_line(&request).map_err(|error| error.to_string())?;
-
-        self.stdin
-            .write_all(request_line.as_bytes())
-            .await
-            .map_err(|error| format!("failed to write get_state request: {error}"))?;
-        self.stdin
-            .flush()
-            .await
-            .map_err(|error| format!("failed to flush get_state request: {error}"))?;
-
-        let mut response_line = String::new();
-        let bytes_read = self
-            .stdout
-            .read_line(&mut response_line)
-            .await
-            .map_err(|error| format!("failed to read get_state response: {error}"))?;
-        if bytes_read == 0 {
-            return Err("daemon closed stdout before responding".to_owned());
-        }
-
-        let response: JsonRpcResponse = decode_json_line(&response_line)
-            .map_err(|error| format!("failed to decode get_state response: {error}"))?;
-        if response.id != request_id {
-            return Err(format!(
-                "daemon response id mismatch: expected {request_id:?}, got {:?}",
-                response.id
-            ));
-        }
-        if let Some(error) = response.error {
-            return Err(format!(
-                "daemon returned error {}: {}",
-                error.code, error.message
-            ));
-        }
-
+        let response = self.request("get_state", None).await?;
         let result = response
             .result
             .ok_or_else(|| "daemon get_state response did not include a result".to_owned())?;
@@ -152,11 +97,230 @@ impl DaemonClient {
             .map_err(|error| format!("failed to decode daemon state: {error}"))
     }
 
+    async fn request(
+        &mut self,
+        method: impl Into<String>,
+        params: Option<serde_json::Value>,
+    ) -> Result<JsonRpcResponse, String> {
+        let request_id = self.next_id();
+        let request = JsonRpcRequest::new(request_id.clone(), method, params);
+        let request_line = encode_json_line(&request).map_err(|error| error.to_string())?;
+        let (response_tx, response_rx) = oneshot::channel();
+
+        self.pending
+            .lock()
+            .await
+            .insert(request_id.clone(), response_tx);
+
+        if self.writer.send(request_line).is_err() {
+            self.pending.lock().await.remove(&request_id);
+            return Err("daemon RPC writer is not running".to_owned());
+        }
+
+        let response = match tokio::time::timeout(Duration::from_secs(5), response_rx).await {
+            Ok(Ok(response)) => response,
+            Ok(Err(_)) => {
+                return Err(format!(
+                    "daemon response channel closed for request {request_id:?}"
+                ));
+            }
+            Err(_) => {
+                self.pending.lock().await.remove(&request_id);
+                return Err(format!(
+                    "daemon did not respond to request {request_id:?} before timeout"
+                ));
+            }
+        };
+
+        if let Some(error) = response.error {
+            return Err(format!(
+                "daemon returned error {}: {}",
+                error.code, error.message
+            ));
+        }
+
+        Ok(response)
+    }
+
     fn next_id(&mut self) -> RpcId {
         let id = self.next_request_id;
         self.next_request_id += 1;
         RpcId::Number(id)
     }
+}
+
+impl Drop for DaemonClient {
+    fn drop(&mut self) {
+        self.reader_task.abort();
+        self.writer_task.abort();
+        let _ = self.child.start_kill();
+        let _ = std::fs::remove_dir_all(&self.socket_dir);
+    }
+}
+
+#[cfg(unix)]
+async fn spawn_daemon_client(app_handle: AppHandle) -> Result<DaemonClient, String> {
+    let daemon_path = resolve_daemon_path();
+    let (socket_dir, socket_path) = create_rpc_socket_path()?;
+
+    let mut command = Command::new(&daemon_path);
+    command
+        .arg("--rpc-socket")
+        .arg(&socket_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("failed to launch daemon at {daemon_path:?}: {error}"))?;
+
+    let stream = match connect_daemon_socket(&socket_path).await {
+        Ok(stream) => stream,
+        Err(error) => {
+            let _ = child.start_kill();
+            let _ = std::fs::remove_dir_all(&socket_dir);
+            return Err(error);
+        }
+    };
+
+    let (read_half, mut write_half) = stream.into_split();
+    let (writer, mut writer_rx) = mpsc::unbounded_channel::<String>();
+    let pending = Arc::new(Mutex::new(
+        HashMap::<RpcId, oneshot::Sender<JsonRpcResponse>>::new(),
+    ));
+
+    let writer_task = tokio::spawn(async move {
+        while let Some(line) = writer_rx.recv().await {
+            if write_half.write_all(line.as_bytes()).await.is_err() {
+                break;
+            }
+            if write_half.flush().await.is_err() {
+                break;
+            }
+        }
+    });
+
+    let reader_pending = Arc::clone(&pending);
+    let reader_task = tokio::spawn(async move {
+        let mut reader = BufReader::new(read_half).lines();
+        loop {
+            match reader.next_line().await {
+                Ok(Some(line)) if line.trim().is_empty() => continue,
+                Ok(Some(line)) => handle_daemon_message(&app_handle, &reader_pending, &line).await,
+                Ok(None) => break,
+                Err(error) => {
+                    let _ = app_handle.emit(
+                        "daemon-event",
+                        RuntimeEvent::error(0, format!("failed to read daemon RPC frame: {error}")),
+                    );
+                    break;
+                }
+            }
+        }
+    });
+
+    Ok(DaemonClient {
+        child,
+        socket_dir,
+        writer,
+        pending,
+        reader_task,
+        writer_task,
+        next_request_id: 1,
+    })
+}
+
+#[cfg(not(unix))]
+async fn spawn_daemon_client(_app_handle: AppHandle) -> Result<DaemonClient, String> {
+    Err("byte-daemon currently supports Unix Domain Socket RPC on Unix platforms only".to_owned())
+}
+
+async fn handle_daemon_message(
+    app_handle: &AppHandle,
+    pending: &Arc<Mutex<HashMap<RpcId, oneshot::Sender<JsonRpcResponse>>>>,
+    line: &str,
+) {
+    match decode_json_line::<JsonRpcMessage>(line) {
+        Ok(JsonRpcMessage::Response(response)) => {
+            if let Some(response_tx) = pending.lock().await.remove(&response.id) {
+                let _ = response_tx.send(response);
+            }
+        }
+        Ok(JsonRpcMessage::Notification(notification))
+            if notification.method == RUNTIME_EVENT_METHOD =>
+        {
+            if let Some(params) = notification.params {
+                match serde_json::from_value::<RuntimeEvent>(params) {
+                    Ok(event) => {
+                        let _ = app_handle.emit("daemon-event", event);
+                    }
+                    Err(error) => {
+                        let _ = app_handle.emit(
+                            "daemon-event",
+                            RuntimeEvent::error(
+                                0,
+                                format!("failed to decode daemon runtime event: {error}"),
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+        Ok(JsonRpcMessage::Notification(_)) | Ok(JsonRpcMessage::Request(_)) => {}
+        Err(error) => {
+            let _ = app_handle.emit(
+                "daemon-event",
+                RuntimeEvent::error(0, format!("failed to decode daemon RPC frame: {error}")),
+            );
+        }
+    }
+}
+
+#[cfg(unix)]
+async fn connect_daemon_socket(socket_path: &Path) -> Result<UnixStream, String> {
+    let mut last_error = None;
+
+    for _ in 0..80 {
+        match UnixStream::connect(socket_path).await {
+            Ok(stream) => return Ok(stream),
+            Err(error) => {
+                last_error = Some(error);
+                sleep(Duration::from_millis(25)).await;
+            }
+        }
+    }
+
+    Err(format!(
+        "failed to connect daemon RPC socket at {socket_path:?}: {}",
+        last_error
+            .map(|error| error.to_string())
+            .unwrap_or_else(|| "timed out".to_owned())
+    ))
+}
+
+#[cfg(unix)]
+fn create_rpc_socket_path() -> Result<(PathBuf, PathBuf), String> {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let socket_dir =
+        std::env::temp_dir().join(format!("byte-daemon-{}-{suffix}", std::process::id()));
+
+    std::fs::create_dir(&socket_dir).map_err(|error| {
+        format!("failed to create private daemon RPC directory {socket_dir:?}: {error}")
+    })?;
+    std::fs::set_permissions(&socket_dir, std::fs::Permissions::from_mode(0o700)).map_err(
+        |error| {
+            let _ = std::fs::remove_dir_all(&socket_dir);
+            format!("failed to secure daemon RPC directory {socket_dir:?}: {error}")
+        },
+    )?;
+
+    let socket_path = socket_dir.join("rpc.sock");
+    Ok((socket_dir, socket_path))
 }
 
 #[derive(Debug, Serialize)]
@@ -186,15 +350,18 @@ impl DaemonConnectionView {
 }
 
 #[tauri::command]
-async fn get_daemon_state(state: State<'_, AppState>) -> Result<DaemonConnectionView, String> {
-    Ok(state.daemon.lock().await.get_state().await)
+async fn get_daemon_state(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<DaemonConnectionView, String> {
+    Ok(state.daemon.lock().await.get_state(app_handle).await)
 }
 
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
             app.manage(AppState {
-                daemon: Mutex::new(DaemonSupervisor::start()),
+                daemon: Mutex::new(DaemonSupervisor::new()),
             });
             Ok(())
         })

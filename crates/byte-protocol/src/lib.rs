@@ -2,8 +2,9 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 pub const JSON_RPC_VERSION: &str = "2.0";
 pub const PROTOCOL_VERSION: u16 = 1;
+pub const RUNTIME_EVENT_METHOD: &str = "runtime_event";
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum RpcId {
     Number(u64),
@@ -82,6 +83,80 @@ impl JsonRpcResponse {
     pub fn is_response_to(&self, request: &JsonRpcRequest) -> bool {
         self.id == request.id
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct JsonRpcNotification {
+    pub jsonrpc: String,
+    pub method: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub params: Option<serde_json::Value>,
+}
+
+impl JsonRpcNotification {
+    pub fn new(method: impl Into<String>, params: Option<serde_json::Value>) -> Self {
+        Self {
+            jsonrpc: JSON_RPC_VERSION.to_owned(),
+            method: method.into(),
+            params,
+        }
+    }
+
+    pub fn runtime_event(event: RuntimeEvent) -> Result<Self, ProtocolError> {
+        Ok(Self::new(
+            RUNTIME_EVENT_METHOD,
+            Some(serde_json::to_value(event)?),
+        ))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum JsonRpcMessage {
+    Request(JsonRpcRequest),
+    Response(JsonRpcResponse),
+    Notification(JsonRpcNotification),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeEvent {
+    pub sequence: u64,
+    #[serde(flatten)]
+    pub kind: RuntimeEventKind,
+}
+
+impl RuntimeEvent {
+    pub fn daemon_started(sequence: u64, state: DaemonState) -> Self {
+        Self {
+            sequence,
+            kind: RuntimeEventKind::DaemonStarted { state },
+        }
+    }
+
+    pub fn state_changed(sequence: u64, state: DaemonState) -> Self {
+        Self {
+            sequence,
+            kind: RuntimeEventKind::StateChanged { state },
+        }
+    }
+
+    pub fn error(sequence: u64, message: impl Into<String>) -> Self {
+        Self {
+            sequence,
+            kind: RuntimeEventKind::Error {
+                message: message.into(),
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum RuntimeEventKind {
+    DaemonStarted { state: DaemonState },
+    StateChanged { state: DaemonState },
+    Error { message: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -183,5 +258,26 @@ mod tests {
         assert!(response.is_response_to(&request));
         assert!(response.error.is_none());
         assert!(response.result.is_some());
+    }
+
+    #[test]
+    fn decodes_response_and_notification_from_multiplexed_stream() {
+        let response = JsonRpcResponse::success(1, DaemonState::ready("test-daemon"))
+            .expect("response encodes");
+        let notification = JsonRpcNotification::runtime_event(RuntimeEvent::daemon_started(
+            1,
+            DaemonState::ready("test-daemon"),
+        ))
+        .expect("notification encodes");
+        let input = format!(
+            "{}{}",
+            encode_json_line(&response).expect("response line encodes"),
+            encode_json_line(&notification).expect("notification line encodes")
+        );
+
+        let messages: Vec<JsonRpcMessage> = decode_json_lines(&input).expect("messages decode");
+
+        assert!(matches!(messages[0], JsonRpcMessage::Response(_)));
+        assert!(matches!(messages[1], JsonRpcMessage::Notification(_)));
     }
 }

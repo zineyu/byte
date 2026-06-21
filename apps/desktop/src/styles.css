@@ -197,6 +197,77 @@ h3 {
   opacity: 0.65;
 }
 
+.event-log {
+  margin-top: 1.25rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 14px;
+  background: #f8fafc;
+  padding: 1rem;
+}
+
+.event-log-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.event-log-header span {
+  color: #5d6b82;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.event-list {
+  display: grid;
+  gap: 0.65rem;
+  margin: 1rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.event-list li {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  gap: 0.65rem;
+  align-items: center;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #ffffff;
+  padding: 0.65rem;
+}
+
+.event-time {
+  color: #5d6b82;
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.event-type {
+  border-radius: 999px;
+  padding: 0.2rem 0.5rem;
+  color: #075985;
+  background: #e0f2fe;
+  font-size: 0.75rem;
+  font-weight: 800;
+}
+
+.event-detail,
+.event-empty {
+  color: #4b5563;
+  font-size: 0.875rem;
+}
+
+.event-detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.event-empty {
+  margin-top: 1rem;
+}
+
 @media (max-width: 860px) {
   .app-shell {
     grid-template-columns: 1fr;

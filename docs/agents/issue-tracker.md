@@ -32,6 +32,6 @@ Run `gh issue view <number> --comments`.
 示例关闭评论：
 
 > 已实现 issue #1 的最小骨架：
-> - `crates/byte-protocol` 与 `crates/byte-daemon` 提供 stdio JSONL JSON-RPC 与 `get_state`。
-> - `apps/desktop` 完成 Tauri v2 + React 桌面壳，可启动 daemon 并显示连接状态。
+> - `crates/byte-protocol` 与 `crates/byte-daemon` 提供 Unix socket JSONL JSON-RPC、`get_state` 与 runtime event notification。
+> - `apps/desktop` 完成 Tauri v2 + React 桌面壳，可启动 daemon、显示连接状态并订阅 daemon event。
 > - 验证：`cargo test`、`pnpm run typecheck/build`、`pnpm audit` 均通过。
