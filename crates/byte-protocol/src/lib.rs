@@ -118,6 +118,29 @@ pub enum JsonRpcMessage {
     Notification(JsonRpcNotification),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageRole {
+    Developer,
+    Assistant,
+}
+
+impl std::fmt::Display for MessageRole {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MessageRole::Developer => write!(f, "developer"),
+            MessageRole::Assistant => write!(f, "assistant"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunStatus {
+    Succeeded,
+    Failed,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeEvent {
@@ -141,12 +164,70 @@ impl RuntimeEvent {
         }
     }
 
-    pub fn error(sequence: u64, message: impl Into<String>) -> Self {
+    pub fn error(sequence: u64, run_id: Option<String>, message: impl Into<String>) -> Self {
         Self {
             sequence,
             kind: RuntimeEventKind::Error {
+                run_id,
                 message: message.into(),
             },
+        }
+    }
+
+    pub fn run_started(sequence: u64, session_id: String, run_id: String) -> Self {
+        Self {
+            sequence,
+            kind: RuntimeEventKind::RunStarted { session_id, run_id },
+        }
+    }
+
+    pub fn run_finished(
+        sequence: u64,
+        run_id: String,
+        status: RunStatus,
+        error: Option<String>,
+    ) -> Self {
+        Self {
+            sequence,
+            kind: RuntimeEventKind::RunFinished {
+                run_id,
+                status,
+                error,
+            },
+        }
+    }
+
+    pub fn message_started(
+        sequence: u64,
+        run_id: String,
+        message_id: String,
+        role: MessageRole,
+    ) -> Self {
+        Self {
+            sequence,
+            kind: RuntimeEventKind::MessageStarted {
+                run_id,
+                message_id,
+                role,
+            },
+        }
+    }
+
+    pub fn message_delta(sequence: u64, run_id: String, message_id: String, delta: String) -> Self {
+        Self {
+            sequence,
+            kind: RuntimeEventKind::MessageDelta {
+                run_id,
+                message_id,
+                delta,
+            },
+        }
+    }
+
+    pub fn message_completed(sequence: u64, run_id: String, message_id: String) -> Self {
+        Self {
+            sequence,
+            kind: RuntimeEventKind::MessageCompleted { run_id, message_id },
         }
     }
 }
@@ -154,9 +235,60 @@ impl RuntimeEvent {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RuntimeEventKind {
-    DaemonStarted { state: DaemonState },
-    StateChanged { state: DaemonState },
-    Error { message: String },
+    DaemonStarted {
+        state: DaemonState,
+    },
+    StateChanged {
+        state: DaemonState,
+    },
+    Error {
+        message: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        run_id: Option<String>,
+    },
+    RunStarted {
+        session_id: String,
+        run_id: String,
+    },
+    RunFinished {
+        run_id: String,
+        status: RunStatus,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    MessageStarted {
+        run_id: String,
+        message_id: String,
+        role: MessageRole,
+    },
+    MessageDelta {
+        run_id: String,
+        message_id: String,
+        delta: String,
+    },
+    MessageCompleted {
+        run_id: String,
+        message_id: String,
+    },
+}
+
+// JSON-RPC request/result types for model provider operations.
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SendMessageParams {
+    pub session_id: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SendMessageResult {
+    pub run_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunMessage {
+    pub role: MessageRole,
+    pub content: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -258,6 +390,60 @@ mod tests {
         assert!(response.is_response_to(&request));
         assert!(response.error.is_none());
         assert!(response.result.is_some());
+    }
+
+    #[test]
+    fn decodes_send_message_result_and_runtime_events() {
+        let run_id = "run-test-1";
+        let session_id = "session-test-1";
+        let message_id = "msg-test-1";
+
+        let events = vec![
+            RuntimeEvent::run_started(2, session_id.into(), run_id.into()),
+            RuntimeEvent::message_started(
+                3,
+                run_id.into(),
+                message_id.into(),
+                MessageRole::Assistant,
+            ),
+            RuntimeEvent::message_delta(4, run_id.into(), message_id.into(), "Hello".into()),
+            RuntimeEvent::message_delta(5, run_id.into(), message_id.into(), " world".into()),
+            RuntimeEvent::message_completed(6, run_id.into(), message_id.into()),
+            RuntimeEvent::run_finished(7, run_id.into(), RunStatus::Succeeded, None),
+        ];
+
+        for event in events {
+            let notification = JsonRpcNotification::runtime_event(event.clone())
+                .expect("event notification encodes");
+            let decoded: JsonRpcNotification =
+                decode_json_line(&encode_json_line(&notification).unwrap()).unwrap();
+
+            assert_eq!(decoded.method, RUNTIME_EVENT_METHOD);
+            assert_eq!(decoded.params, Some(serde_json::to_value(event).unwrap()));
+        }
+
+        let result = SendMessageResult {
+            run_id: run_id.into(),
+        };
+        let response = JsonRpcResponse::success(42, result.clone()).expect("response encodes");
+        let decoded: JsonRpcResponse =
+            decode_json_line(&encode_json_line(&response).unwrap()).unwrap();
+
+        assert_eq!(decoded.result, Some(serde_json::to_value(result).unwrap()));
+    }
+
+    #[test]
+    fn error_event_can_carry_run_id() {
+        let event = RuntimeEvent::error(8, Some("run-test-1".into()), "Provider config not found");
+        let decoded: RuntimeEvent = decode_json_line(&encode_json_line(&event).unwrap()).unwrap();
+
+        assert!(matches!(
+            decoded.kind,
+            RuntimeEventKind::Error {
+                run_id: Some(id),
+                message,
+            } if id == "run-test-1" && message == "Provider config not found"
+        ));
     }
 
     #[test]

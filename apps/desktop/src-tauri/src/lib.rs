@@ -37,7 +37,7 @@ impl DaemonSupervisor {
         }
     }
 
-    async fn get_state(&mut self, app_handle: AppHandle) -> DaemonConnectionView {
+    async fn ensure_client(&mut self, app_handle: AppHandle) -> Result<&mut DaemonClient, String> {
         if self.client.is_none() {
             match DaemonClient::spawn(app_handle).await {
                 Ok(client) => {
@@ -46,29 +46,32 @@ impl DaemonSupervisor {
                 }
                 Err(error) => {
                     self.last_error = Some(error.clone());
-                    return DaemonConnectionView::disconnected(error);
+                    return Err(error);
                 }
             }
         }
 
-        let Some(client) = self.client.as_mut() else {
-            return DaemonConnectionView::disconnected(
-                self.last_error
-                    .clone()
-                    .unwrap_or_else(|| "daemon is not running".to_owned()),
-            );
-        };
+        self.client.as_mut().ok_or_else(|| {
+            self.last_error
+                .clone()
+                .unwrap_or_else(|| "daemon is not running".to_owned())
+        })
+    }
 
-        match client.get_state().await {
-            Ok(state) => {
-                self.last_error = None;
-                DaemonConnectionView::connected(state)
-            }
-            Err(error) => {
-                self.client = None;
-                self.last_error = Some(error.clone());
-                DaemonConnectionView::disconnected(error)
-            }
+    async fn get_state(&mut self, app_handle: AppHandle) -> DaemonConnectionView {
+        match self.ensure_client(app_handle).await {
+            Ok(client) => match client.get_state().await {
+                Ok(state) => {
+                    self.last_error = None;
+                    DaemonConnectionView::connected(state)
+                }
+                Err(error) => {
+                    self.client = None;
+                    self.last_error = Some(error.clone());
+                    DaemonConnectionView::disconnected(error)
+                }
+            },
+            Err(error) => DaemonConnectionView::disconnected(error),
         }
     }
 }
@@ -213,7 +216,7 @@ async fn spawn_daemon_client(app_handle: AppHandle) -> Result<DaemonClient, Stri
                 Err(error) => {
                     let _ = app_handle.emit(
                         "daemon-event",
-                        RuntimeEvent::error(0, format!("failed to read daemon RPC frame: {error}")),
+                        RuntimeEvent::error(0, None, format!("failed to read daemon RPC frame: {error}")),
                     );
                     break;
                 }
@@ -261,6 +264,7 @@ async fn handle_daemon_message(
                             "daemon-event",
                             RuntimeEvent::error(
                                 0,
+                                None,
                                 format!("failed to decode daemon runtime event: {error}"),
                             ),
                         );
@@ -272,7 +276,7 @@ async fn handle_daemon_message(
         Err(error) => {
             let _ = app_handle.emit(
                 "daemon-event",
-                RuntimeEvent::error(0, format!("failed to decode daemon RPC frame: {error}")),
+                RuntimeEvent::error(0, None, format!("failed to decode daemon RPC frame: {error}")),
             );
         }
     }
@@ -357,6 +361,21 @@ async fn get_daemon_state(
     Ok(state.daemon.lock().await.get_state(app_handle).await)
 }
 
+#[tauri::command]
+async fn send_message(
+    session_id: String,
+    message: String,
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let mut daemon = state.daemon.lock().await;
+    let client = daemon.ensure_client(app_handle).await?;
+    let params = serde_json::to_value(byte_protocol::SendMessageParams { session_id, message })
+        .map_err(|error| error.to_string())?;
+    client.request("send_message", Some(params)).await?;
+    Ok(())
+}
+
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
@@ -365,7 +384,7 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_daemon_state])
+        .invoke_handler(tauri::generate_handler![get_daemon_state, send_message])
         .run(tauri::generate_context!())
         .expect("error while running Byte Agent desktop app");
 }

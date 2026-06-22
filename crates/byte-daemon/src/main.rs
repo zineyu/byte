@@ -1,4 +1,6 @@
 #[cfg(unix)]
+use std::collections::HashMap;
+#[cfg(unix)]
 use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::sync::{
@@ -9,16 +11,24 @@ use std::sync::{
 #[cfg(unix)]
 use anyhow::{bail, Context};
 #[cfg(unix)]
+use byte_models::{
+    load_config, normalize_base_url, EchoProvider, ModelProvider, OpenAiCompatibleProvider,
+    ProviderEvent,
+};
+#[cfg(unix)]
 use byte_protocol::{
     decode_json_line, encode_json_line, DaemonState, JsonRpcNotification, JsonRpcRequest,
-    JsonRpcResponse, RuntimeEvent,
+    JsonRpcResponse, MessageRole, RunMessage, RunStatus, RuntimeEvent, SendMessageParams,
+    SendMessageResult,
 };
+#[cfg(unix)]
+use futures::StreamExt;
 #[cfg(unix)]
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 #[cfg(unix)]
 use tokio::net::{UnixListener, UnixStream};
 #[cfg(unix)]
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, Mutex};
 
 #[cfg(unix)]
 #[tokio::main]
@@ -51,6 +61,7 @@ async fn run_socket_server(socket_path: &Path) -> anyhow::Result<()> {
         .with_context(|| format!("failed to bind RPC socket at {socket_path:?}"))?;
     let (event_tx, _) = broadcast::channel::<RuntimeEvent>(64);
     let event_sequence = Arc::new(AtomicU64::new(0));
+    let active_runs = Arc::new(Mutex::new(HashMap::<String, String>::new()));
 
     loop {
         let (stream, _) = listener
@@ -59,8 +70,11 @@ async fn run_socket_server(socket_path: &Path) -> anyhow::Result<()> {
             .context("failed to accept RPC socket client")?;
         let event_tx = event_tx.clone();
         let event_sequence = Arc::clone(&event_sequence);
+        let active_runs = Arc::clone(&active_runs);
         tokio::spawn(async move {
-            if let Err(error) = handle_connection(stream, event_tx, event_sequence).await {
+            if let Err(error) =
+                handle_connection(stream, event_tx, event_sequence, active_runs).await
+            {
                 eprintln!("RPC socket connection failed: {error:#}");
             }
         });
@@ -72,6 +86,7 @@ async fn handle_connection(
     stream: UnixStream,
     event_tx: broadcast::Sender<RuntimeEvent>,
     event_sequence: Arc<AtomicU64>,
+    active_runs: Arc<Mutex<HashMap<String, String>>>,
 ) -> anyhow::Result<()> {
     let (read_half, mut write_half) = stream.into_split();
     let (output_tx, mut output_rx) = mpsc::unbounded_channel::<String>();
@@ -118,17 +133,36 @@ async fn handle_connection(
             continue;
         }
 
-        let (response, event) = match decode_json_line::<JsonRpcRequest>(&line) {
-            Ok(request) => handle_request(request, next_sequence(&event_sequence)),
-            Err(error) => (
-                JsonRpcResponse::failure(0, -32700, format!("parse error: {error}")),
-                Some(RuntimeEvent::error(
+        let request = match decode_json_line::<JsonRpcRequest>(&line) {
+            Ok(request) => request,
+            Err(error) => {
+                let response = JsonRpcResponse::failure(0, -32700, format!("parse error: {error}"));
+                let response_line =
+                    encode_json_line(&response).context("failed to encode JSON-RPC response")?;
+                if output_tx.send(response_line).is_err() {
+                    break;
+                }
+                let _ = event_tx.send(RuntimeEvent::error(
                     next_sequence(&event_sequence),
+                    None,
                     format!("failed to parse JSON-RPC request: {error}"),
-                )),
-            ),
+                ));
+                continue;
+            }
         };
 
+        if request.method == "send_message" {
+            let response =
+                handle_send_message(&request, &event_tx, &event_sequence, &active_runs).await;
+            let response_line =
+                encode_json_line(&response).context("failed to encode JSON-RPC response")?;
+            if output_tx.send(response_line).is_err() {
+                break;
+            }
+            continue;
+        }
+
+        let (response, event) = handle_request(request, next_sequence(&event_sequence));
         let response_line =
             encode_json_line(&response).context("failed to encode JSON-RPC response")?;
         if output_tx.send(response_line).is_err() {
@@ -166,6 +200,228 @@ fn handle_request(
             None,
         ),
     }
+}
+
+#[cfg(unix)]
+async fn handle_send_message(
+    request: &JsonRpcRequest,
+    event_tx: &broadcast::Sender<RuntimeEvent>,
+    event_sequence: &AtomicU64,
+    active_runs: &Arc<Mutex<HashMap<String, String>>>,
+) -> JsonRpcResponse {
+    let params: SendMessageParams = match request
+        .params
+        .as_ref()
+        .and_then(|p| serde_json::from_value(p.clone()).ok())
+    {
+        Some(params) => params,
+        None => {
+            return JsonRpcResponse::failure(
+                request.id.clone(),
+                -32602,
+                "invalid params for send_message".to_owned(),
+            );
+        }
+    };
+
+    let run_id = uuid::Uuid::new_v4().to_string();
+    let session_id = params.session_id.clone();
+
+    {
+        let mut active = active_runs.lock().await;
+        if active.contains_key(&session_id) {
+            return JsonRpcResponse::failure(
+                request.id.clone(),
+                -32000,
+                format!("session {session_id} already has an active run"),
+            );
+        }
+        active.insert(session_id.clone(), run_id.clone());
+    }
+
+    let result = SendMessageResult {
+        run_id: run_id.clone(),
+    };
+    let response = JsonRpcResponse::success(request.id.clone(), result.clone())
+        .unwrap_or_else(|error| JsonRpcResponse::failure(0, -32603, error.to_string()));
+
+    let run_id_for_task = run_id.clone();
+    let session_id_for_task = session_id.clone();
+    let event_tx_for_task = event_tx.clone();
+    let event_sequence_for_task = Arc::new(AtomicU64::new(event_sequence.load(Ordering::SeqCst)));
+    let active_runs_for_task = Arc::clone(active_runs);
+
+    tokio::spawn(async move {
+        run_model(
+            run_id_for_task,
+            session_id_for_task,
+            params.message,
+            event_tx_for_task,
+            event_sequence_for_task,
+            active_runs_for_task,
+        )
+        .await;
+    });
+
+    response
+}
+
+#[cfg(unix)]
+async fn run_model(
+    run_id: String,
+    session_id: String,
+    message: String,
+    event_tx: broadcast::Sender<RuntimeEvent>,
+    event_sequence: Arc<AtomicU64>,
+    active_runs: Arc<Mutex<HashMap<String, String>>>,
+) {
+    let _ = event_tx.send(RuntimeEvent::run_started(
+        next_sequence(&event_sequence),
+        session_id.clone(),
+        run_id.clone(),
+    ));
+
+    let config = match load_config().await {
+        Ok(config) => config,
+        Err(error) => {
+            emit_run_error(
+                &event_tx,
+                &event_sequence,
+                &active_runs,
+                &session_id,
+                &run_id,
+                error.to_string(),
+            )
+            .await;
+            return;
+        }
+    };
+
+    let messages = vec![RunMessage {
+        role: MessageRole::Developer,
+        content: message,
+    }];
+
+    let provider: Box<dyn ModelProvider> = match config.provider.as_str() {
+        "openai" | "openai-compatible" => Box::new(OpenAiCompatibleProvider::new(
+            byte_models::ModelProviderConfig {
+                provider: config.provider,
+                base_url: normalize_base_url(&config.base_url),
+                api_key: config.api_key,
+                model: config.model,
+            },
+        )),
+        "echo" => Box::new(EchoProvider::default()),
+        other => {
+            emit_run_error(
+                &event_tx,
+                &event_sequence,
+                &active_runs,
+                &session_id,
+                &run_id,
+                format!("unknown provider: {other}"),
+            )
+            .await;
+            return;
+        }
+    };
+
+    let mut stream = match provider.send_message(messages).await {
+        Ok(stream) => stream,
+        Err(error) => {
+            emit_run_error(
+                &event_tx,
+                &event_sequence,
+                &active_runs,
+                &session_id,
+                &run_id,
+                error.to_string(),
+            )
+            .await;
+            return;
+        }
+    };
+
+    let mut message_id: Option<String> = None;
+    while let Some(event) = stream.next().await {
+        match event {
+            Ok(ProviderEvent::MessageStarted { message_id: id }) => {
+                message_id = Some(id.clone());
+                let _ = event_tx.send(RuntimeEvent::message_started(
+                    next_sequence(&event_sequence),
+                    run_id.clone(),
+                    id,
+                    byte_protocol::MessageRole::Assistant,
+                ));
+            }
+            Ok(ProviderEvent::TextDelta {
+                message_id: id,
+                delta,
+            }) => {
+                if message_id.as_ref() == Some(&id) {
+                    let _ = event_tx.send(RuntimeEvent::message_delta(
+                        next_sequence(&event_sequence),
+                        run_id.clone(),
+                        id,
+                        delta,
+                    ));
+                }
+            }
+            Ok(ProviderEvent::MessageCompleted { message_id: id }) => {
+                if message_id.as_ref() == Some(&id) {
+                    let _ = event_tx.send(RuntimeEvent::message_completed(
+                        next_sequence(&event_sequence),
+                        run_id.clone(),
+                        id,
+                    ));
+                }
+            }
+            Err(error) => {
+                emit_run_error(
+                    &event_tx,
+                    &event_sequence,
+                    &active_runs,
+                    &session_id,
+                    &run_id,
+                    error.to_string(),
+                )
+                .await;
+                return;
+            }
+        }
+    }
+
+    let _ = event_tx.send(RuntimeEvent::run_finished(
+        next_sequence(&event_sequence),
+        run_id.clone(),
+        RunStatus::Succeeded,
+        None,
+    ));
+
+    active_runs.lock().await.remove(&session_id);
+}
+
+#[cfg(unix)]
+async fn emit_run_error(
+    event_tx: &broadcast::Sender<RuntimeEvent>,
+    event_sequence: &AtomicU64,
+    active_runs: &Mutex<HashMap<String, String>>,
+    session_id: &str,
+    run_id: &str,
+    message: String,
+) {
+    let _ = event_tx.send(RuntimeEvent::error(
+        next_sequence(event_sequence),
+        Some(run_id.to_owned()),
+        message.clone(),
+    ));
+    let _ = event_tx.send(RuntimeEvent::run_finished(
+        next_sequence(event_sequence),
+        run_id.to_owned(),
+        RunStatus::Failed,
+        Some(message),
+    ));
+    active_runs.lock().await.remove(session_id);
 }
 
 #[cfg(unix)]

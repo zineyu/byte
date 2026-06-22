@@ -252,7 +252,7 @@ MVP config may be plaintext TOML/JSON:
 ```toml
 [provider]
 base_url = "https://api.openai.com/v1"
-api_key = "..."
+api_key = "PLACEHOLDER"
 model = "gpt-4.1"
 ```
 

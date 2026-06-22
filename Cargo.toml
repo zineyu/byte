@@ -2,7 +2,7 @@
 members = [
   "crates/byte-protocol",
   "crates/byte-daemon"
-]
+, "crates/byte-models"]
 exclude = ["apps/desktop/src-tauri"]
 resolver = "2"
 

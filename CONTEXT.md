@@ -24,6 +24,30 @@ _Avoid_: Full Pi clone, UI demo, autonomous task pipeline
 A saved conversation and tool-action history for one Developer working in one Code Workspace.
 _Avoid_: Chat log when tool history matters, task record
 
+### Conversation Turn
+
+A single Developer message and the Desktop Coding Agent's assistant response within a Session-shaped conversation. It is smaller than a saved Session and does not by itself imply durable history.
+
+_Avoid_: Session when persistence and history matter, chat request
+
+See `docs/protocol/glossary.md` for protocol-level terms.
+
+### Run
+
+An accepted execution attempt for one Conversation Turn, starting when the daemon accepts `send_message` and ending in success or failure. A Run is not a Session and does not by itself imply durable history.
+
+_Avoid_: Session, background job, queued task
+
+See `docs/protocol/glossary.md` for protocol-level terms.
+
+### Model Provider
+
+An external model service that the Desktop Coding Agent can ask for assistant responses during a Conversation Turn. The MVP treats it as Developer-configured local product state, not as Code Workspace content.
+
+_Avoid_: Bot, backend, workspace setting
+
+Configuration details: `docs/models/configuration.md`.
+
 
 **Unrestricted Local Agent Mode**:
 A development-mode operating assumption where the Desktop Coding Agent may read, write, and execute commands without runtime permission filtering. It relies on the Developer intentionally running the product in a trusted local environment.
