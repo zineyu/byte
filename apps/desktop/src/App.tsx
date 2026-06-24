@@ -12,242 +12,82 @@ import {
 	X,
 	Zap,
 } from "lucide-react";
-import type { DaemonState } from "./generated/DaemonState";
-import type { MessageRole } from "./generated/MessageRole";
-import type { SessionMessage } from "./generated/SessionMessage";
 import type { SessionView } from "./generated/SessionView";
-type RuntimeEvent =
-	| {
-			sequence: number;
-			type: "daemon_started";
-			state: DaemonState;
-	  }
-	| {
-			sequence: number;
-			type: "state_changed";
-			state: DaemonState;
-	  }
-	| {
-			sequence: number;
-			type: "error";
-			run_id?: string;
-			message: string;
-	  }
-	| {
-			sequence: number;
-			type: "run_started";
-			session_id: string;
-			run_id: string;
-	  }
-	| {
-			sequence: number;
-			type: "run_finished";
-			run_id: string;
-			status: "succeeded" | "failed";
-			error?: string;
-	  }
-	| {
-			sequence: number;
-			type: "message_started";
-			run_id: string;
-			message_id: string;
-			role: MessageRole;
-	  }
-	| {
-			sequence: number;
-			type: "message_delta";
-			run_id: string;
-			message_id: string;
-			delta: string;
-	  }
-	| {
-			sequence: number;
-			type: "message_completed";
-			run_id: string;
-			message_id: string;
-	  };
-
-type RuntimeEventLogEntry = RuntimeEvent & {
-	receivedAt: Date;
-};
-
-type DaemonConnectionView = {
-	connected: boolean;
-	state: DaemonState | null;
-	error: string | null;
-};
-
-type LoadState = "loading" | "ready" | "error";
-
-type ChatMessage = {
-	id: string;
-	role: "developer" | "assistant";
-	content: string;
-	status: "streaming" | "completed" | "error";
-	error?: string;
-};
-
-type ChatRunState = {
-	runId: string | null;
-	isSending: boolean;
-};
-
-type EventGroup = {
-	event: RuntimeEventLogEntry;
-	count: number;
-};
+import {
+	groupEvents,
+	useByteStore,
+	type ChatRunState,
+	type RuntimeEvent,
+	type RuntimeEventLogEntry,
+} from "./store";
 
 type RightPanel = "events" | "settings" | null;
 
-const initialConnection: DaemonConnectionView = {
-	connected: false,
-	state: null,
-	error: null,
-};
-
-const MAX_EVENTS = 64;
-
 function App() {
-	const [loadState, setLoadState] = useState<LoadState>("loading");
-	const [connection, setConnection] =
-		useState<DaemonConnectionView>(initialConnection);
-	const [events, setEvents] = useState<RuntimeEventLogEntry[]>([]);
-	const [messages, setMessages] = useState<ChatMessage[]>([]);
+	const {
+		state,
+		applyEvent,
+		loadSession: loadSessionAction,
+		resetSession,
+		sendMessage,
+		setConnection,
+	} = useByteStore();
+
 	const [input, setInput] = useState("");
 	const [sessionId, setSessionId] = useState("");
-	const [runState, setRunState] = useState<ChatRunState>({
-		runId: null,
-		isSending: false,
-	});
 	const [rightPanel, setRightPanel] = useState<RightPanel>(null);
 
+	const { loadState, connection, events, messages, runState } = state;
+
 	const refreshDaemonState = useCallback(async () => {
-		setLoadState("loading");
+		setConnection(connection, "loading");
 		try {
-			const nextConnection =
-				await invoke<DaemonConnectionView>("get_daemon_state");
-			setConnection(nextConnection);
-			setLoadState("ready");
+			const nextConnection = await invoke<{
+				connected: boolean;
+				state: {
+					status: "ready";
+					daemon_version: string;
+					protocol_version: number;
+				} | null;
+				error: string | null;
+			}>("get_daemon_state");
+			setConnection(nextConnection, "ready");
 		} catch (error) {
-			setConnection({
-				connected: false,
-				state: null,
-				error: error instanceof Error ? error.message : String(error),
-			});
-			setLoadState("error");
-		}
-	}, []);
-	const loadSession = useCallback(async (targetSessionId: string) => {
-		try {
-			const session = await invoke<SessionView>("load_session", {
-				sessionId: targetSessionId,
-			});
-			setMessages(
-				session.messages.map((message) => ({
-					id: message.id,
-					role: message.role,
-					content: message.content,
-					status: "completed" as const,
-				})),
+			setConnection(
+				{
+					connected: false,
+					state: null,
+					error: error instanceof Error ? error.message : String(error),
+				},
+				"error",
 			);
-		} catch {
-			// Session may not exist yet; leave the chat empty.
 		}
-	}, []);
+	}, [connection, setConnection]);
+
+	const loadSession = useCallback(
+		async (targetSessionId: string) => {
+			try {
+				const session = await invoke<SessionView>("load_session", {
+					sessionId: targetSessionId,
+				});
+				loadSessionAction(session);
+			} catch {
+				// Session may not exist yet; leave the chat empty.
+			}
+		},
+		[loadSessionAction],
+	);
+
 	useEffect(() => {
 		const unlistenPromise = listen<RuntimeEvent>("daemon-event", (event) => {
-			const runtimeEvent = event.payload;
-
-			setEvents((currentEvents) =>
-				[{ ...runtimeEvent, receivedAt: new Date() }, ...currentEvents].slice(
-					0,
-					MAX_EVENTS,
-				),
-			);
-
-			if (
-				runtimeEvent.type === "daemon_started" ||
-				runtimeEvent.type === "state_changed"
-			) {
-				setConnection({
-					connected: true,
-					state: runtimeEvent.state,
-					error: null,
-				});
-				setLoadState("ready");
-			}
-
-			if (runtimeEvent.type === "error") {
-				setConnection((currentConnection) => ({
-					...currentConnection,
-					error: runtimeEvent.message,
-				}));
-				if (runtimeEvent.run_id) {
-					setRunState({ runId: null, isSending: false });
-				}
-			}
-
-			if (runtimeEvent.type === "run_started") {
-				setRunState({ runId: runtimeEvent.run_id, isSending: true });
-			}
-
-			if (
-				runtimeEvent.type === "message_started" &&
-				runtimeEvent.role === "assistant"
-			) {
-				setMessages((currentMessages) => [
-					...currentMessages,
-					{
-						id: runtimeEvent.message_id,
-						role: "assistant",
-						content: "",
-						status: "streaming",
-					},
-				]);
-			}
-
-			if (runtimeEvent.type === "message_delta") {
-				setMessages((currentMessages) =>
-					currentMessages.map((message) =>
-						message.id === runtimeEvent.message_id
-							? { ...message, content: message.content + runtimeEvent.delta }
-							: message,
-					),
-				);
-			}
-
-			if (runtimeEvent.type === "message_completed") {
-				setMessages((currentMessages) =>
-					currentMessages.map((message) =>
-						message.id === runtimeEvent.message_id
-							? { ...message, status: "completed" }
-							: message,
-					),
-				);
-			}
-
-			if (runtimeEvent.type === "run_finished") {
-				setRunState({ runId: null, isSending: false });
-				if (runtimeEvent.status === "failed") {
-					setMessages((currentMessages) =>
-						currentMessages.map((message) =>
-							message.status === "streaming"
-								? {
-										...message,
-										status: "error",
-										error: runtimeEvent.error ?? "运行失败",
-									}
-								: message,
-						),
-					);
-				}
-			}
+			applyEvent(event.payload);
 		});
 
 		return () => {
 			void unlistenPromise.then((unlisten) => unlisten());
 		};
-	}, []);
+	}, [applyEvent]);
+
 	useEffect(() => {
 		void refreshDaemonState().then(() => {
 			const defaultSessionId = "default";
@@ -260,42 +100,43 @@ function App() {
 		const trimmed = input.trim();
 		if (!trimmed || runState.isSending) return;
 
-		setMessages((currentMessages) => [
-			...currentMessages,
-			{
-				id: `user-${Date.now()}`,
-				role: "developer",
-				content: trimmed,
-				status: "completed",
-			},
-		]);
+		sendMessage(`user-${Date.now()}`, trimmed);
+		setInput("");
+
 		try {
 			await invoke("send_message", { sessionId, message: trimmed });
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			setConnection((currentConnection) => ({
-				...currentConnection,
-				error: message,
-			}));
-			setRunState({ runId: null, isSending: false });
+			setConnection(
+				{
+					connected: false,
+					state: null,
+					error: message,
+				},
+				"error",
+			);
 		}
-	}, [input, runState.isSending, sessionId]);
+	}, [input, runState.isSending, sessionId, sendMessage, setConnection]);
+
 	const handleNewChat = useCallback(async () => {
 		const newSessionId = `session-${Date.now()}`;
 		try {
 			await invoke("new_session", { sessionId: newSessionId });
 			setSessionId(newSessionId);
-			setMessages([]);
+			resetSession();
 			setInput("");
-			setRunState({ runId: null, isSending: false });
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			setConnection((currentConnection) => ({
-				...currentConnection,
-				error: message,
-			}));
+			setConnection(
+				{
+					connected: false,
+					state: null,
+					error: message,
+				},
+				"error",
+			);
 		}
-	}, []);
+	}, [resetSession, setConnection]);
 
 	const groupedEvents = useMemo(() => groupEvents(events), [events]);
 	const isConnected = connection.connected;
@@ -590,24 +431,6 @@ function InputField({
 			</div>
 		</>
 	);
-}
-
-function groupEvents(events: RuntimeEventLogEntry[]): EventGroup[] {
-	const result: EventGroup[] = [];
-	for (const event of events) {
-		if (event.type === "state_changed" && result.length > 0) {
-			const last = result[result.length - 1];
-			if (
-				last.event.type === "state_changed" &&
-				last.event.state.status === event.state.status
-			) {
-				last.count += 1;
-				continue;
-			}
-		}
-		result.push({ event, count: 1 });
-	}
-	return result;
 }
 
 function formatTime(date: Date): string {

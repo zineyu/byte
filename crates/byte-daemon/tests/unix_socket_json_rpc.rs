@@ -46,10 +46,7 @@ fn daemon_returns_state_and_runtime_event_over_unix_socket_jsonl() {
                 let event: byte_protocol::RuntimeEvent =
                     serde_json::from_value(notification.params.expect("notification has params"))
                         .expect("runtime event decodes");
-                assert!(matches!(
-                    event.kind,
-                    RuntimeEventKind::DaemonStarted { .. } | RuntimeEventKind::StateChanged { .. }
-                ));
+                assert!(matches!(event.kind, RuntimeEventKind::DaemonStarted { .. }));
                 saw_event = true;
             }
             JsonRpcMessage::Request(_) => panic!("daemon must not send requests to clients"),

@@ -7,6 +7,8 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc,
 };
+#[cfg(unix)]
+use std::time::Duration;
 
 #[cfg(unix)]
 use anyhow::{bail, Context};
@@ -172,13 +174,8 @@ async fn handle_connection(
         } else if request.method == "new_session" || request.method == "load_session" {
             handle_session_request(&request, &session_store).await
         } else {
-            let (response, event) = handle_request(request, next_sequence(&event_sequence));
-            if let Some(event) = event {
-                let _ = event_tx.send(event);
-            }
-            response
+            handle_request(request)
         };
-
         let response_line =
             encode_json_line(&response).context("failed to encode JSON-RPC response")?;
         if output_tx.send(response_line).is_err() {
@@ -196,21 +193,16 @@ async fn handle_connection(
 }
 
 #[cfg(unix)]
-fn handle_request(
-    request: JsonRpcRequest,
-    sequence: u64,
-) -> (JsonRpcResponse, Option<RuntimeEvent>) {
+fn handle_request(request: JsonRpcRequest) -> JsonRpcResponse {
     match request.method.as_str() {
         "get_state" => {
             let state = daemon_state();
-            let response = JsonRpcResponse::success(request.id, state.clone())
-                .unwrap_or_else(|error| JsonRpcResponse::failure(0, -32603, error.to_string()));
-            (response, Some(RuntimeEvent::state_changed(sequence, state)))
+            JsonRpcResponse::success(request.id, state.clone())
+                .unwrap_or_else(|error| JsonRpcResponse::failure(0, -32603, error.to_string()))
         }
-        method => (
-            JsonRpcResponse::failure(request.id, -32601, format!("method not found: {method}")),
-            None,
-        ),
+        method => {
+            JsonRpcResponse::failure(request.id, -32601, format!("method not found: {method}"))
+        }
     }
 }
 
@@ -472,11 +464,18 @@ async fn run_model(
 
     let mut message_id: Option<String> = None;
     let mut assistant_content = String::new();
+    let mut delta_buffer = String::new();
+    let mut last_flush = tokio::time::Instant::now();
+    const DELTA_BATCH_INTERVAL: Duration = Duration::from_millis(16);
+    const DELTA_BATCH_MAX_LEN: usize = 64;
+
     while let Some(event) = stream.next().await {
         match event {
             Ok(ProviderEvent::MessageStarted { message_id: id }) => {
                 message_id = Some(id.clone());
                 assistant_content.clear();
+                delta_buffer.clear();
+                last_flush = tokio::time::Instant::now();
                 let _ = event_tx.send(RuntimeEvent::message_started(
                     next_sequence(&event_sequence),
                     run_id.clone(),
@@ -490,16 +489,30 @@ async fn run_model(
             }) => {
                 if message_id.as_ref() == Some(&id) {
                     assistant_content.push_str(&delta);
-                    let _ = event_tx.send(RuntimeEvent::message_delta(
-                        next_sequence(&event_sequence),
-                        run_id.clone(),
-                        id,
-                        delta,
-                    ));
+                    delta_buffer.push_str(&delta);
+                    let should_flush = delta_buffer.len() >= DELTA_BATCH_MAX_LEN
+                        || last_flush.elapsed() >= DELTA_BATCH_INTERVAL;
+                    if should_flush {
+                        let _ = event_tx.send(RuntimeEvent::message_delta(
+                            next_sequence(&event_sequence),
+                            run_id.clone(),
+                            id,
+                            std::mem::take(&mut delta_buffer),
+                        ));
+                        last_flush = tokio::time::Instant::now();
+                    }
                 }
             }
             Ok(ProviderEvent::MessageCompleted { message_id: id }) => {
                 if message_id.as_ref() == Some(&id) {
+                    if !delta_buffer.is_empty() {
+                        let _ = event_tx.send(RuntimeEvent::message_delta(
+                            next_sequence(&event_sequence),
+                            run_id.clone(),
+                            id.clone(),
+                            std::mem::take(&mut delta_buffer),
+                        ));
+                    }
                     let _ = event_tx.send(RuntimeEvent::message_completed(
                         next_sequence(&event_sequence),
                         run_id.clone(),
@@ -529,6 +542,16 @@ async fn run_model(
                 }
             }
             Err(error) => {
+                if !delta_buffer.is_empty() {
+                    if let Some(id) = message_id.clone() {
+                        let _ = event_tx.send(RuntimeEvent::message_delta(
+                            next_sequence(&event_sequence),
+                            run_id.clone(),
+                            id,
+                            std::mem::take(&mut delta_buffer),
+                        ));
+                    }
+                }
                 emit_run_error(
                     &event_tx,
                     &event_sequence,
@@ -540,6 +563,17 @@ async fn run_model(
                 .await;
                 return;
             }
+        }
+    }
+
+    if !delta_buffer.is_empty() {
+        if let Some(id) = message_id.clone() {
+            let _ = event_tx.send(RuntimeEvent::message_delta(
+                next_sequence(&event_sequence),
+                run_id.clone(),
+                id,
+                std::mem::take(&mut delta_buffer),
+            ));
         }
     }
 
