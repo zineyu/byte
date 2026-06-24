@@ -37,6 +37,10 @@ export function useByteStore() {
 		[],
 	);
 
+	const setLoadState = useCallback((loadState: LoadState) => {
+		dispatch({ type: "set_load_state", loadState });
+	}, []);
+
 	return {
 		state,
 		dispatch,
@@ -45,5 +49,6 @@ export function useByteStore() {
 		resetSession,
 		sendMessage,
 		setConnection,
+		setLoadState,
 	};
 }

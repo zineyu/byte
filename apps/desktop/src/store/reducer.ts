@@ -55,7 +55,13 @@ export function reducer(state: AppState, action: StoreAction): AppState {
 							? "error"
 							: state.loadState),
 			};
+		case "set_load_state":
+			return {
+				...state,
+				loadState: action.loadState,
+			};
 	}
+	return state;
 }
 
 function applyRuntimeEvent(state: AppState, event: RuntimeEvent): AppState {

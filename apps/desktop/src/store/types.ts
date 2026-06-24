@@ -82,4 +82,5 @@ export type StoreAction =
 			type: "set_connection";
 			connection: DaemonConnectionView;
 			loadState?: LoadState;
-	  };
+	  }
+	| { type: "set_load_state"; loadState: LoadState };

@@ -306,4 +306,14 @@ describe("runtime event reducer", () => {
 		expect(next.connection.connected).toBe(true);
 		expect(next.loadState).toBe("ready");
 	});
+
+	it("sets load state without changing connection", () => {
+		const next = reducer(initialState, {
+			type: "set_load_state",
+			loadState: "loading",
+		});
+
+		expect(next.loadState).toBe("loading");
+		expect(next.connection).toEqual(initialState.connection);
+	});
 });

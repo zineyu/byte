@@ -31,6 +31,7 @@ function App() {
 		resetSession,
 		sendMessage,
 		setConnection,
+		setLoadState,
 	} = useByteStore();
 
 	const [input, setInput] = useState("");
@@ -38,9 +39,8 @@ function App() {
 	const [rightPanel, setRightPanel] = useState<RightPanel>(null);
 
 	const { loadState, connection, events, messages, runState } = state;
-
 	const refreshDaemonState = useCallback(async () => {
-		setConnection(connection, "loading");
+		setLoadState("loading");
 		try {
 			const nextConnection = await invoke<{
 				connected: boolean;
@@ -62,7 +62,7 @@ function App() {
 				"error",
 			);
 		}
-	}, [connection, setConnection]);
+	}, [setConnection, setLoadState]);
 
 	const loadSession = useCallback(
 		async (targetSessionId: string) => {
