@@ -8,3 +8,4 @@ license.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+ts-rs = { version = "12.0", default-features = false, features = ["serde-json-impl"] }

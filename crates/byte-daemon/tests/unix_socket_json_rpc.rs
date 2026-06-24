@@ -7,8 +7,8 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use byte_protocol::{
-    decode_json_line, encode_json_line, DaemonState, JsonRpcMessage, JsonRpcRequest, RpcId,
-    RunStatus, RuntimeEventKind, SendMessageParams,
+    decode_json_line, encode_json_line, DaemonState, JsonRpcMessage, JsonRpcRequest,
+    LoadSessionParams, LoadSessionResult, RpcId, RunStatus, RuntimeEventKind, SendMessageParams,
 };
 
 #[test]
@@ -203,6 +203,85 @@ fn send_message_with_echo_provider_streams_assistant_message() {
     stop_daemon(child, &socket_path);
 }
 
+#[test]
+fn send_message_persists_messages_to_session() {
+    let socket_path = unique_socket_path();
+    let config_path =
+        write_config("provider = 'echo'\nbase_url = ''\napi_key = ''\nmodel = 'echo'");
+    let data_dir = unique_data_dir();
+    let child = start_daemon_with_config_and_data_dir(&socket_path, &config_path, &data_dir);
+
+    let mut stream = connect_with_retry(&socket_path);
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("read timeout is set");
+
+    let mut reader = BufReader::new(stream.try_clone().expect("stream clones"));
+    wait_for_event_type(&mut reader, |kind| {
+        matches!(kind, RuntimeEventKind::DaemonStarted { .. })
+    });
+
+    let params = serde_json::to_value(SendMessageParams {
+        session_id: "default".to_owned(),
+        message: "world".to_owned(),
+    })
+    .expect("params encode");
+    let request = JsonRpcRequest::new(3, "send_message", Some(params));
+    write_request(&mut stream, &request);
+
+    wait_for_event_type(&mut reader, |kind| {
+        matches!(
+            kind,
+            RuntimeEventKind::RunFinished {
+                status: RunStatus::Succeeded,
+                error: None,
+                ..
+            }
+        )
+    });
+
+    let load_params = serde_json::to_value(LoadSessionParams {
+        session_id: "default".to_owned(),
+    })
+    .expect("load params encode");
+    let load_request = JsonRpcRequest::new(4, "load_session", Some(load_params));
+    write_request(&mut stream, &load_request);
+
+    let session = loop {
+        let line = read_line(&mut reader);
+        if let JsonRpcMessage::Response(response) =
+            decode_json_line::<JsonRpcMessage>(&line).expect("message decodes")
+        {
+            if response.id == RpcId::Number(4) {
+                let result: LoadSessionResult =
+                    serde_json::from_value(response.result.expect("response has result"))
+                        .expect("load_session result decodes");
+                break result.session;
+            }
+        }
+    };
+
+    assert_eq!(session.session_id, "default");
+    assert_eq!(session.messages.len(), 2);
+    assert_eq!(
+        session.messages[0].role,
+        byte_protocol::MessageRole::Developer
+    );
+    assert_eq!(session.messages[0].content, "world");
+    assert_eq!(
+        session.messages[1].role,
+        byte_protocol::MessageRole::Assistant
+    );
+    assert_eq!(session.messages[1].content, "Echo: world");
+    assert_eq!(
+        session.messages[1].parent_id,
+        Some(session.messages[0].id.clone())
+    );
+
+    drop(stream);
+    stop_daemon(child, &socket_path);
+}
+
 fn start_daemon(socket_path: &Path) -> std::process::Child {
     Command::new(env!("CARGO_BIN_EXE_byte-daemon"))
         .arg("--rpc-socket")
@@ -219,6 +298,23 @@ fn start_daemon_with_config(socket_path: &Path, config_path: &Path) -> std::proc
         .arg("--rpc-socket")
         .arg(socket_path)
         .env("BYTE_CONFIG_PATH", config_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("daemon starts")
+}
+
+fn start_daemon_with_config_and_data_dir(
+    socket_path: &Path,
+    config_path: &Path,
+    data_dir: &Path,
+) -> std::process::Child {
+    Command::new(env!("CARGO_BIN_EXE_byte-daemon"))
+        .arg("--rpc-socket")
+        .arg(socket_path)
+        .env("BYTE_CONFIG_PATH", config_path)
+        .env("XDG_DATA_HOME", data_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -295,6 +391,14 @@ fn unique_socket_path() -> PathBuf {
 fn unique_config_path() -> PathBuf {
     std::env::temp_dir().join(format!(
         "byte-daemon-config-test-{}-{}.toml",
+        std::process::id(),
+        unique_suffix()
+    ))
+}
+
+fn unique_data_dir() -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "byte-daemon-data-test-{}-{}",
         std::process::id(),
         unique_suffix()
     ))

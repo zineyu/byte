@@ -6,6 +6,7 @@
   "packageManager": "pnpm@10.33.0",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 1420",
+    "generate:types": "cargo test -p byte-protocol --manifest-path ../../Cargo.toml",
     "build": "pnpm run build:frontend",
     "build:frontend": "tsc && vite build",
     "build:daemon": "cargo build --manifest-path ../../Cargo.toml -p byte-daemon",

@@ -18,11 +18,15 @@ use byte_models::{
 #[cfg(unix)]
 use byte_protocol::{
     decode_json_line, encode_json_line, DaemonState, JsonRpcNotification, JsonRpcRequest,
-    JsonRpcResponse, MessageRole, RunMessage, RunStatus, RuntimeEvent, SendMessageParams,
-    SendMessageResult,
+    JsonRpcResponse, LoadSessionParams, LoadSessionResult, MessageRole, NewSessionParams,
+    NewSessionResult, RunMessage, RunStatus, RuntimeEvent, SendMessageParams, SendMessageResult,
 };
 #[cfg(unix)]
+use byte_session::SessionStore;
+#[cfg(unix)]
 use futures::StreamExt;
+#[cfg(unix)]
+use serde::de::DeserializeOwned;
 #[cfg(unix)]
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 #[cfg(unix)]
@@ -62,6 +66,8 @@ async fn run_socket_server(socket_path: &Path) -> anyhow::Result<()> {
     let (event_tx, _) = broadcast::channel::<RuntimeEvent>(64);
     let event_sequence = Arc::new(AtomicU64::new(0));
     let active_runs = Arc::new(Mutex::new(HashMap::<String, String>::new()));
+    let session_store =
+        Arc::new(SessionStore::with_default_dir().context("failed to initialize session store")?);
 
     loop {
         let (stream, _) = listener
@@ -71,9 +77,11 @@ async fn run_socket_server(socket_path: &Path) -> anyhow::Result<()> {
         let event_tx = event_tx.clone();
         let event_sequence = Arc::clone(&event_sequence);
         let active_runs = Arc::clone(&active_runs);
+        let session_store = Arc::clone(&session_store);
         tokio::spawn(async move {
             if let Err(error) =
-                handle_connection(stream, event_tx, event_sequence, active_runs).await
+                handle_connection(stream, event_tx, event_sequence, active_runs, session_store)
+                    .await
             {
                 eprintln!("RPC socket connection failed: {error:#}");
             }
@@ -87,6 +95,7 @@ async fn handle_connection(
     event_tx: broadcast::Sender<RuntimeEvent>,
     event_sequence: Arc<AtomicU64>,
     active_runs: Arc<Mutex<HashMap<String, String>>>,
+    session_store: Arc<SessionStore>,
 ) -> anyhow::Result<()> {
     let (read_half, mut write_half) = stream.into_split();
     let (output_tx, mut output_rx) = mpsc::unbounded_channel::<String>();
@@ -151,26 +160,29 @@ async fn handle_connection(
             }
         };
 
-        if request.method == "send_message" {
-            let response =
-                handle_send_message(&request, &event_tx, &event_sequence, &active_runs).await;
-            let response_line =
-                encode_json_line(&response).context("failed to encode JSON-RPC response")?;
-            if output_tx.send(response_line).is_err() {
-                break;
+        let response = if request.method == "send_message" {
+            handle_send_message(
+                &request,
+                &event_tx,
+                Arc::clone(&event_sequence),
+                &active_runs,
+                Arc::clone(&session_store),
+            )
+            .await
+        } else if request.method == "new_session" || request.method == "load_session" {
+            handle_session_request(&request, &session_store).await
+        } else {
+            let (response, event) = handle_request(request, next_sequence(&event_sequence));
+            if let Some(event) = event {
+                let _ = event_tx.send(event);
             }
-            continue;
-        }
+            response
+        };
 
-        let (response, event) = handle_request(request, next_sequence(&event_sequence));
         let response_line =
             encode_json_line(&response).context("failed to encode JSON-RPC response")?;
         if output_tx.send(response_line).is_err() {
             break;
-        }
-
-        if let Some(event) = event {
-            let _ = event_tx.send(event);
         }
     }
 
@@ -203,25 +215,88 @@ fn handle_request(
 }
 
 #[cfg(unix)]
-async fn handle_send_message(
+async fn handle_session_request(
     request: &JsonRpcRequest,
-    event_tx: &broadcast::Sender<RuntimeEvent>,
-    event_sequence: &AtomicU64,
-    active_runs: &Arc<Mutex<HashMap<String, String>>>,
+    session_store: &SessionStore,
 ) -> JsonRpcResponse {
-    let params: SendMessageParams = match request
+    match request.method.as_str() {
+        "new_session" => {
+            let params: NewSessionParams = match parse_params(request) {
+                Ok(params) => params,
+                Err(response) => return response,
+            };
+
+            if let Err(error) = session_store
+                .new_session(&params.session_id, params.workspace.as_deref())
+                .await
+            {
+                return JsonRpcResponse::failure(
+                    request.id.clone(),
+                    -32603,
+                    format!("failed to create session: {error}"),
+                );
+            }
+
+            let result = NewSessionResult {
+                session_id: params.session_id,
+            };
+            JsonRpcResponse::success(request.id.clone(), result)
+                .unwrap_or_else(|error| JsonRpcResponse::failure(0, -32603, error.to_string()))
+        }
+        "load_session" => {
+            let params: LoadSessionParams = match parse_params(request) {
+                Ok(params) => params,
+                Err(response) => return response,
+            };
+
+            match session_store.load_session(&params.session_id).await {
+                Ok(session) => {
+                    let result = LoadSessionResult { session };
+                    JsonRpcResponse::success(request.id.clone(), result).unwrap_or_else(|error| {
+                        JsonRpcResponse::failure(0, -32603, error.to_string())
+                    })
+                }
+                Err(error) => JsonRpcResponse::failure(
+                    request.id.clone(),
+                    -32603,
+                    format!("failed to load session: {error}"),
+                ),
+            }
+        }
+        _ => JsonRpcResponse::failure(
+            request.id.clone(),
+            -32601,
+            format!("method not found: {}", request.method),
+        ),
+    }
+}
+
+#[cfg(unix)]
+#[allow(clippy::result_large_err)] // JsonRpcResponse is large; this helper is internal and short-lived.
+fn parse_params<T: DeserializeOwned>(request: &JsonRpcRequest) -> Result<T, JsonRpcResponse> {
+    request
         .params
         .as_ref()
         .and_then(|p| serde_json::from_value(p.clone()).ok())
-    {
-        Some(params) => params,
-        None => {
-            return JsonRpcResponse::failure(
+        .ok_or_else(|| {
+            JsonRpcResponse::failure(
                 request.id.clone(),
                 -32602,
-                "invalid params for send_message".to_owned(),
-            );
-        }
+                format!("invalid params for {}", request.method),
+            )
+        })
+}
+
+async fn handle_send_message(
+    request: &JsonRpcRequest,
+    event_tx: &broadcast::Sender<RuntimeEvent>,
+    event_sequence: Arc<AtomicU64>,
+    active_runs: &Arc<Mutex<HashMap<String, String>>>,
+    session_store: Arc<SessionStore>,
+) -> JsonRpcResponse {
+    let params: SendMessageParams = match parse_params(request) {
+        Ok(params) => params,
+        Err(response) => return response,
     };
 
     let run_id = uuid::Uuid::new_v4().to_string();
@@ -239,6 +314,48 @@ async fn handle_send_message(
         active.insert(session_id.clone(), run_id.clone());
     }
 
+    if let Err(error) = session_store.new_session(&session_id, None).await {
+        active_runs.lock().await.remove(&session_id);
+        return JsonRpcResponse::failure(
+            request.id.clone(),
+            -32603,
+            format!("failed to prepare session: {error}"),
+        );
+    }
+
+    let parent_id = match session_store.load_session(&session_id).await {
+        Ok(view) => view.messages.last().map(|message| message.id.clone()),
+        Err(error) => {
+            active_runs.lock().await.remove(&session_id);
+            return JsonRpcResponse::failure(
+                request.id.clone(),
+                -32603,
+                format!("failed to load session state: {error}"),
+            );
+        }
+    };
+
+    let developer_message_id = match session_store
+        .append_message(
+            &session_id,
+            None,
+            parent_id.as_deref(),
+            MessageRole::Developer,
+            &params.message,
+        )
+        .await
+    {
+        Ok(id) => id,
+        Err(error) => {
+            active_runs.lock().await.remove(&session_id);
+            return JsonRpcResponse::failure(
+                request.id.clone(),
+                -32603,
+                format!("failed to append developer message: {error}"),
+            );
+        }
+    };
+
     let result = SendMessageResult {
         run_id: run_id.clone(),
     };
@@ -248,17 +365,20 @@ async fn handle_send_message(
     let run_id_for_task = run_id.clone();
     let session_id_for_task = session_id.clone();
     let event_tx_for_task = event_tx.clone();
-    let event_sequence_for_task = Arc::new(AtomicU64::new(event_sequence.load(Ordering::SeqCst)));
+    let event_sequence_for_task = Arc::clone(&event_sequence);
     let active_runs_for_task = Arc::clone(active_runs);
+    let session_store_for_task = Arc::clone(&session_store);
 
     tokio::spawn(async move {
         run_model(
             run_id_for_task,
             session_id_for_task,
             params.message,
+            developer_message_id,
             event_tx_for_task,
             event_sequence_for_task,
             active_runs_for_task,
+            session_store_for_task,
         )
         .await;
     });
@@ -267,20 +387,28 @@ async fn handle_send_message(
 }
 
 #[cfg(unix)]
+#[allow(clippy::too_many_arguments)] // run_model bundles the full run context; grouping would not simplify callers.
 async fn run_model(
     run_id: String,
     session_id: String,
     message: String,
+    developer_message_id: String,
     event_tx: broadcast::Sender<RuntimeEvent>,
     event_sequence: Arc<AtomicU64>,
     active_runs: Arc<Mutex<HashMap<String, String>>>,
+    session_store: Arc<SessionStore>,
 ) {
+    let session_id_for_cleanup = session_id.clone();
+    let active_runs_for_cleanup = Arc::clone(&active_runs);
+    let _cleanup_guard = scopeguard::guard(session_id_for_cleanup, move |session_id| {
+        active_runs_for_cleanup.blocking_lock().remove(&session_id);
+    });
+
     let _ = event_tx.send(RuntimeEvent::run_started(
         next_sequence(&event_sequence),
         session_id.clone(),
         run_id.clone(),
     ));
-
     let config = match load_config().await {
         Ok(config) => config,
         Err(error) => {
@@ -343,10 +471,12 @@ async fn run_model(
     };
 
     let mut message_id: Option<String> = None;
+    let mut assistant_content = String::new();
     while let Some(event) = stream.next().await {
         match event {
             Ok(ProviderEvent::MessageStarted { message_id: id }) => {
                 message_id = Some(id.clone());
+                assistant_content.clear();
                 let _ = event_tx.send(RuntimeEvent::message_started(
                     next_sequence(&event_sequence),
                     run_id.clone(),
@@ -359,6 +489,7 @@ async fn run_model(
                 delta,
             }) => {
                 if message_id.as_ref() == Some(&id) {
+                    assistant_content.push_str(&delta);
                     let _ = event_tx.send(RuntimeEvent::message_delta(
                         next_sequence(&event_sequence),
                         run_id.clone(),
@@ -372,8 +503,29 @@ async fn run_model(
                     let _ = event_tx.send(RuntimeEvent::message_completed(
                         next_sequence(&event_sequence),
                         run_id.clone(),
-                        id,
+                        id.clone(),
                     ));
+                    if let Err(error) = session_store
+                        .append_message(
+                            &session_id,
+                            Some(&id),
+                            Some(&developer_message_id),
+                            MessageRole::Assistant,
+                            &assistant_content,
+                        )
+                        .await
+                    {
+                        emit_run_error(
+                            &event_tx,
+                            &event_sequence,
+                            &active_runs,
+                            &session_id,
+                            &run_id,
+                            format!("failed to append assistant message: {error}"),
+                        )
+                        .await;
+                        return;
+                    }
                 }
             }
             Err(error) => {

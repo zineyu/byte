@@ -1,8 +1,10 @@
 [workspace]
 members = [
   "crates/byte-protocol",
-  "crates/byte-daemon"
-, "crates/byte-models"]
+  "crates/byte-session",
+  "crates/byte-daemon",
+  "crates/byte-models",
+]
 exclude = ["apps/desktop/src-tauri"]
 resolver = "2"
 
@@ -14,7 +16,14 @@ version = "0.1.0"
 [workspace.dependencies]
 anyhow = "1.0"
 byte-protocol = { path = "crates/byte-protocol" }
+byte-session = { path = "crates/byte-session" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"
-tokio = { version = "1.48", features = ["io-util", "macros", "net", "rt-multi-thread", "sync"] }
+tokio = { version = "1.48", features = [
+  "io-util",
+  "macros",
+  "net",
+  "rt-multi-thread",
+  "sync",
+] }

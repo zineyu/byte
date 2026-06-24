@@ -12,15 +12,10 @@ import {
 	X,
 	Zap,
 } from "lucide-react";
-
-type DaemonStatus = "ready";
-
-type DaemonState = {
-	status: DaemonStatus;
-	daemon_version: string;
-	protocol_version: number;
-};
-
+import type { DaemonState } from "./generated/DaemonState";
+import type { MessageRole } from "./generated/MessageRole";
+import type { SessionMessage } from "./generated/SessionMessage";
+import type { SessionView } from "./generated/SessionView";
 type RuntimeEvent =
 	| {
 			sequence: number;
@@ -56,7 +51,7 @@ type RuntimeEvent =
 			type: "message_started";
 			run_id: string;
 			message_id: string;
-			role: "developer" | "assistant";
+			role: MessageRole;
 	  }
 	| {
 			sequence: number;
@@ -119,6 +114,7 @@ function App() {
 	const [events, setEvents] = useState<RuntimeEventLogEntry[]>([]);
 	const [messages, setMessages] = useState<ChatMessage[]>([]);
 	const [input, setInput] = useState("");
+	const [sessionId, setSessionId] = useState("");
 	const [runState, setRunState] = useState<ChatRunState>({
 		runId: null,
 		isSending: false,
@@ -141,7 +137,23 @@ function App() {
 			setLoadState("error");
 		}
 	}, []);
-
+	const loadSession = useCallback(async (targetSessionId: string) => {
+		try {
+			const session = await invoke<SessionView>("load_session", {
+				sessionId: targetSessionId,
+			});
+			setMessages(
+				session.messages.map((message) => ({
+					id: message.id,
+					role: message.role,
+					content: message.content,
+					status: "completed" as const,
+				})),
+			);
+		} catch {
+			// Session may not exist yet; leave the chat empty.
+		}
+	}, []);
 	useEffect(() => {
 		const unlistenPromise = listen<RuntimeEvent>("daemon-event", (event) => {
 			const runtimeEvent = event.payload;
@@ -171,13 +183,6 @@ function App() {
 					error: runtimeEvent.message,
 				}));
 				if (runtimeEvent.run_id) {
-					setMessages((currentMessages) =>
-						currentMessages.map((message) =>
-							message.id === runtimeEvent.run_id
-								? { ...message, status: "error", error: runtimeEvent.message }
-								: message,
-						),
-					);
 					setRunState({ runId: null, isSending: false });
 				}
 			}
@@ -243,10 +248,13 @@ function App() {
 			void unlistenPromise.then((unlisten) => unlisten());
 		};
 	}, []);
-
 	useEffect(() => {
-		void refreshDaemonState();
-	}, [refreshDaemonState]);
+		void refreshDaemonState().then(() => {
+			const defaultSessionId = "default";
+			setSessionId(defaultSessionId);
+			void loadSession(defaultSessionId);
+		});
+	}, [refreshDaemonState, loadSession]);
 
 	const handleSend = useCallback(async () => {
 		const trimmed = input.trim();
@@ -261,11 +269,8 @@ function App() {
 				status: "completed",
 			},
 		]);
-		setInput("");
-		setRunState((current) => ({ ...current, isSending: true }));
-
 		try {
-			await invoke("send_message", { sessionId: "default", message: trimmed });
+			await invoke("send_message", { sessionId, message: trimmed });
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			setConnection((currentConnection) => ({
@@ -274,12 +279,22 @@ function App() {
 			}));
 			setRunState({ runId: null, isSending: false });
 		}
-	}, [input, runState.isSending]);
-
-	const handleNewChat = useCallback(() => {
-		setMessages([]);
-		setInput("");
-		setRunState({ runId: null, isSending: false });
+	}, [input, runState.isSending, sessionId]);
+	const handleNewChat = useCallback(async () => {
+		const newSessionId = `session-${Date.now()}`;
+		try {
+			await invoke("new_session", { sessionId: newSessionId });
+			setSessionId(newSessionId);
+			setMessages([]);
+			setInput("");
+			setRunState({ runId: null, isSending: false });
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			setConnection((currentConnection) => ({
+				...currentConnection,
+				error: message,
+			}));
+		}
 	}, []);
 
 	const groupedEvents = useMemo(() => groupEvents(events), [events]);

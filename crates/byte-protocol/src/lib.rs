@@ -4,6 +4,12 @@ pub const JSON_RPC_VERSION: &str = "2.0";
 pub const PROTOCOL_VERSION: u16 = 1;
 pub const RUNTIME_EVENT_METHOD: &str = "runtime_event";
 
+pub mod session;
+pub use session::{
+    LoadSessionParams, LoadSessionResult, NewSessionParams, NewSessionResult, SessionEntry,
+    SessionMessage, SessionMessageContent, SessionView,
+};
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum RpcId {
@@ -118,8 +124,9 @@ pub enum JsonRpcMessage {
     Notification(JsonRpcNotification),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
+#[ts(export, rename_all = "snake_case")]
 pub enum MessageRole {
     Developer,
     Assistant,
@@ -134,18 +141,21 @@ impl std::fmt::Display for MessageRole {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
+#[ts(export, rename_all = "snake_case")]
 pub enum RunStatus {
     Succeeded,
     Failed,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export)]
 pub struct RuntimeEvent {
     pub sequence: u64,
     #[serde(flatten)]
+    #[ts(flatten)]
     pub kind: RuntimeEventKind,
 }
 
@@ -232,8 +242,9 @@ impl RuntimeEvent {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[ts(export, rename_all = "snake_case")]
 pub enum RuntimeEventKind {
     DaemonStarted {
         state: DaemonState,
@@ -299,7 +310,8 @@ pub struct JsonRpcError {
     pub data: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
 pub struct DaemonState {
     pub status: DaemonStatus,
     pub daemon_version: String,
@@ -316,8 +328,9 @@ impl DaemonState {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
+#[ts(export, rename_all = "snake_case")]
 pub enum DaemonStatus {
     Ready,
 }

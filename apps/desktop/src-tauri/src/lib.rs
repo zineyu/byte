@@ -8,7 +8,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use byte_protocol::{
     decode_json_line, encode_json_line, DaemonState, JsonRpcMessage, JsonRpcRequest,
-    JsonRpcResponse, RpcId, RuntimeEvent, RUNTIME_EVENT_METHOD,
+    JsonRpcResponse, LoadSessionResult, NewSessionParams, RpcId, RuntimeEvent, SessionView,
+    RUNTIME_EVENT_METHOD,
 };
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -98,6 +99,32 @@ impl DaemonClient {
             .ok_or_else(|| "daemon get_state response did not include a result".to_owned())?;
         serde_json::from_value(result)
             .map_err(|error| format!("failed to decode daemon state: {error}"))
+    }
+
+    async fn new_session(
+        &mut self,
+        session_id: String,
+        workspace: Option<String>,
+    ) -> Result<(), String> {
+        let params = serde_json::to_value(NewSessionParams {
+            session_id,
+            workspace,
+        })
+        .map_err(|error| format!("failed to encode new_session params: {error}"))?;
+        self.request("new_session", Some(params)).await?;
+        Ok(())
+    }
+
+    async fn load_session(&mut self, session_id: String) -> Result<SessionView, String> {
+        let params = serde_json::to_value(byte_protocol::LoadSessionParams { session_id })
+            .map_err(|error| format!("failed to encode load_session params: {error}"))?;
+        let response = self.request("load_session", Some(params)).await?;
+        let result = response
+            .result
+            .ok_or_else(|| "daemon load_session response did not include a result".to_owned())?;
+        serde_json::from_value::<LoadSessionResult>(result)
+            .map(|result| result.session)
+            .map_err(|error| format!("failed to decode session view: {error}"))
     }
 
     async fn request(
@@ -376,6 +403,29 @@ async fn send_message(
     Ok(())
 }
 
+#[tauri::command]
+async fn new_session(
+    session_id: String,
+    workspace: Option<String>,
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let mut daemon = state.daemon.lock().await;
+    let client = daemon.ensure_client(app_handle).await?;
+    client.new_session(session_id, workspace).await
+}
+
+#[tauri::command]
+async fn load_session(
+    session_id: String,
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<SessionView, String> {
+    let mut daemon = state.daemon.lock().await;
+    let client = daemon.ensure_client(app_handle).await?;
+    client.load_session(session_id).await
+}
+
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
@@ -384,7 +434,12 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_daemon_state, send_message])
+        .invoke_handler(tauri::generate_handler![
+            get_daemon_state,
+            send_message,
+            new_session,
+            load_session
+        ])
         .run(tauri::generate_context!())
         .expect("error while running Byte Agent desktop app");
 }
