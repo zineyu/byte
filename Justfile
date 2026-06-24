@@ -1,10 +1,41 @@
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
-# Run the full local validation suite mirroring .github/workflows/ci.yml.
-verify: repo-hygiene workflow-syntax rust desktop audit
+# Run validation suite or one gate: just verify [all|repo|workflow|rust|desktop|audit].
+verify target="all":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{target}}" in
+      all)
+        just _repo-hygiene
+        just _workflow-syntax
+        just _verify-rust
+        just _verify-desktop
+        just _verify-audit
+        ;;
+      repo|repo-hygiene)
+        just _repo-hygiene
+        ;;
+      workflow|workflow-syntax)
+        just _workflow-syntax
+        ;;
+      rust)
+        just _verify-rust
+        ;;
+      desktop)
+        just _verify-desktop
+        ;;
+      audit|audi)
+        just _verify-audit
+        ;;
+      *)
+        echo "unknown verify target: {{target}}" >&2
+        echo "usage: just verify [all|repo|workflow|rust|desktop|audit]" >&2
+        exit 2
+        ;;
+    esac
 
 # Check required docs, Markdown sanity, and obvious committed secrets.
-repo-hygiene:
+_repo-hygiene:
     #!/usr/bin/env bash
     set -euo pipefail
 
@@ -70,24 +101,31 @@ repo-hygiene:
     fi
 
 # Parse GitHub Actions workflow YAML files.
-workflow-syntax:
+_workflow-syntax:
     ruby -e 'require "yaml"; Dir[".github/workflows/*.{yml,yaml}"].sort.each { |file| YAML.load_file(file); puts "parsed #{file}" }'
 
-# Run all Rust quality gates.
-rust: rust-fmt rust-clippy rust-test
+# Format all Rust and desktop frontend code.
+fmt: _desktop-install
+    cargo fmt --all
+    cd apps/desktop && pnpm run fmt
 
-rust-fmt:
+# Check all Rust and desktop frontend formatting without modifying files.
+fmt-check: _rust-fmt-check _desktop-fmt-check
+
+_verify-rust: _rust-fmt-check _rust-clippy _rust-test
+
+_rust-fmt-check:
     cargo fmt --all -- --check
 
-rust-clippy:
+_rust-clippy:
     cargo clippy --workspace --all-targets -- -D warnings
 
-rust-test:
+_rust-test:
     cargo test --workspace --all-targets
 
 # Install desktop dependencies exactly as CI does when pnpm is unavailable;
 # prefer an existing local pnpm binary to support immutable Nix environments.
-desktop-install:
+_desktop-install:
     #!/usr/bin/env bash
     set -euo pipefail
     cd apps/desktop
@@ -97,8 +135,7 @@ desktop-install:
     fi
     pnpm install --frozen-lockfile
 
-# Run desktop web gates. Missing scripts are skipped to match CI behavior.
-desktop: desktop-install
+_verify-desktop: _desktop-fmt-check
     #!/usr/bin/env bash
     set -euo pipefail
     cd apps/desktop
@@ -117,8 +154,10 @@ desktop: desktop-install
     run_script test
     run_script build
 
-# Run dependency audit for the desktop package.
-audit: desktop-install
+_desktop-fmt-check: _desktop-install
+    cd apps/desktop && pnpm run fmt:check
+
+_verify-audit: _desktop-install
     cd apps/desktop && pnpm audit --audit-level high
 
 # Start the desktop app in development mode.

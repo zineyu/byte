@@ -15,18 +15,21 @@ just verify
 
 ```bash
 # Repository and workflow checks
-just repo-hygiene
-just workflow-syntax
+just verify repo
+just verify workflow
 
 # Rust formatting, linting, and tests
-just rust
-just rust-fmt
-just rust-clippy
-just rust-test
+# Runs cargo fmt --check, clippy, and tests.
+just verify rust
 
-# Desktop frontend install, typecheck/test/build, and audit
-just desktop
-just audit
+# Desktop frontend format check, typecheck, tests, and build
+# Runs Prettier check for TS/CSS/HTML before package scripts.
+just verify desktop
+just verify audit
+
+# Format / format-check Rust and desktop frontend code
+just fmt
+just fmt-check
 ```
 
 ## Rust workspace
