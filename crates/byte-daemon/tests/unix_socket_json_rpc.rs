@@ -53,14 +53,15 @@ fn daemon_returns_state_and_runtime_event_over_unix_socket_jsonl() {
         }
     }
 
-    stop_daemon(child, &socket_path);
+    stop_daemon(child, &socket_path, None);
 }
 
 #[test]
 fn send_message_with_missing_config_emits_visible_error_event() {
     let socket_path = unique_socket_path();
     let config_path = unique_config_path();
-    let child = start_daemon_with_config(&socket_path, &config_path);
+    let data_dir = unique_data_dir();
+    let child = start_daemon_with_config(&socket_path, &config_path, &data_dir);
 
     let mut stream = connect_with_retry(&socket_path);
     stream
@@ -124,7 +125,7 @@ fn send_message_with_missing_config_emits_visible_error_event() {
     }
 
     drop(stream);
-    stop_daemon(child, &socket_path);
+    stop_daemon(child, &socket_path, Some(&data_dir));
 }
 
 #[test]
@@ -132,7 +133,8 @@ fn send_message_with_echo_provider_streams_assistant_message() {
     let socket_path = unique_socket_path();
     let config_path =
         write_config("provider = 'echo'\nbase_url = ''\napi_key = ''\nmodel = 'echo'");
-    let child = start_daemon_with_config(&socket_path, &config_path);
+    let data_dir = unique_data_dir();
+    let child = start_daemon_with_config(&socket_path, &config_path, &data_dir);
 
     let mut stream = connect_with_retry(&socket_path);
     stream
@@ -197,7 +199,7 @@ fn send_message_with_echo_provider_streams_assistant_message() {
     }
 
     drop(stream);
-    stop_daemon(child, &socket_path);
+    stop_daemon(child, &socket_path, Some(&data_dir));
 }
 
 #[test]
@@ -206,7 +208,7 @@ fn send_message_persists_messages_to_session() {
     let config_path =
         write_config("provider = 'echo'\nbase_url = ''\napi_key = ''\nmodel = 'echo'");
     let data_dir = unique_data_dir();
-    let child = start_daemon_with_config_and_data_dir(&socket_path, &config_path, &data_dir);
+    let child = start_daemon_with_config(&socket_path, &config_path, &data_dir);
 
     let mut stream = connect_with_retry(&socket_path);
     stream
@@ -276,7 +278,7 @@ fn send_message_persists_messages_to_session() {
     );
 
     drop(stream);
-    stop_daemon(child, &socket_path);
+    stop_daemon(child, &socket_path, Some(&data_dir));
 }
 
 fn start_daemon(socket_path: &Path) -> std::process::Child {
@@ -290,19 +292,7 @@ fn start_daemon(socket_path: &Path) -> std::process::Child {
         .expect("daemon starts")
 }
 
-fn start_daemon_with_config(socket_path: &Path, config_path: &Path) -> std::process::Child {
-    Command::new(env!("CARGO_BIN_EXE_byte-daemon"))
-        .arg("--rpc-socket")
-        .arg(socket_path)
-        .env("BYTE_CONFIG_PATH", config_path)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("daemon starts")
-}
-
-fn start_daemon_with_config_and_data_dir(
+fn start_daemon_with_config(
     socket_path: &Path,
     config_path: &Path,
     data_dir: &Path,
@@ -311,7 +301,10 @@ fn start_daemon_with_config_and_data_dir(
         .arg("--rpc-socket")
         .arg(socket_path)
         .env("BYTE_CONFIG_PATH", config_path)
-        .env("XDG_DATA_HOME", data_dir)
+        // Production commonly has no XDG_DATA_HOME; exercise the HOME fallback
+        // while still isolating integration-test session files.
+        .env_remove("XDG_DATA_HOME")
+        .env("HOME", data_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -319,10 +312,13 @@ fn start_daemon_with_config_and_data_dir(
         .expect("daemon starts")
 }
 
-fn stop_daemon(mut child: std::process::Child, socket_path: &Path) {
+fn stop_daemon(mut child: std::process::Child, socket_path: &Path, data_dir: Option<&Path>) {
     child.kill().expect("daemon can be killed after test");
     child.wait().expect("daemon exits after kill");
     let _ = std::fs::remove_file(socket_path);
+    if let Some(dir) = data_dir {
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }
 
 fn connect_with_retry(socket_path: &Path) -> UnixStream {

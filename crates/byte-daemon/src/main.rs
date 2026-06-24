@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::sync::{
     atomic::{AtomicU64, Ordering},
-    Arc,
+    Arc, Mutex,
 };
 #[cfg(unix)]
 use std::time::Duration;
@@ -34,12 +34,19 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 #[cfg(unix)]
 use tokio::net::{UnixListener, UnixStream};
 #[cfg(unix)]
-use tokio::sync::{broadcast, mpsc, Mutex};
+use tokio::sync::{broadcast, mpsc};
+#[cfg(unix)]
+use tracing::{debug, error, info, instrument, trace, warn};
 
 #[cfg(unix)]
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
+
     let socket_path = parse_rpc_socket_arg(std::env::args())?;
+    info!(?socket_path, "starting byte daemon");
     run_socket_server(&socket_path).await
 }
 
@@ -60,6 +67,7 @@ fn parse_rpc_socket_arg(args: impl IntoIterator<Item = String>) -> anyhow::Resul
 }
 
 #[cfg(unix)]
+#[instrument(skip_all)]
 async fn run_socket_server(socket_path: &Path) -> anyhow::Result<()> {
     remove_stale_socket(socket_path)?;
     let _socket_file = SocketFile::new(socket_path.to_path_buf());
@@ -70,12 +78,14 @@ async fn run_socket_server(socket_path: &Path) -> anyhow::Result<()> {
     let active_runs = Arc::new(Mutex::new(HashMap::<String, String>::new()));
     let session_store =
         Arc::new(SessionStore::with_default_dir().context("failed to initialize session store")?);
+    info!("daemon ready, waiting for connections");
 
     loop {
         let (stream, _) = listener
             .accept()
             .await
             .context("failed to accept RPC socket client")?;
+        info!("accepted new RPC connection");
         let event_tx = event_tx.clone();
         let event_sequence = Arc::clone(&event_sequence);
         let active_runs = Arc::clone(&active_runs);
@@ -85,13 +95,14 @@ async fn run_socket_server(socket_path: &Path) -> anyhow::Result<()> {
                 handle_connection(stream, event_tx, event_sequence, active_runs, session_store)
                     .await
             {
-                eprintln!("RPC socket connection failed: {error:#}");
+                error!(%error, "RPC socket connection failed");
             }
         });
     }
 }
 
 #[cfg(unix)]
+#[instrument(skip_all)]
 async fn handle_connection(
     stream: UnixStream,
     event_tx: broadcast::Sender<RuntimeEvent>,
@@ -104,6 +115,7 @@ async fn handle_connection(
 
     let writer_task = tokio::spawn(async move {
         while let Some(line) = output_rx.recv().await {
+            trace!(%line, "writing line to socket");
             write_half.write_all(line.as_bytes()).await?;
             write_half.flush().await?;
         }
@@ -147,6 +159,7 @@ async fn handle_connection(
         let request = match decode_json_line::<JsonRpcRequest>(&line) {
             Ok(request) => request,
             Err(error) => {
+                warn!(%error, "failed to decode JSON-RPC request");
                 let response = JsonRpcResponse::failure(0, -32700, format!("parse error: {error}"));
                 let response_line =
                     encode_json_line(&response).context("failed to encode JSON-RPC response")?;
@@ -161,6 +174,8 @@ async fn handle_connection(
                 continue;
             }
         };
+
+        debug!(method = %request.method, id = ?request.id, "received JSON-RPC request");
 
         let response = if request.method == "send_message" {
             handle_send_message(
@@ -188,6 +203,7 @@ async fn handle_connection(
     writer_task
         .await
         .context("RPC socket writer task failed to join")??;
+    info!("RPC connection closed");
 
     Ok(())
 }
@@ -279,6 +295,8 @@ fn parse_params<T: DeserializeOwned>(request: &JsonRpcRequest) -> Result<T, Json
         })
 }
 
+#[cfg(unix)]
+#[instrument(skip_all, fields(run_id, session_id))]
 async fn handle_send_message(
     request: &JsonRpcRequest,
     event_tx: &broadcast::Sender<RuntimeEvent>,
@@ -293,10 +311,14 @@ async fn handle_send_message(
 
     let run_id = uuid::Uuid::new_v4().to_string();
     let session_id = params.session_id.clone();
+    tracing::Span::current().record("run_id", &run_id);
+    tracing::Span::current().record("session_id", &session_id);
+    info!(message_len = params.message.len(), "handling send_message");
 
     {
-        let mut active = active_runs.lock().await;
+        let mut active = active_runs.lock().unwrap();
         if active.contains_key(&session_id) {
+            warn!(%session_id, "session already has an active run");
             return JsonRpcResponse::failure(
                 request.id.clone(),
                 -32000,
@@ -307,7 +329,8 @@ async fn handle_send_message(
     }
 
     if let Err(error) = session_store.new_session(&session_id, None).await {
-        active_runs.lock().await.remove(&session_id);
+        warn!(%error, "failed to prepare session");
+        active_runs.lock().unwrap().remove(&session_id);
         return JsonRpcResponse::failure(
             request.id.clone(),
             -32603,
@@ -318,7 +341,8 @@ async fn handle_send_message(
     let parent_id = match session_store.load_session(&session_id).await {
         Ok(view) => view.messages.last().map(|message| message.id.clone()),
         Err(error) => {
-            active_runs.lock().await.remove(&session_id);
+            warn!(%error, "failed to load session state");
+            active_runs.lock().unwrap().remove(&session_id);
             return JsonRpcResponse::failure(
                 request.id.clone(),
                 -32603,
@@ -339,7 +363,8 @@ async fn handle_send_message(
     {
         Ok(id) => id,
         Err(error) => {
-            active_runs.lock().await.remove(&session_id);
+            warn!(%error, "failed to append developer message");
+            active_runs.lock().unwrap().remove(&session_id);
             return JsonRpcResponse::failure(
                 request.id.clone(),
                 -32603,
@@ -380,6 +405,7 @@ async fn handle_send_message(
 
 #[cfg(unix)]
 #[allow(clippy::too_many_arguments)] // run_model bundles the full run context; grouping would not simplify callers.
+#[instrument(skip_all, fields(run_id, session_id))]
 async fn run_model(
     run_id: String,
     session_id: String,
@@ -390,10 +416,13 @@ async fn run_model(
     active_runs: Arc<Mutex<HashMap<String, String>>>,
     session_store: Arc<SessionStore>,
 ) {
+    tracing::Span::current().record("run_id", &run_id);
+    tracing::Span::current().record("session_id", &session_id);
+    info!("starting model run");
     let session_id_for_cleanup = session_id.clone();
     let active_runs_for_cleanup = Arc::clone(&active_runs);
     let _cleanup_guard = scopeguard::guard(session_id_for_cleanup, move |session_id| {
-        active_runs_for_cleanup.blocking_lock().remove(&session_id);
+        active_runs_for_cleanup.lock().unwrap().remove(&session_id);
     });
 
     let _ = event_tx.send(RuntimeEvent::run_started(
@@ -404,6 +433,7 @@ async fn run_model(
     let config = match load_config().await {
         Ok(config) => config,
         Err(error) => {
+            error!(%error, "failed to load provider config");
             emit_run_error(
                 &event_tx,
                 &event_sequence,
@@ -416,6 +446,7 @@ async fn run_model(
             return;
         }
     };
+    debug!(provider = %config.provider, model = %config.model, "loaded provider config");
 
     let messages = vec![RunMessage {
         role: MessageRole::Developer,
@@ -431,8 +462,12 @@ async fn run_model(
                 model: config.model,
             },
         )),
-        "echo" => Box::new(EchoProvider::default()),
+        "echo" => {
+            debug!("using echo provider");
+            Box::new(EchoProvider::default())
+        }
         other => {
+            warn!(provider = %other, "unknown provider");
             emit_run_error(
                 &event_tx,
                 &event_sequence,
@@ -476,6 +511,7 @@ async fn run_model(
                 assistant_content.clear();
                 delta_buffer.clear();
                 last_flush = tokio::time::Instant::now();
+                debug!(message_id = %id, "assistant message started");
                 let _ = event_tx.send(RuntimeEvent::message_started(
                     next_sequence(&event_sequence),
                     run_id.clone(),
@@ -583,11 +619,13 @@ async fn run_model(
         RunStatus::Succeeded,
         None,
     ));
+    info!("model run finished successfully");
 
-    active_runs.lock().await.remove(&session_id);
+    active_runs.lock().unwrap().remove(&session_id);
 }
 
 #[cfg(unix)]
+#[instrument(skip_all)]
 async fn emit_run_error(
     event_tx: &broadcast::Sender<RuntimeEvent>,
     event_sequence: &AtomicU64,
@@ -596,6 +634,7 @@ async fn emit_run_error(
     run_id: &str,
     message: String,
 ) {
+    error!(%run_id, %session_id, %message, "run failed");
     let _ = event_tx.send(RuntimeEvent::error(
         next_sequence(event_sequence),
         Some(run_id.to_owned()),
@@ -607,7 +646,7 @@ async fn emit_run_error(
         RunStatus::Failed,
         Some(message),
     ));
-    active_runs.lock().await.remove(session_id);
+    active_runs.lock().unwrap().remove(session_id);
 }
 
 #[cfg(unix)]
