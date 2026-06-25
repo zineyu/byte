@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::sync::{
     atomic::{AtomicU64, Ordering},
-    Arc, Mutex,
+    Arc,
 };
 #[cfg(unix)]
 use std::time::Duration;
@@ -19,10 +19,10 @@ use byte_models::{
 };
 #[cfg(unix)]
 use byte_protocol::{
-    decode_json_line, encode_json_line, DaemonState, JsonRpcNotification, JsonRpcRequest,
-    JsonRpcResponse, LoadSessionParams, LoadSessionResult, MessageRole, NewSessionParams,
-    NewSessionResult, RunMessage, RunStatus, RuntimeEvent, SendMessageParams, SendMessageResult,
-    SessionChangeAction,
+    decode_json_line, encode_json_line, DaemonState, DeleteSessionParams, DeleteSessionResult,
+    JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, ListSessionsResult, LoadSessionParams,
+    LoadSessionResult, MessageRole, NewSessionParams, NewSessionResult, RunMessage, RunStatus,
+    RuntimeEvent, SendMessageParams, SendMessageResult, SessionChangeAction,
 };
 #[cfg(unix)]
 use byte_session::SessionStore;
@@ -35,7 +35,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 #[cfg(unix)]
 use tokio::net::{UnixListener, UnixStream};
 #[cfg(unix)]
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, Mutex};
 #[cfg(unix)]
 use tracing::{debug, error, info, instrument, trace, warn};
 
@@ -187,12 +187,17 @@ async fn handle_connection(
                 Arc::clone(&session_store),
             )
             .await
-        } else if request.method == "new_session" || request.method == "load_session" {
+        } else if request.method == "new_session"
+            || request.method == "load_session"
+            || request.method == "list_sessions"
+            || request.method == "delete_session"
+        {
             handle_session_request(
                 &request,
                 &session_store,
                 &event_tx,
                 Arc::clone(&event_sequence),
+                &active_runs,
             )
             .await
         } else {
@@ -220,8 +225,9 @@ fn handle_request(request: JsonRpcRequest) -> JsonRpcResponse {
     match request.method.as_str() {
         "get_state" => {
             let state = daemon_state();
-            JsonRpcResponse::success(request.id, state.clone())
-                .unwrap_or_else(|error| JsonRpcResponse::failure(0, -32603, error.to_string()))
+            JsonRpcResponse::success(request.id.clone(), state.clone()).unwrap_or_else(|error| {
+                JsonRpcResponse::failure(request.id.clone(), -32603, error.to_string())
+            })
         }
         method => {
             JsonRpcResponse::failure(request.id, -32601, format!("method not found: {method}"))
@@ -235,6 +241,7 @@ async fn handle_session_request(
     session_store: &SessionStore,
     event_tx: &broadcast::Sender<RuntimeEvent>,
     event_sequence: Arc<AtomicU64>,
+    active_runs: &Arc<Mutex<HashMap<String, String>>>,
 ) -> JsonRpcResponse {
     match request.method.as_str() {
         "new_session" => {
@@ -243,8 +250,10 @@ async fn handle_session_request(
                 Err(response) => return response,
             };
 
+            let session_id = uuid::Uuid::new_v4().to_string();
+
             if let Err(error) = session_store
-                .new_session(&params.session_id, params.workspace.as_deref())
+                .new_session(&session_id, params.workspace.as_deref())
                 .await
             {
                 return JsonRpcResponse::failure(
@@ -256,15 +265,14 @@ async fn handle_session_request(
 
             let _ = event_tx.send(RuntimeEvent::session_changed(
                 next_sequence(&event_sequence),
-                params.session_id.clone(),
+                session_id.clone(),
                 SessionChangeAction::Created,
             ));
 
-            let result = NewSessionResult {
-                session_id: params.session_id,
-            };
-            JsonRpcResponse::success(request.id.clone(), result)
-                .unwrap_or_else(|error| JsonRpcResponse::failure(0, -32603, error.to_string()))
+            let result = NewSessionResult { session_id };
+            JsonRpcResponse::success(request.id.clone(), result).unwrap_or_else(|error| {
+                JsonRpcResponse::failure(request.id.clone(), -32603, error.to_string())
+            })
         }
         "load_session" => {
             let params: LoadSessionParams = match parse_params(request) {
@@ -281,13 +289,63 @@ async fn handle_session_request(
                     ));
                     let result = LoadSessionResult { session };
                     JsonRpcResponse::success(request.id.clone(), result).unwrap_or_else(|error| {
-                        JsonRpcResponse::failure(0, -32603, error.to_string())
+                        JsonRpcResponse::failure(request.id.clone(), -32603, error.to_string())
                     })
                 }
                 Err(error) => JsonRpcResponse::failure(
                     request.id.clone(),
                     -32603,
                     format!("failed to load session: {error}"),
+                ),
+            }
+        }
+        "list_sessions" => match session_store.list_sessions().await {
+            Ok(sessions) => {
+                let result = ListSessionsResult { sessions };
+                JsonRpcResponse::success(request.id.clone(), result).unwrap_or_else(|error| {
+                    JsonRpcResponse::failure(request.id.clone(), -32603, error.to_string())
+                })
+            }
+            Err(error) => JsonRpcResponse::failure(
+                request.id.clone(),
+                -32603,
+                format!("failed to list sessions: {error}"),
+            ),
+        },
+        "delete_session" => {
+            let params: DeleteSessionParams = match parse_params(request) {
+                Ok(params) => params,
+                Err(response) => return response,
+            };
+
+            let mut active = active_runs.lock().await;
+            if active.contains_key(&params.session_id) {
+                return JsonRpcResponse::failure(
+                    request.id.clone(),
+                    -32000,
+                    format!("session {} is busy", params.session_id),
+                );
+            }
+
+            match session_store.delete_session(&params.session_id).await {
+                Ok(()) => {
+                    active.remove(&params.session_id);
+                    let _ = event_tx.send(RuntimeEvent::session_changed(
+                        next_sequence(&event_sequence),
+                        params.session_id.clone(),
+                        SessionChangeAction::Deleted,
+                    ));
+                    let result = DeleteSessionResult {
+                        session_id: params.session_id,
+                    };
+                    JsonRpcResponse::success(request.id.clone(), result).unwrap_or_else(|error| {
+                        JsonRpcResponse::failure(request.id.clone(), -32603, error.to_string())
+                    })
+                }
+                Err(error) => JsonRpcResponse::failure(
+                    request.id.clone(),
+                    -32603,
+                    format!("failed to delete session: {error}"),
                 ),
             }
         }
@@ -336,7 +394,7 @@ async fn handle_send_message(
     info!(message_len = params.message.len(), "handling send_message");
 
     {
-        let mut active = active_runs.lock().unwrap();
+        let mut active = active_runs.lock().await;
         if active.contains_key(&session_id) {
             warn!(%session_id, "session already has an active run");
             return JsonRpcResponse::failure(
@@ -350,7 +408,7 @@ async fn handle_send_message(
 
     if let Err(error) = session_store.new_session(&session_id, None).await {
         warn!(%error, "failed to prepare session");
-        active_runs.lock().unwrap().remove(&session_id);
+        active_runs.lock().await.remove(&session_id);
         return JsonRpcResponse::failure(
             request.id.clone(),
             -32603,
@@ -362,7 +420,7 @@ async fn handle_send_message(
         Ok(view) => view.messages.last().map(|message| message.id.clone()),
         Err(error) => {
             warn!(%error, "failed to load session state");
-            active_runs.lock().unwrap().remove(&session_id);
+            active_runs.lock().await.remove(&session_id);
             return JsonRpcResponse::failure(
                 request.id.clone(),
                 -32603,
@@ -384,7 +442,7 @@ async fn handle_send_message(
         Ok(id) => id,
         Err(error) => {
             warn!(%error, "failed to append developer message");
-            active_runs.lock().unwrap().remove(&session_id);
+            active_runs.lock().await.remove(&session_id);
             return JsonRpcResponse::failure(
                 request.id.clone(),
                 -32603,
@@ -396,8 +454,10 @@ async fn handle_send_message(
     let result = SendMessageResult {
         run_id: run_id.clone(),
     };
-    let response = JsonRpcResponse::success(request.id.clone(), result.clone())
-        .unwrap_or_else(|error| JsonRpcResponse::failure(0, -32603, error.to_string()));
+    let response =
+        JsonRpcResponse::success(request.id.clone(), result.clone()).unwrap_or_else(|error| {
+            JsonRpcResponse::failure(request.id.clone(), -32603, error.to_string())
+        });
 
     let run_id_for_task = run_id.clone();
     let session_id_for_task = session_id.clone();
@@ -442,9 +502,11 @@ async fn run_model(
     let session_id_for_cleanup = session_id.clone();
     let active_runs_for_cleanup = Arc::clone(&active_runs);
     let _cleanup_guard = scopeguard::guard(session_id_for_cleanup, move |session_id| {
-        active_runs_for_cleanup.lock().unwrap().remove(&session_id);
+        let active_runs = Arc::clone(&active_runs_for_cleanup);
+        tokio::spawn(async move {
+            active_runs.lock().await.remove(&session_id);
+        });
     });
-
     let _ = event_tx.send(RuntimeEvent::run_started(
         next_sequence(&event_sequence),
         session_id.clone(),
@@ -640,8 +702,6 @@ async fn run_model(
         None,
     ));
     info!("model run finished successfully");
-
-    active_runs.lock().unwrap().remove(&session_id);
 }
 
 #[cfg(unix)]
@@ -666,7 +726,7 @@ async fn emit_run_error(
         RunStatus::Failed,
         Some(message),
     ));
-    active_runs.lock().unwrap().remove(session_id);
+    active_runs.lock().await.remove(session_id);
 }
 
 #[cfg(unix)]

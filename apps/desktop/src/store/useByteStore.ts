@@ -1,6 +1,7 @@
 import { useCallback, useReducer } from "react";
 import { initialState } from "./initialState";
 import { reducer } from "./reducer";
+import type { SessionSummary } from "../generated/SessionSummary";
 import type { SessionView } from "../generated/SessionView";
 import type {
   DaemonConnectionView,
@@ -20,6 +21,22 @@ export function useByteStore() {
 
   const loadSession = useCallback((session: SessionView) => {
     dispatch({ type: "load_session", session });
+  }, []);
+
+  const setSessions = useCallback((sessions: SessionSummary[]) => {
+    dispatch({ type: "set_sessions", sessions });
+  }, []);
+
+  const addSession = useCallback((session: SessionSummary) => {
+    dispatch({ type: "add_session", session });
+  }, []);
+
+  const removeSession = useCallback((sessionId: string) => {
+    dispatch({ type: "remove_session", sessionId });
+  }, []);
+
+  const setCurrentSessionId = useCallback((sessionId: string | null) => {
+    dispatch({ type: "set_current_session_id", sessionId });
   }, []);
 
   const resetSession = useCallback(() => {
@@ -46,6 +63,10 @@ export function useByteStore() {
     dispatch,
     applyEvent,
     loadSession,
+    setSessions,
+    addSession,
+    removeSession,
+    setCurrentSessionId,
     resetSession,
     sendMessage,
     setConnection,

@@ -2,6 +2,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::MessageRole;
 
+/// A lightweight summary of a Session for listing in the UI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SessionSummary {
+    pub session_id: String,
+    pub workspace: Option<String>,
+    pub created_at: String,
+}
+
 /// A normalized view of a Session for the React UI.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
@@ -11,6 +21,7 @@ pub struct SessionView {
     pub workspace: Option<String>,
     pub messages: Vec<SessionMessage>,
 }
+
 /// A message inside a `SessionView`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
@@ -60,13 +71,17 @@ pub enum SessionEntry {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NewSessionParams {
-    pub session_id: String,
     pub workspace: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NewSessionResult {
     pub session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListSessionsResult {
+    pub sessions: Vec<SessionSummary>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -77,6 +92,16 @@ pub struct LoadSessionParams {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LoadSessionResult {
     pub session: SessionView,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeleteSessionParams {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeleteSessionResult {
+    pub session_id: String,
 }
 
 #[cfg(test)]
@@ -133,5 +158,19 @@ mod tests {
         let decoded: SessionView = serde_json::from_value(value).expect("view decodes");
 
         assert_eq!(decoded, view);
+    }
+
+    #[test]
+    fn session_summary_roundtrips() {
+        let summary = SessionSummary {
+            session_id: "session-1".into(),
+            workspace: Some("/home/dev/project".into()),
+            created_at: "2026-06-24T12:00:00Z".into(),
+        };
+
+        let value = serde_json::to_value(&summary).expect("summary encodes");
+        let decoded: SessionSummary = serde_json::from_value(value).expect("summary decodes");
+
+        assert_eq!(decoded, summary);
     }
 }

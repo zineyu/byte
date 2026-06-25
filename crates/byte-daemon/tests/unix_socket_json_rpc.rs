@@ -7,9 +7,9 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use byte_protocol::{
-    decode_json_line, encode_json_line, DaemonState, JsonRpcMessage, JsonRpcRequest,
-    LoadSessionParams, LoadSessionResult, NewSessionParams, RpcId, RunStatus, RuntimeEventKind,
-    SendMessageParams,
+    decode_json_line, encode_json_line, DaemonState, DeleteSessionParams, JsonRpcMessage,
+    JsonRpcRequest, ListSessionsResult, LoadSessionParams, LoadSessionResult, NewSessionParams,
+    NewSessionResult, RpcId, RunStatus, RuntimeEventKind, SendMessageParams,
 };
 
 #[test]
@@ -302,14 +302,12 @@ fn session_operations_emit_session_changed_event() {
         matches!(kind, RuntimeEventKind::DaemonStarted { .. })
     });
 
-    let new_params = serde_json::to_value(NewSessionParams {
-        session_id: "session-events".to_owned(),
-        workspace: None,
-    })
-    .expect("new session params encode");
+    let new_params = serde_json::to_value(NewSessionParams { workspace: None })
+        .expect("new session params encode");
     let new_request = JsonRpcRequest::new(5, "new_session", Some(new_params));
     write_request(&mut stream, &new_request);
 
+    let mut created_id: Option<String> = None;
     let mut saw_created = false;
     while !saw_created {
         let line = read_line(&mut reader);
@@ -317,28 +315,33 @@ fn session_operations_emit_session_changed_event() {
             JsonRpcMessage::Response(response) => {
                 assert_eq!(response.id, RpcId::Number(5));
                 assert!(response.error.is_none(), "new_session should succeed");
+                let result: NewSessionResult =
+                    serde_json::from_value(response.result.expect("response has result"))
+                        .expect("new_session result decodes");
+                created_id = Some(result.session_id);
             }
             JsonRpcMessage::Notification(notification) => {
                 assert_eq!(notification.method, byte_protocol::RUNTIME_EVENT_METHOD);
                 let event: byte_protocol::RuntimeEvent =
                     serde_json::from_value(notification.params.expect("notification has params"))
                         .expect("runtime event decodes");
-                if matches!(
-                    event.kind,
-                    RuntimeEventKind::SessionChanged {
-                        session_id: ref id,
-                        action: byte_protocol::SessionChangeAction::Created,
-                    } if id == "session-events"
-                ) {
-                    saw_created = true;
+                if let RuntimeEventKind::SessionChanged {
+                    session_id: ref id,
+                    action: byte_protocol::SessionChangeAction::Created,
+                } = event.kind
+                {
+                    if Some(id) == created_id.as_ref() {
+                        saw_created = true;
+                    }
                 }
             }
             JsonRpcMessage::Request(_) => panic!("daemon must not send requests to clients"),
         }
     }
 
+    let session_id = created_id.expect("session was created");
     let load_params = serde_json::to_value(LoadSessionParams {
-        session_id: "session-events".to_owned(),
+        session_id: session_id.clone(),
     })
     .expect("load session params encode");
     let load_request = JsonRpcRequest::new(6, "load_session", Some(load_params));
@@ -362,7 +365,7 @@ fn session_operations_emit_session_changed_event() {
                     RuntimeEventKind::SessionChanged {
                         session_id: ref id,
                         action: byte_protocol::SessionChangeAction::Loaded,
-                    } if id == "session-events"
+                    } if *id == session_id
                 ) {
                     saw_loaded = true;
                 }
@@ -374,6 +377,137 @@ fn session_operations_emit_session_changed_event() {
     drop(stream);
     stop_daemon(child, &socket_path, Some(&data_dir));
 }
+
+#[test]
+fn list_sessions_and_delete_session() {
+    let socket_path = unique_socket_path();
+    let data_dir = unique_data_dir();
+    let child = start_daemon_with_config(
+        &socket_path,
+        &write_config("provider = 'echo'\nbase_url = ''\napi_key = ''\nmodel = 'echo'"),
+        &data_dir,
+    );
+
+    let mut stream = connect_with_retry(&socket_path);
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("read timeout is set");
+
+    let mut reader = BufReader::new(stream.try_clone().expect("stream clones"));
+    wait_for_event_type(&mut reader, |kind| {
+        matches!(kind, RuntimeEventKind::DaemonStarted { .. })
+    });
+
+    // Create a session.
+    let new_params = serde_json::to_value(NewSessionParams {
+        workspace: Some("/workspace/project".to_owned()),
+    })
+    .expect("new session params encode");
+    let new_request = JsonRpcRequest::new(7, "new_session", Some(new_params));
+    write_request(&mut stream, &new_request);
+
+    let mut created_id: Option<String> = None;
+    while created_id.is_none() {
+        let line = read_line(&mut reader);
+        if let JsonRpcMessage::Response(response) =
+            decode_json_line::<JsonRpcMessage>(&line).expect("message decodes")
+        {
+            assert_eq!(response.id, RpcId::Number(7));
+            assert!(response.error.is_none(), "new_session should succeed");
+            let result: NewSessionResult =
+                serde_json::from_value(response.result.expect("response has result"))
+                    .expect("new_session result decodes");
+            created_id = Some(result.session_id);
+        }
+    }
+    let session_id = created_id.expect("session was created");
+
+    // List sessions.
+    let list_request = JsonRpcRequest::new(8, "list_sessions", None);
+    write_request(&mut stream, &list_request);
+
+    let mut saw_list = false;
+    while !saw_list {
+        let line = read_line(&mut reader);
+        if let JsonRpcMessage::Response(response) =
+            decode_json_line::<JsonRpcMessage>(&line).expect("message decodes")
+        {
+            if response.id == RpcId::Number(8) {
+                assert!(response.error.is_none(), "list_sessions should succeed");
+                let result: ListSessionsResult =
+                    serde_json::from_value(response.result.expect("response has result"))
+                        .expect("list_sessions result decodes");
+                assert_eq!(result.sessions.len(), 1);
+                assert_eq!(result.sessions[0].session_id, session_id);
+                assert_eq!(
+                    result.sessions[0].workspace.as_deref(),
+                    Some("/workspace/project")
+                );
+                saw_list = true;
+            }
+        }
+    }
+
+    // Delete the session.
+    let delete_params = serde_json::to_value(DeleteSessionParams {
+        session_id: session_id.clone(),
+    })
+    .expect("delete session params encode");
+    let delete_request = JsonRpcRequest::new(9, "delete_session", Some(delete_params));
+    write_request(&mut stream, &delete_request);
+
+    let mut saw_deleted = false;
+    while !saw_deleted {
+        let line = read_line(&mut reader);
+        match decode_json_line::<JsonRpcMessage>(&line).expect("message decodes") {
+            JsonRpcMessage::Response(response) => {
+                assert_eq!(response.id, RpcId::Number(9));
+                assert!(response.error.is_none(), "delete_session should succeed");
+            }
+            JsonRpcMessage::Notification(notification) => {
+                assert_eq!(notification.method, byte_protocol::RUNTIME_EVENT_METHOD);
+                let event: byte_protocol::RuntimeEvent =
+                    serde_json::from_value(notification.params.expect("notification has params"))
+                        .expect("runtime event decodes");
+                if matches!(
+                    event.kind,
+                    RuntimeEventKind::SessionChanged {
+                        session_id: ref id,
+                        action: byte_protocol::SessionChangeAction::Deleted,
+                    } if *id == session_id
+                ) {
+                    saw_deleted = true;
+                }
+            }
+            JsonRpcMessage::Request(_) => panic!("daemon must not send requests to clients"),
+        }
+    }
+
+    // List again to confirm it is gone.
+    let list_request = JsonRpcRequest::new(10, "list_sessions", None);
+    write_request(&mut stream, &list_request);
+
+    let mut saw_empty_list = false;
+    while !saw_empty_list {
+        let line = read_line(&mut reader);
+        if let JsonRpcMessage::Response(response) =
+            decode_json_line::<JsonRpcMessage>(&line).expect("message decodes")
+        {
+            if response.id == RpcId::Number(10) {
+                assert!(response.error.is_none(), "list_sessions should succeed");
+                let result: ListSessionsResult =
+                    serde_json::from_value(response.result.expect("response has result"))
+                        .expect("list_sessions result decodes");
+                assert!(result.sessions.is_empty());
+                saw_empty_list = true;
+            }
+        }
+    }
+
+    drop(stream);
+    stop_daemon(child, &socket_path, Some(&data_dir));
+}
+
 fn start_daemon(socket_path: &Path) -> std::process::Child {
     Command::new(env!("CARGO_BIN_EXE_byte-daemon"))
         .arg("--rpc-socket")

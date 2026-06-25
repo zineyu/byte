@@ -9,7 +9,7 @@ byte-protocol.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["fs"] }
+tokio = { workspace = true, features = ["fs", "time"] }
 uuid = { version = "1.23.3", features = ["v4"] }
 
 [dev-dependencies]

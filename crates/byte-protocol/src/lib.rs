@@ -6,8 +6,9 @@ pub const RUNTIME_EVENT_METHOD: &str = "runtime_event";
 
 pub mod session;
 pub use session::{
-    LoadSessionParams, LoadSessionResult, NewSessionParams, NewSessionResult, SessionEntry,
-    SessionMessage, SessionMessageContent, SessionView,
+    DeleteSessionParams, DeleteSessionResult, ListSessionsResult, LoadSessionParams,
+    LoadSessionResult, NewSessionParams, NewSessionResult, SessionEntry, SessionMessage,
+    SessionMessageContent, SessionSummary, SessionView,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -147,6 +148,7 @@ impl std::fmt::Display for MessageRole {
 pub enum SessionChangeAction {
     Created,
     Loaded,
+    Deleted,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]

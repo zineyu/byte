@@ -10,6 +10,8 @@ export const initialState: AppState = {
   loadState: "loading",
   connection: initialConnection,
   events: [],
+  sessions: [],
+  currentSessionId: null,
   messages: [],
   runState: {
     runId: null,

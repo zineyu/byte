@@ -7,11 +7,11 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use byte_protocol::{
-    decode_json_line, encode_json_line, DaemonConnectionView, DaemonState, JsonRpcMessage,
-    JsonRpcRequest, JsonRpcResponse, LoadSessionResult, NewSessionParams, RpcId, RuntimeEvent,
+    decode_json_line, encode_json_line, DaemonConnectionView, DaemonState, DeleteSessionParams,
+    DeleteSessionResult, JsonRpcMessage, JsonRpcRequest, JsonRpcResponse, ListSessionsResult,
+    LoadSessionResult, NewSessionParams, NewSessionResult, RpcId, RuntimeEvent, SessionSummary,
     SessionView, RUNTIME_EVENT_METHOD,
 };
-use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 #[cfg(unix)]
@@ -101,18 +101,38 @@ impl DaemonClient {
             .map_err(|error| format!("failed to decode daemon state: {error}"))
     }
 
-    async fn new_session(
-        &mut self,
-        session_id: String,
-        workspace: Option<String>,
-    ) -> Result<(), String> {
-        let params = serde_json::to_value(NewSessionParams {
-            session_id,
-            workspace,
-        })
-        .map_err(|error| format!("failed to encode new_session params: {error}"))?;
-        self.request("new_session", Some(params)).await?;
-        Ok(())
+    async fn new_session(&mut self, workspace: Option<String>) -> Result<String, String> {
+        let params = serde_json::to_value(NewSessionParams { workspace })
+            .map_err(|error| format!("failed to encode new_session params: {error}"))?;
+        let response = self.request("new_session", Some(params)).await?;
+        let result = response
+            .result
+            .ok_or_else(|| "daemon new_session response did not include a result".to_owned())?;
+        serde_json::from_value::<NewSessionResult>(result)
+            .map(|result| result.session_id)
+            .map_err(|error| format!("failed to decode new_session result: {error}"))
+    }
+
+    async fn list_sessions(&mut self) -> Result<Vec<SessionSummary>, String> {
+        let response = self.request("list_sessions", None).await?;
+        let result = response
+            .result
+            .ok_or_else(|| "daemon list_sessions response did not include a result".to_owned())?;
+        serde_json::from_value::<ListSessionsResult>(result)
+            .map(|result| result.sessions)
+            .map_err(|error| format!("failed to decode session list: {error}"))
+    }
+
+    async fn delete_session(&mut self, session_id: String) -> Result<String, String> {
+        let params = serde_json::to_value(DeleteSessionParams { session_id })
+            .map_err(|error| format!("failed to encode delete_session params: {error}"))?;
+        let response = self.request("delete_session", Some(params)).await?;
+        let result = response
+            .result
+            .ok_or_else(|| "daemon delete_session response did not include a result".to_owned())?;
+        serde_json::from_value::<DeleteSessionResult>(result)
+            .map(|result| result.session_id)
+            .map_err(|error| format!("failed to decode delete_session result: {error}"))
     }
 
     async fn load_session(&mut self, session_id: String) -> Result<SessionView, String> {
@@ -243,7 +263,11 @@ async fn spawn_daemon_client(app_handle: AppHandle) -> Result<DaemonClient, Stri
                 Err(error) => {
                     let _ = app_handle.emit(
                         "daemon-event",
-                        RuntimeEvent::error(0, None, format!("failed to read daemon RPC frame: {error}")),
+                        RuntimeEvent::error(
+                            0,
+                            None,
+                            format!("failed to read daemon RPC frame: {error}"),
+                        ),
                     );
                     break;
                 }
@@ -303,7 +327,11 @@ async fn handle_daemon_message(
         Err(error) => {
             let _ = app_handle.emit(
                 "daemon-event",
-                RuntimeEvent::error(0, None, format!("failed to decode daemon RPC frame: {error}")),
+                RuntimeEvent::error(
+                    0,
+                    None,
+                    format!("failed to decode daemon RPC frame: {error}"),
+                ),
             );
         }
     }
@@ -354,7 +382,6 @@ fn create_rpc_socket_path() -> Result<(PathBuf, PathBuf), String> {
     Ok((socket_dir, socket_path))
 }
 
-
 #[tauri::command]
 async fn get_daemon_state(
     app_handle: AppHandle,
@@ -380,14 +407,34 @@ async fn send_message(
 
 #[tauri::command]
 async fn new_session(
-    session_id: String,
     workspace: Option<String>,
     app_handle: AppHandle,
     state: State<'_, AppState>,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let mut daemon = state.daemon.lock().await;
     let client = daemon.ensure_client(app_handle).await?;
-    client.new_session(session_id, workspace).await
+    client.new_session(workspace).await
+}
+
+#[tauri::command]
+async fn list_sessions(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Vec<SessionSummary>, String> {
+    let mut daemon = state.daemon.lock().await;
+    let client = daemon.ensure_client(app_handle).await?;
+    client.list_sessions().await
+}
+
+#[tauri::command]
+async fn delete_session(
+    session_id: String,
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let mut daemon = state.daemon.lock().await;
+    let client = daemon.ensure_client(app_handle).await?;
+    client.delete_session(session_id).await
 }
 
 #[tauri::command]
@@ -413,6 +460,8 @@ pub fn run() {
             get_daemon_state,
             send_message,
             new_session,
+            list_sessions,
+            delete_session,
             load_session
         ])
         .run(tauri::generate_context!())

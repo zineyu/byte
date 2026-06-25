@@ -2,9 +2,10 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use byte_protocol::{
-    encode_json_line, MessageRole, SessionEntry, SessionMessage, SessionMessageContent, SessionView,
+    encode_json_line, MessageRole, SessionEntry, SessionMessage, SessionMessageContent,
+    SessionSummary, SessionView,
 };
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
 #[derive(Debug, thiserror::Error)]
 pub enum SessionError {
@@ -20,6 +21,8 @@ pub enum SessionError {
     MissingHeader(String),
     #[error("session {0} has a broken parent chain")]
     BrokenChain(String),
+    #[error("session {0} is busy")]
+    Busy(String),
     #[error("failed to read session file: {0}")]
     Read(#[from] std::io::Error),
     #[error("failed to serialize session entry: {0}")]
@@ -140,6 +143,66 @@ impl SessionStore {
         reconstruct_view(session_id, entries)
     }
 
+    /// List all sessions as lightweight summaries, ordered by `created_at` descending.
+    pub async fn list_sessions(&self) -> Result<Vec<SessionSummary>, SessionError> {
+        tokio::fs::create_dir_all(&self.base_dir).await?;
+
+        let mut summaries = Vec::new();
+        let mut entries = tokio::fs::read_dir(&self.base_dir).await?;
+
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                continue;
+            }
+
+            let metadata = entry.metadata().await?;
+            if !metadata.is_file() {
+                continue;
+            }
+
+            let session_id = match path.file_stem().and_then(|s| s.to_str()) {
+                Some(id) => id.to_owned(),
+                None => continue,
+            };
+
+            let header = match read_session_header(&path).await {
+                Ok(header) => header,
+                Err(_) => continue,
+            };
+
+            if let SessionEntry::Session {
+                id,
+                workspace,
+                created_at,
+                ..
+            } = header
+            {
+                if id == session_id {
+                    summaries.push(SessionSummary {
+                        session_id: id,
+                        workspace,
+                        created_at,
+                    });
+                }
+            }
+        }
+
+        summaries.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        Ok(summaries)
+    }
+
+    /// Delete the session file if it exists. Returns success even if the file
+    /// is already gone.
+    pub async fn delete_session(&self, session_id: &str) -> Result<(), SessionError> {
+        let path = self.session_path(session_id)?;
+        match tokio::fs::remove_file(&path).await {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(SessionError::Read(error)),
+        }
+    }
+
     fn session_path(&self, session_id: &str) -> Result<PathBuf, SessionError> {
         if session_id.is_empty() {
             return Err(SessionError::InvalidSessionId(
@@ -209,6 +272,20 @@ fn now_epoch_millis() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .expect("system time before Unix epoch");
     format!("{}.{:03}Z", now.as_secs(), now.subsec_millis())
+}
+
+async fn read_session_header(path: &Path) -> Result<SessionEntry, SessionError> {
+    let file = tokio::fs::File::open(path).await?;
+    let reader = tokio::io::BufReader::new(file);
+    let mut lines = reader.lines();
+
+    let first = lines
+        .next_line()
+        .await?
+        .ok_or_else(|| SessionError::MissingHeader(path.display().to_string()))?;
+
+    byte_protocol::decode_json_line::<SessionEntry>(first.trim_end_matches(['\r', '\n']))
+        .map_err(SessionError::Serialize)
 }
 
 fn reconstruct_view(
@@ -385,6 +462,50 @@ mod tests {
             .expect_err("missing session should fail");
 
         assert!(matches!(err, SessionError::NotFound(id) if id == "missing"));
+    }
+
+    #[tokio::test]
+    async fn list_sessions_returns_summaries_in_descending_created_order() {
+        let store = temp_store();
+        store
+            .new_session("session-a", Some("/workspace/a"))
+            .await
+            .unwrap();
+        // Small sleep to guarantee distinct created_at ordering.
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        store
+            .new_session("session-b", Some("/workspace/b"))
+            .await
+            .unwrap();
+
+        let summaries = store.list_sessions().await.unwrap();
+
+        assert_eq!(summaries.len(), 2);
+        assert_eq!(summaries[0].session_id, "session-b");
+        assert_eq!(summaries[0].workspace.as_deref(), Some("/workspace/b"));
+        assert_eq!(summaries[1].session_id, "session-a");
+        assert_eq!(summaries[1].workspace.as_deref(), Some("/workspace/a"));
+    }
+
+    #[tokio::test]
+    async fn delete_session_removes_file() {
+        let store = temp_store();
+        store.new_session("session-1", None).await.unwrap();
+
+        store.delete_session("session-1").await.unwrap();
+
+        assert!(!store.session_path("session-1").unwrap().exists());
+        assert!(matches!(
+            store.load_session("session-1").await.unwrap_err(),
+            SessionError::NotFound(id) if id == "session-1"
+        ));
+    }
+
+    #[tokio::test]
+    async fn delete_session_is_idempotent() {
+        let store = temp_store();
+
+        store.delete_session("never-created").await.unwrap();
     }
 
     #[test]
