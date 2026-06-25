@@ -144,6 +144,14 @@ impl std::fmt::Display for MessageRole {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export, rename_all = "snake_case")]
+pub enum SessionChangeAction {
+    Created,
+    Loaded,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, rename_all = "snake_case")]
 pub enum RunStatus {
     Succeeded,
     Failed,
@@ -240,6 +248,13 @@ impl RuntimeEvent {
             kind: RuntimeEventKind::MessageCompleted { run_id, message_id },
         }
     }
+
+    pub fn session_changed(sequence: u64, session_id: String, action: SessionChangeAction) -> Self {
+        Self {
+            sequence,
+            kind: RuntimeEventKind::SessionChanged { session_id, action },
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
@@ -280,6 +295,10 @@ pub enum RuntimeEventKind {
     MessageCompleted {
         run_id: String,
         message_id: String,
+    },
+    SessionChanged {
+        session_id: String,
+        action: SessionChangeAction,
     },
 }
 
@@ -333,6 +352,34 @@ impl DaemonState {
 #[ts(export, rename_all = "snake_case")]
 pub enum DaemonStatus {
     Ready,
+}
+
+/// A view of the daemon connection exposed by the desktop shell.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct DaemonConnectionView {
+    pub connected: bool,
+    pub state: Option<DaemonState>,
+    pub error: Option<String>,
+}
+
+impl DaemonConnectionView {
+    pub fn connected(state: DaemonState) -> Self {
+        Self {
+            connected: true,
+            state: Some(state),
+            error: None,
+        }
+    }
+
+    pub fn disconnected(error: String) -> Self {
+        Self {
+            connected: false,
+            state: None,
+            error: Some(error),
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -478,5 +525,20 @@ mod tests {
 
         assert!(matches!(messages[0], JsonRpcMessage::Response(_)));
         assert!(matches!(messages[1], JsonRpcMessage::Notification(_)));
+    }
+
+    #[test]
+    fn session_changed_event_roundtrips() {
+        let event =
+            RuntimeEvent::session_changed(9, "session-test-1".into(), SessionChangeAction::Created);
+        let decoded: RuntimeEvent = decode_json_line(&encode_json_line(&event).unwrap()).unwrap();
+
+        assert!(matches!(
+            decoded.kind,
+            RuntimeEventKind::SessionChanged {
+                session_id,
+                action: SessionChangeAction::Created,
+            } if session_id == "session-test-1"
+        ));
     }
 }

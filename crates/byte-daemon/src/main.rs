@@ -22,6 +22,7 @@ use byte_protocol::{
     decode_json_line, encode_json_line, DaemonState, JsonRpcNotification, JsonRpcRequest,
     JsonRpcResponse, LoadSessionParams, LoadSessionResult, MessageRole, NewSessionParams,
     NewSessionResult, RunMessage, RunStatus, RuntimeEvent, SendMessageParams, SendMessageResult,
+    SessionChangeAction,
 };
 #[cfg(unix)]
 use byte_session::SessionStore;
@@ -187,7 +188,13 @@ async fn handle_connection(
             )
             .await
         } else if request.method == "new_session" || request.method == "load_session" {
-            handle_session_request(&request, &session_store).await
+            handle_session_request(
+                &request,
+                &session_store,
+                &event_tx,
+                Arc::clone(&event_sequence),
+            )
+            .await
         } else {
             handle_request(request)
         };
@@ -226,6 +233,8 @@ fn handle_request(request: JsonRpcRequest) -> JsonRpcResponse {
 async fn handle_session_request(
     request: &JsonRpcRequest,
     session_store: &SessionStore,
+    event_tx: &broadcast::Sender<RuntimeEvent>,
+    event_sequence: Arc<AtomicU64>,
 ) -> JsonRpcResponse {
     match request.method.as_str() {
         "new_session" => {
@@ -245,6 +254,12 @@ async fn handle_session_request(
                 );
             }
 
+            let _ = event_tx.send(RuntimeEvent::session_changed(
+                next_sequence(&event_sequence),
+                params.session_id.clone(),
+                SessionChangeAction::Created,
+            ));
+
             let result = NewSessionResult {
                 session_id: params.session_id,
             };
@@ -259,6 +274,11 @@ async fn handle_session_request(
 
             match session_store.load_session(&params.session_id).await {
                 Ok(session) => {
+                    let _ = event_tx.send(RuntimeEvent::session_changed(
+                        next_sequence(&event_sequence),
+                        params.session_id.clone(),
+                        SessionChangeAction::Loaded,
+                    ));
                     let result = LoadSessionResult { session };
                     JsonRpcResponse::success(request.id.clone(), result).unwrap_or_else(|error| {
                         JsonRpcResponse::failure(0, -32603, error.to_string())

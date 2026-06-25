@@ -5,6 +5,8 @@ export type EventGroup = {
   count: number;
 };
 
+// Number of events shown in the timeline UI. Must be <= MAX_EVENTS in
+// reducer.ts, which caps the in-memory event log.
 export const TIMELINE_MAX_EVENTS = 32;
 
 export function groupEvents(events: RuntimeEventLogEntry[]): EventGroup[] {

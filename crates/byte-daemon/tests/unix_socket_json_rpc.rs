@@ -8,7 +8,8 @@ use std::time::{Duration, Instant};
 
 use byte_protocol::{
     decode_json_line, encode_json_line, DaemonState, JsonRpcMessage, JsonRpcRequest,
-    LoadSessionParams, LoadSessionResult, RpcId, RunStatus, RuntimeEventKind, SendMessageParams,
+    LoadSessionParams, LoadSessionResult, NewSessionParams, RpcId, RunStatus, RuntimeEventKind,
+    SendMessageParams,
 };
 
 #[test]
@@ -281,6 +282,98 @@ fn send_message_persists_messages_to_session() {
     stop_daemon(child, &socket_path, Some(&data_dir));
 }
 
+#[test]
+fn session_operations_emit_session_changed_event() {
+    let socket_path = unique_socket_path();
+    let data_dir = unique_data_dir();
+    let child = start_daemon_with_config(
+        &socket_path,
+        &write_config("provider = 'echo'\nbase_url = ''\napi_key = ''\nmodel = 'echo'"),
+        &data_dir,
+    );
+
+    let mut stream = connect_with_retry(&socket_path);
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("read timeout is set");
+
+    let mut reader = BufReader::new(stream.try_clone().expect("stream clones"));
+    wait_for_event_type(&mut reader, |kind| {
+        matches!(kind, RuntimeEventKind::DaemonStarted { .. })
+    });
+
+    let new_params = serde_json::to_value(NewSessionParams {
+        session_id: "session-events".to_owned(),
+        workspace: None,
+    })
+    .expect("new session params encode");
+    let new_request = JsonRpcRequest::new(5, "new_session", Some(new_params));
+    write_request(&mut stream, &new_request);
+
+    let mut saw_created = false;
+    while !saw_created {
+        let line = read_line(&mut reader);
+        match decode_json_line::<JsonRpcMessage>(&line).expect("message decodes") {
+            JsonRpcMessage::Response(response) => {
+                assert_eq!(response.id, RpcId::Number(5));
+                assert!(response.error.is_none(), "new_session should succeed");
+            }
+            JsonRpcMessage::Notification(notification) => {
+                assert_eq!(notification.method, byte_protocol::RUNTIME_EVENT_METHOD);
+                let event: byte_protocol::RuntimeEvent =
+                    serde_json::from_value(notification.params.expect("notification has params"))
+                        .expect("runtime event decodes");
+                if matches!(
+                    event.kind,
+                    RuntimeEventKind::SessionChanged {
+                        session_id: ref id,
+                        action: byte_protocol::SessionChangeAction::Created,
+                    } if id == "session-events"
+                ) {
+                    saw_created = true;
+                }
+            }
+            JsonRpcMessage::Request(_) => panic!("daemon must not send requests to clients"),
+        }
+    }
+
+    let load_params = serde_json::to_value(LoadSessionParams {
+        session_id: "session-events".to_owned(),
+    })
+    .expect("load session params encode");
+    let load_request = JsonRpcRequest::new(6, "load_session", Some(load_params));
+    write_request(&mut stream, &load_request);
+
+    let mut saw_loaded = false;
+    while !saw_loaded {
+        let line = read_line(&mut reader);
+        match decode_json_line::<JsonRpcMessage>(&line).expect("message decodes") {
+            JsonRpcMessage::Response(response) => {
+                assert_eq!(response.id, RpcId::Number(6));
+                assert!(response.error.is_none(), "load_session should succeed");
+            }
+            JsonRpcMessage::Notification(notification) => {
+                assert_eq!(notification.method, byte_protocol::RUNTIME_EVENT_METHOD);
+                let event: byte_protocol::RuntimeEvent =
+                    serde_json::from_value(notification.params.expect("notification has params"))
+                        .expect("runtime event decodes");
+                if matches!(
+                    event.kind,
+                    RuntimeEventKind::SessionChanged {
+                        session_id: ref id,
+                        action: byte_protocol::SessionChangeAction::Loaded,
+                    } if id == "session-events"
+                ) {
+                    saw_loaded = true;
+                }
+            }
+            JsonRpcMessage::Request(_) => panic!("daemon must not send requests to clients"),
+        }
+    }
+
+    drop(stream);
+    stop_daemon(child, &socket_path, Some(&data_dir));
+}
 fn start_daemon(socket_path: &Path) -> std::process::Child {
     Command::new(env!("CARGO_BIN_EXE_byte-daemon"))
         .arg("--rpc-socket")

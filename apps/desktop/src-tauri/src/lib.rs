@@ -7,9 +7,9 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use byte_protocol::{
-    decode_json_line, encode_json_line, DaemonState, JsonRpcMessage, JsonRpcRequest,
-    JsonRpcResponse, LoadSessionResult, NewSessionParams, RpcId, RuntimeEvent, SessionView,
-    RUNTIME_EVENT_METHOD,
+    decode_json_line, encode_json_line, DaemonConnectionView, DaemonState, JsonRpcMessage,
+    JsonRpcRequest, JsonRpcResponse, LoadSessionResult, NewSessionParams, RpcId, RuntimeEvent,
+    SessionView, RUNTIME_EVENT_METHOD,
 };
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -354,31 +354,6 @@ fn create_rpc_socket_path() -> Result<(PathBuf, PathBuf), String> {
     Ok((socket_dir, socket_path))
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DaemonConnectionView {
-    connected: bool,
-    state: Option<DaemonState>,
-    error: Option<String>,
-}
-
-impl DaemonConnectionView {
-    fn connected(state: DaemonState) -> Self {
-        Self {
-            connected: true,
-            state: Some(state),
-            error: None,
-        }
-    }
-
-    fn disconnected(error: String) -> Self {
-        Self {
-            connected: false,
-            state: None,
-            error: Some(error),
-        }
-    }
-}
 
 #[tauri::command]
 async fn get_daemon_state(

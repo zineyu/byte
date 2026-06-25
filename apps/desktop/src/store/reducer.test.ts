@@ -101,9 +101,9 @@ describe("runtime event reducer", () => {
         type: "run_finished",
         run_id: runId,
         status: "succeeded",
+        error: null,
       },
     ];
-
     const final = sequence.reduce(
       (state, event) => reducer(state, { type: "runtime_event", event }),
       reducer(initialState, { type: "runtime_event", event: readyDaemonEvent }),
@@ -315,5 +315,89 @@ describe("runtime event reducer", () => {
 
     expect(next.loadState).toBe("loading");
     expect(next.connection).toEqual(initialState.connection);
+  });
+
+  it("marks streaming messages as error on error events that carry a run_id", () => {
+    const runId = "run-error-stream-1";
+    const messageId = "msg-error-stream-1";
+
+    const streaming = [
+      { type: "run_started" as const, session_id: "s1", run_id: runId },
+      {
+        type: "message_started" as const,
+        run_id: runId,
+        message_id: messageId,
+        role: "assistant" as const,
+      },
+      {
+        type: "message_delta" as const,
+        run_id: runId,
+        message_id: messageId,
+        delta: "partial",
+      },
+    ].reduce(
+      (state, event, index) =>
+        reducer(state, {
+          type: "runtime_event",
+          event: { ...event, sequence: index + 1 },
+        }),
+      initialState,
+    );
+
+    const afterError = reducer(streaming, {
+      type: "runtime_event",
+      event: {
+        sequence: 4,
+        type: "error",
+        run_id: runId,
+        message: "Provider config not found",
+      },
+    });
+
+    expect(afterError.messages[0].status).toBe("error");
+    expect(afterError.messages[0].error).toBe("Provider config not found");
+    expect(afterError.runState).toEqual({ runId: null, isSending: false });
+  });
+
+  it("finalizes streaming messages as completed when run_finished succeeds", () => {
+    const runId = "run-success-1";
+    const messageId = "msg-success-1";
+
+    const streaming = [
+      { type: "run_started" as const, session_id: "s1", run_id: runId },
+      {
+        type: "message_started" as const,
+        run_id: runId,
+        message_id: messageId,
+        role: "assistant" as const,
+      },
+      {
+        type: "message_delta" as const,
+        run_id: runId,
+        message_id: messageId,
+        delta: "partial",
+      },
+    ].reduce(
+      (state, event, index) =>
+        reducer(state, {
+          type: "runtime_event",
+          event: { ...event, sequence: index + 1 },
+        }),
+      initialState,
+    );
+
+    const afterFinish = reducer(streaming, {
+      type: "runtime_event",
+      event: {
+        sequence: 4,
+        type: "run_finished",
+        run_id: runId,
+        status: "succeeded",
+        error: null,
+      },
+    });
+    expect(afterFinish.messages[0].status).toBe("completed");
+    expect(afterFinish.messages[0].content).toBe("partial");
+    expect(afterFinish.runState).toEqual({ runId: null, isSending: false });
   });
 });
