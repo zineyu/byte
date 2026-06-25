@@ -4,4 +4,4 @@ import type { SessionMessage } from "./SessionMessage";
 /**
  * A normalized view of a Session for the React UI.
  */
-export type SessionView = { session_id: string, workspace: string | null, messages: Array<SessionMessage>, };
+export type SessionView = { sessionId: string, workspace: string | null, messages: Array<SessionMessage>, };

@@ -3,4 +3,4 @@
 /**
  * A lightweight summary of a Session for listing in the UI.
  */
-export type SessionSummary = { session_id: string, workspace: string | null, created_at: string, };
+export type SessionSummary = { sessionId: string, workspace: string | null, createdAt: string, };

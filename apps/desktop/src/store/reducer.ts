@@ -15,7 +15,7 @@ export function reducer(state: AppState, action: StoreAction): AppState {
     case "load_session":
       return {
         ...state,
-        currentSessionId: action.session.session_id,
+        currentSessionId: action.session.sessionId,
         messages: action.session.messages.map((message) => ({
           id: message.id,
           role: message.role,
@@ -34,7 +34,7 @@ export function reducer(state: AppState, action: StoreAction): AppState {
       return {
         ...state,
         sessions: state.sessions.filter(
-          (session) => session.session_id !== action.sessionId,
+          (session) => session.sessionId !== action.sessionId,
         ),
       };
     case "set_current_session_id":

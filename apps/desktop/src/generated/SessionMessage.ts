@@ -4,4 +4,4 @@ import type { MessageRole } from "./MessageRole";
 /**
  * A message inside a `SessionView`.
  */
-export type SessionMessage = { id: string, parent_id: string | null, role: MessageRole, content: string, };
+export type SessionMessage = { id: string, parentId: string | null, role: MessageRole, content: string, };

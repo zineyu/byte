@@ -23,7 +23,7 @@ function sessionTitle(session: SessionSummary): string {
     const last = parts[parts.length - 1];
     if (last) return last;
   }
-  return shortId(session.session_id);
+  return shortId(session.sessionId);
 }
 
 function shortId(id: string): string {
@@ -142,7 +142,7 @@ export default function App() {
     const latest = sessions[0];
     if (latest) {
       initialLoadDoneRef.current = true;
-      void loadSession(latest.session_id);
+      void loadSession(latest.sessionId);
     }
     if (sessions.length === 0 && currentSessionId !== null) {
       resetSession();
@@ -261,14 +261,14 @@ export default function App() {
           ) : (
             sessions.map((session) => (
               <div
-                key={session.session_id}
-                className={`nav-item session-item ${currentSessionId === session.session_id ? "active" : ""}`}
+                key={session.sessionId}
+                className={`nav-item session-item ${currentSessionId === session.sessionId ? "active" : ""}`}
               >
                 <button
                   type="button"
                   className="session-row"
-                  onClick={() => void handleSelectSession(session.session_id)}
-                  title={session.workspace ?? session.session_id}
+                  onClick={() => void handleSelectSession(session.sessionId)}
+                  title={session.workspace ?? session.sessionId}
                 >
                   <span className="nav-item-icon" aria-hidden="true">
                     <MessageSquare size={14} strokeWidth={2} />
@@ -280,7 +280,7 @@ export default function App() {
                 <button
                   type="button"
                   className="session-delete"
-                  onClick={() => void handleDeleteSession(session.session_id)}
+                  onClick={() => void handleDeleteSession(session.sessionId)}
                   aria-label="删除会话"
                   title="删除会话"
                 >

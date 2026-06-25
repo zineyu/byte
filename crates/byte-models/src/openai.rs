@@ -88,31 +88,34 @@ impl ModelProvider for OpenAiCompatibleProvider {
                 ))
             })?;
 
-        let stream = response.filter_map(move |result| async move {
-            match result {
-                Ok(chunk) => {
-                    let deltas: Vec<String> = chunk
-                        .choices
-                        .into_iter()
-                        .filter_map(|choice| choice.delta.content)
-                        .collect();
+        let message_id = uuid::Uuid::new_v4().to_string();
+        let message_id_for_deltas = message_id.clone();
+        let stream = response.filter_map(move |result| {
+            let message_id = message_id_for_deltas.clone();
+            async move {
+                match result {
+                    Ok(chunk) => {
+                        let deltas: Vec<String> = chunk
+                            .choices
+                            .into_iter()
+                            .filter_map(|choice| choice.delta.content)
+                            .collect();
 
-                    if deltas.is_empty() {
-                        None
-                    } else {
-                        let message_id = "msg-openai-1".to_owned();
-                        Some(Ok(ProviderEvent::TextDelta {
-                            message_id,
-                            delta: deltas.join(""),
-                        }))
+                        if deltas.is_empty() {
+                            None
+                        } else {
+                            Some(Ok(ProviderEvent::TextDelta {
+                                message_id,
+                                delta: deltas.join(""),
+                            }))
+                        }
                     }
+                    Err(error) => Some(Err(ProviderError::Request(sanitize_error(&error)))),
                 }
-                Err(error) => Some(Err(ProviderError::Request(sanitize_error(&error)))),
             }
         });
 
         let stream = async_stream::try_stream! {
-            let message_id = "msg-openai-1".to_owned();
             yield ProviderEvent::MessageStarted { message_id: message_id.clone() };
 
             for await event in stream {

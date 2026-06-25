@@ -204,18 +204,18 @@ describe("runtime event reducer", () => {
 
   it("loads a session snapshot as completed messages", () => {
     const session: SessionView = {
-      session_id: "session-load-1",
+      sessionId: "session-load-1",
       workspace: "/home/dev/project",
       messages: [
         {
           id: "msg-1",
-          parent_id: null,
+          parentId: null,
           role: "developer",
           content: "Hello",
         },
         {
           id: "msg-2",
-          parent_id: "msg-1",
+          parentId: "msg-1",
           role: "assistant",
           content: "Hi there",
         },
@@ -244,12 +244,12 @@ describe("runtime event reducer", () => {
     const withMessage = reducer(initialState, {
       type: "load_session",
       session: {
-        session_id: "session-reset",
+        sessionId: "session-reset",
         workspace: null,
         messages: [
           {
             id: "msg-1",
-            parent_id: null,
+            parentId: null,
             role: "developer",
             content: "Hello",
           },

@@ -5,7 +5,7 @@ use crate::MessageRole;
 /// A lightweight summary of a Session for listing in the UI.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export)]
+#[ts(export, rename_all = "camelCase")]
 pub struct SessionSummary {
     pub session_id: String,
     pub workspace: Option<String>,
@@ -15,7 +15,7 @@ pub struct SessionSummary {
 /// A normalized view of a Session for the React UI.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export)]
+#[ts(export, rename_all = "camelCase")]
 pub struct SessionView {
     pub session_id: String,
     pub workspace: Option<String>,
@@ -25,7 +25,7 @@ pub struct SessionView {
 /// A message inside a `SessionView`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export)]
+#[ts(export, rename_all = "camelCase")]
 pub struct SessionMessage {
     pub id: String,
     pub parent_id: Option<String>,
