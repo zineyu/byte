@@ -84,26 +84,26 @@ impl SessionManager {
     /// Returns `RunnerError::Busy` if the session has an active run. The
     /// runner is removed from the internal map on success so that a later
     /// session with the same id gets a fresh runner.
+    ///
+    /// The runners map lock is held across the active-run check, file deletion
+    /// and runner removal so that no other task can observe a deleted file
+    /// while the old runner is still reachable from the map.
     #[instrument(skip(self))]
     pub async fn delete_session(
         &self,
         session_id: &str,
     ) -> Result<DeleteSessionResult, RunnerError> {
-        let runner_opt = {
-            let runners = self.runners.lock().await;
-            runners.get(session_id).cloned()
-        };
+        let mut runners = self.runners.lock().await;
 
-        if let Some(runner) = runner_opt {
+        if let Some(runner) = runners.get(session_id).cloned() {
             let active = runner.active_run_guard().await;
             if active.is_some() {
                 return Err(RunnerError::Busy);
             }
             self.store.delete_session(session_id).await?;
-            drop(active);
-            let mut runners = self.runners.lock().await;
             runners.remove(session_id);
         } else {
+            drop(runners);
             self.store.delete_session(session_id).await?;
         }
 

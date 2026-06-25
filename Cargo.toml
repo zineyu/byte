@@ -15,6 +15,7 @@ version = "0.1.0"
 
 [workspace.dependencies]
 anyhow = "1.0"
+async-trait = "0.1.89"
 byte-protocol = { path = "crates/byte-protocol" }
 byte-core = { path = "crates/byte-core" }
 byte-models = { path = "crates/byte-models" }

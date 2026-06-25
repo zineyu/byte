@@ -1,43 +1,41 @@
 #[cfg(unix)]
-use std::collections::HashMap;
-#[cfg(unix)]
 use std::path::{Path, PathBuf};
 #[cfg(unix)]
-use std::sync::{
-    atomic::{AtomicU64, Ordering},
-    Arc,
-};
-#[cfg(unix)]
-use std::time::Duration;
+use std::sync::Arc;
 
 #[cfg(unix)]
 use anyhow::{bail, Context};
 #[cfg(unix)]
+use async_trait::async_trait;
+#[cfg(unix)]
+use byte_core::event_bus::{BroadcastEventBus, RuntimeEventBus};
+#[cfg(unix)]
+use byte_core::session_manager::SessionManager;
+#[cfg(unix)]
 use byte_models::{
     load_config, normalize_base_url, EchoProvider, ModelProvider, OpenAiCompatibleProvider,
-    ProviderEvent,
+    ProviderError, ProviderStream,
 };
 #[cfg(unix)]
 use byte_protocol::{
-    decode_json_line, encode_json_line, DaemonState, DeleteSessionParams, DeleteSessionResult,
-    JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, ListSessionsResult, LoadSessionParams,
-    LoadSessionResult, MessageRole, NewSessionParams, NewSessionResult, RunMessage, RunStatus,
-    RuntimeEvent, SendMessageParams, SendMessageResult, SessionChangeAction,
+    decode_json_line, encode_json_line, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse,
+    RunMessage, RuntimeEvent,
 };
 #[cfg(unix)]
 use byte_session::SessionStore;
-#[cfg(unix)]
-use futures::StreamExt;
-#[cfg(unix)]
-use serde::de::DeserializeOwned;
 #[cfg(unix)]
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 #[cfg(unix)]
 use tokio::net::{UnixListener, UnixStream};
 #[cfg(unix)]
-use tokio::sync::{broadcast, mpsc, Mutex};
+use tokio::sync::{mpsc, Mutex};
 #[cfg(unix)]
-use tracing::{debug, error, info, instrument, trace, warn};
+use tracing::{debug, error, info, trace, warn};
+
+#[cfg(unix)]
+mod rpc;
+#[cfg(unix)]
+use rpc::{handle_request, RpcContext};
 
 #[cfg(unix)]
 #[tokio::main]
@@ -68,17 +66,23 @@ fn parse_rpc_socket_arg(args: impl IntoIterator<Item = String>) -> anyhow::Resul
 }
 
 #[cfg(unix)]
-#[instrument(skip_all)]
 async fn run_socket_server(socket_path: &Path) -> anyhow::Result<()> {
     remove_stale_socket(socket_path)?;
     let _socket_file = SocketFile::new(socket_path.to_path_buf());
     let listener = UnixListener::bind(socket_path)
         .with_context(|| format!("failed to bind RPC socket at {socket_path:?}"))?;
-    let (event_tx, _) = broadcast::channel::<RuntimeEvent>(64);
-    let event_sequence = Arc::new(AtomicU64::new(0));
-    let active_runs = Arc::new(Mutex::new(HashMap::<String, String>::new()));
+
+    let event_bus = BroadcastEventBus::new(64);
     let session_store =
         Arc::new(SessionStore::with_default_dir().context("failed to initialize session store")?);
+    let provider: Arc<dyn ModelProvider> = Arc::new(LazyConfigProvider::new());
+    let session_manager = SessionManager::new(
+        Arc::clone(&provider),
+        Arc::clone(&session_store),
+        Arc::new(event_bus.clone()),
+    );
+    let rpc_context = RpcContext { session_manager };
+
     info!("daemon ready, waiting for connections");
 
     loop {
@@ -87,15 +91,10 @@ async fn run_socket_server(socket_path: &Path) -> anyhow::Result<()> {
             .await
             .context("failed to accept RPC socket client")?;
         info!("accepted new RPC connection");
-        let event_tx = event_tx.clone();
-        let event_sequence = Arc::clone(&event_sequence);
-        let active_runs = Arc::clone(&active_runs);
-        let session_store = Arc::clone(&session_store);
+        let event_bus = event_bus.clone();
+        let rpc_context = rpc_context.clone();
         tokio::spawn(async move {
-            if let Err(error) =
-                handle_connection(stream, event_tx, event_sequence, active_runs, session_store)
-                    .await
-            {
+            if let Err(error) = handle_connection(stream, event_bus, rpc_context).await {
                 error!(%error, "RPC socket connection failed");
             }
         });
@@ -103,13 +102,10 @@ async fn run_socket_server(socket_path: &Path) -> anyhow::Result<()> {
 }
 
 #[cfg(unix)]
-#[instrument(skip_all)]
 async fn handle_connection(
     stream: UnixStream,
-    event_tx: broadcast::Sender<RuntimeEvent>,
-    event_sequence: Arc<AtomicU64>,
-    active_runs: Arc<Mutex<HashMap<String, String>>>,
-    session_store: Arc<SessionStore>,
+    event_bus: BroadcastEventBus,
+    rpc_context: RpcContext,
 ) -> anyhow::Result<()> {
     let (read_half, mut write_half) = stream.into_split();
     let (output_tx, mut output_rx) = mpsc::unbounded_channel::<String>();
@@ -124,7 +120,7 @@ async fn handle_connection(
     });
 
     let event_output_tx = output_tx.clone();
-    let mut event_rx = event_tx.subscribe();
+    let mut event_rx = event_bus.subscribe();
     let event_task = tokio::spawn(async move {
         loop {
             match event_rx.recv().await {
@@ -135,17 +131,16 @@ async fn handle_connection(
                         break;
                     }
                 }
-                Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(broadcast::error::RecvError::Closed) => break,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
         }
         anyhow::Ok(())
     });
 
-    let _ = event_tx.send(RuntimeEvent::daemon_started(
-        next_sequence(&event_sequence),
-        daemon_state(),
-    ));
+    event_bus
+        .emit(RuntimeEvent::daemon_started(0, rpc::daemon_state()))
+        .await;
 
     let mut reader = BufReader::new(read_half).lines();
     while let Some(line) = reader
@@ -167,42 +162,20 @@ async fn handle_connection(
                 if output_tx.send(response_line).is_err() {
                     break;
                 }
-                let _ = event_tx.send(RuntimeEvent::error(
-                    next_sequence(&event_sequence),
-                    None,
-                    format!("failed to parse JSON-RPC request: {error}"),
-                ));
+                event_bus
+                    .emit(RuntimeEvent::error(
+                        0,
+                        None,
+                        format!("failed to parse JSON-RPC request: {error}"),
+                    ))
+                    .await;
                 continue;
             }
         };
 
         debug!(method = %request.method, id = ?request.id, "received JSON-RPC request");
 
-        let response = if request.method == "send_message" {
-            handle_send_message(
-                &request,
-                &event_tx,
-                Arc::clone(&event_sequence),
-                &active_runs,
-                Arc::clone(&session_store),
-            )
-            .await
-        } else if request.method == "new_session"
-            || request.method == "load_session"
-            || request.method == "list_sessions"
-            || request.method == "delete_session"
-        {
-            handle_session_request(
-                &request,
-                &session_store,
-                &event_tx,
-                Arc::clone(&event_sequence),
-                &active_runs,
-            )
-            .await
-        } else {
-            handle_request(request)
-        };
+        let response = handle_request(&rpc_context, request).await;
         let response_line =
             encode_json_line(&response).context("failed to encode JSON-RPC response")?;
         if output_tx.send(response_line).is_err() {
@@ -220,523 +193,68 @@ async fn handle_connection(
     Ok(())
 }
 
+/// A lazy provider that loads configuration on the first `send_message` call.
+///
+/// This preserves the original daemon behavior: `send_message` immediately
+/// returns a run id, and any configuration error is reported through the
+/// runtime event stream as a failed run.
 #[cfg(unix)]
-fn handle_request(request: JsonRpcRequest) -> JsonRpcResponse {
-    match request.method.as_str() {
-        "get_state" => {
-            let state = daemon_state();
-            JsonRpcResponse::success(request.id.clone(), state.clone()).unwrap_or_else(|error| {
-                JsonRpcResponse::failure(request.id.clone(), -32603, error.to_string())
-            })
-        }
-        method => {
-            JsonRpcResponse::failure(request.id, -32601, format!("method not found: {method}"))
+struct LazyConfigProvider {
+    inner: Mutex<Option<Arc<dyn ModelProvider>>>,
+}
+
+#[cfg(unix)]
+impl LazyConfigProvider {
+    fn new() -> Self {
+        Self {
+            inner: Mutex::new(None),
         }
     }
 }
 
 #[cfg(unix)]
-async fn handle_session_request(
-    request: &JsonRpcRequest,
-    session_store: &SessionStore,
-    event_tx: &broadcast::Sender<RuntimeEvent>,
-    event_sequence: Arc<AtomicU64>,
-    active_runs: &Arc<Mutex<HashMap<String, String>>>,
-) -> JsonRpcResponse {
-    match request.method.as_str() {
-        "new_session" => {
-            let params: NewSessionParams = match parse_params(request) {
-                Ok(params) => params,
-                Err(response) => return response,
-            };
-
-            let session_id = uuid::Uuid::new_v4().to_string();
-
-            if let Err(error) = session_store
-                .new_session(&session_id, params.workspace.as_deref())
-                .await
-            {
-                return JsonRpcResponse::failure(
-                    request.id.clone(),
-                    -32603,
-                    format!("failed to create session: {error}"),
-                );
+#[async_trait]
+impl ModelProvider for LazyConfigProvider {
+    async fn send_message(
+        &self,
+        messages: Vec<RunMessage>,
+    ) -> Result<ProviderStream, ProviderError> {
+        let provider = {
+            let mut guard = self.inner.lock().await;
+            if guard.is_none() {
+                let initialized = build_provider()
+                    .await
+                    .map_err(|error| ProviderError::Configuration(error.to_string()))?;
+                guard.replace(initialized);
             }
-
-            let _ = event_tx.send(RuntimeEvent::session_changed(
-                next_sequence(&event_sequence),
-                session_id.clone(),
-                SessionChangeAction::Created,
-            ));
-
-            let result = NewSessionResult { session_id };
-            JsonRpcResponse::success(request.id.clone(), result).unwrap_or_else(|error| {
-                JsonRpcResponse::failure(request.id.clone(), -32603, error.to_string())
-            })
-        }
-        "load_session" => {
-            let params: LoadSessionParams = match parse_params(request) {
-                Ok(params) => params,
-                Err(response) => return response,
-            };
-
-            match session_store.load_session(&params.session_id).await {
-                Ok(session) => {
-                    let _ = event_tx.send(RuntimeEvent::session_changed(
-                        next_sequence(&event_sequence),
-                        params.session_id.clone(),
-                        SessionChangeAction::Loaded,
-                    ));
-                    let result = LoadSessionResult { session };
-                    JsonRpcResponse::success(request.id.clone(), result).unwrap_or_else(|error| {
-                        JsonRpcResponse::failure(request.id.clone(), -32603, error.to_string())
-                    })
-                }
-                Err(error) => JsonRpcResponse::failure(
-                    request.id.clone(),
-                    -32603,
-                    format!("failed to load session: {error}"),
-                ),
-            }
-        }
-        "list_sessions" => match session_store.list_sessions().await {
-            Ok(sessions) => {
-                let result = ListSessionsResult { sessions };
-                JsonRpcResponse::success(request.id.clone(), result).unwrap_or_else(|error| {
-                    JsonRpcResponse::failure(request.id.clone(), -32603, error.to_string())
-                })
-            }
-            Err(error) => JsonRpcResponse::failure(
-                request.id.clone(),
-                -32603,
-                format!("failed to list sessions: {error}"),
-            ),
-        },
-        "delete_session" => {
-            let params: DeleteSessionParams = match parse_params(request) {
-                Ok(params) => params,
-                Err(response) => return response,
-            };
-
-            let mut active = active_runs.lock().await;
-            if active.contains_key(&params.session_id) {
-                return JsonRpcResponse::failure(
-                    request.id.clone(),
-                    -32000,
-                    format!("session {} is busy", params.session_id),
-                );
-            }
-
-            match session_store.delete_session(&params.session_id).await {
-                Ok(()) => {
-                    active.remove(&params.session_id);
-                    let _ = event_tx.send(RuntimeEvent::session_changed(
-                        next_sequence(&event_sequence),
-                        params.session_id.clone(),
-                        SessionChangeAction::Deleted,
-                    ));
-                    let result = DeleteSessionResult {
-                        session_id: params.session_id,
-                    };
-                    JsonRpcResponse::success(request.id.clone(), result).unwrap_or_else(|error| {
-                        JsonRpcResponse::failure(request.id.clone(), -32603, error.to_string())
-                    })
-                }
-                Err(error) => JsonRpcResponse::failure(
-                    request.id.clone(),
-                    -32603,
-                    format!("failed to delete session: {error}"),
-                ),
-            }
-        }
-        _ => JsonRpcResponse::failure(
-            request.id.clone(),
-            -32601,
-            format!("method not found: {}", request.method),
-        ),
+            guard.clone()
+        };
+        provider
+            .expect("provider initialized above")
+            .send_message(messages)
+            .await
     }
 }
 
 #[cfg(unix)]
-#[allow(clippy::result_large_err)] // JsonRpcResponse is large; this helper is internal and short-lived.
-fn parse_params<T: DeserializeOwned>(request: &JsonRpcRequest) -> Result<T, JsonRpcResponse> {
-    request
-        .params
-        .as_ref()
-        .and_then(|p| serde_json::from_value(p.clone()).ok())
-        .ok_or_else(|| {
-            JsonRpcResponse::failure(
-                request.id.clone(),
-                -32602,
-                format!("invalid params for {}", request.method),
-            )
-        })
-}
-
-#[cfg(unix)]
-#[instrument(skip_all, fields(run_id, session_id))]
-async fn handle_send_message(
-    request: &JsonRpcRequest,
-    event_tx: &broadcast::Sender<RuntimeEvent>,
-    event_sequence: Arc<AtomicU64>,
-    active_runs: &Arc<Mutex<HashMap<String, String>>>,
-    session_store: Arc<SessionStore>,
-) -> JsonRpcResponse {
-    let params: SendMessageParams = match parse_params(request) {
-        Ok(params) => params,
-        Err(response) => return response,
-    };
-
-    let run_id = uuid::Uuid::new_v4().to_string();
-    let session_id = params.session_id.clone();
-    tracing::Span::current().record("run_id", &run_id);
-    tracing::Span::current().record("session_id", &session_id);
-    info!(message_len = params.message.len(), "handling send_message");
-
-    {
-        let mut active = active_runs.lock().await;
-        if active.contains_key(&session_id) {
-            warn!(%session_id, "session already has an active run");
-            return JsonRpcResponse::failure(
-                request.id.clone(),
-                -32000,
-                format!("session {session_id} already has an active run"),
-            );
-        }
-        active.insert(session_id.clone(), run_id.clone());
-    }
-
-    if let Err(error) = session_store.new_session(&session_id, None).await {
-        warn!(%error, "failed to prepare session");
-        active_runs.lock().await.remove(&session_id);
-        return JsonRpcResponse::failure(
-            request.id.clone(),
-            -32603,
-            format!("failed to prepare session: {error}"),
-        );
-    }
-
-    let parent_id = match session_store.load_session(&session_id).await {
-        Ok(view) => view.messages.last().map(|message| message.id.clone()),
-        Err(error) => {
-            warn!(%error, "failed to load session state");
-            active_runs.lock().await.remove(&session_id);
-            return JsonRpcResponse::failure(
-                request.id.clone(),
-                -32603,
-                format!("failed to load session state: {error}"),
-            );
-        }
-    };
-
-    let developer_message_id = match session_store
-        .append_message(
-            &session_id,
-            None,
-            parent_id.as_deref(),
-            MessageRole::Developer,
-            &params.message,
-        )
-        .await
-    {
-        Ok(id) => id,
-        Err(error) => {
-            warn!(%error, "failed to append developer message");
-            active_runs.lock().await.remove(&session_id);
-            return JsonRpcResponse::failure(
-                request.id.clone(),
-                -32603,
-                format!("failed to append developer message: {error}"),
-            );
-        }
-    };
-
-    let result = SendMessageResult {
-        run_id: run_id.clone(),
-    };
-    let response =
-        JsonRpcResponse::success(request.id.clone(), result.clone()).unwrap_or_else(|error| {
-            JsonRpcResponse::failure(request.id.clone(), -32603, error.to_string())
-        });
-
-    let run_id_for_task = run_id.clone();
-    let session_id_for_task = session_id.clone();
-    let event_tx_for_task = event_tx.clone();
-    let event_sequence_for_task = Arc::clone(&event_sequence);
-    let active_runs_for_task = Arc::clone(active_runs);
-    let session_store_for_task = Arc::clone(&session_store);
-
-    tokio::spawn(async move {
-        run_model(
-            run_id_for_task,
-            session_id_for_task,
-            params.message,
-            developer_message_id,
-            event_tx_for_task,
-            event_sequence_for_task,
-            active_runs_for_task,
-            session_store_for_task,
-        )
-        .await;
-    });
-
-    response
-}
-
-#[cfg(unix)]
-#[allow(clippy::too_many_arguments)] // run_model bundles the full run context; grouping would not simplify callers.
-#[instrument(skip_all, fields(run_id, session_id))]
-async fn run_model(
-    run_id: String,
-    session_id: String,
-    message: String,
-    developer_message_id: String,
-    event_tx: broadcast::Sender<RuntimeEvent>,
-    event_sequence: Arc<AtomicU64>,
-    active_runs: Arc<Mutex<HashMap<String, String>>>,
-    session_store: Arc<SessionStore>,
-) {
-    tracing::Span::current().record("run_id", &run_id);
-    tracing::Span::current().record("session_id", &session_id);
-    info!("starting model run");
-    let session_id_for_cleanup = session_id.clone();
-    let active_runs_for_cleanup = Arc::clone(&active_runs);
-    let _cleanup_guard = scopeguard::guard(session_id_for_cleanup, move |session_id| {
-        let active_runs = Arc::clone(&active_runs_for_cleanup);
-        tokio::spawn(async move {
-            active_runs.lock().await.remove(&session_id);
-        });
-    });
-    let _ = event_tx.send(RuntimeEvent::run_started(
-        next_sequence(&event_sequence),
-        session_id.clone(),
-        run_id.clone(),
-    ));
-    let config = match load_config().await {
-        Ok(config) => config,
-        Err(error) => {
-            error!(%error, "failed to load provider config");
-            emit_run_error(
-                &event_tx,
-                &event_sequence,
-                &active_runs,
-                &session_id,
-                &run_id,
-                error.to_string(),
-            )
-            .await;
-            return;
-        }
-    };
+async fn build_provider() -> anyhow::Result<Arc<dyn ModelProvider>> {
+    let config = load_config().await?;
     debug!(provider = %config.provider, model = %config.model, "loaded provider config");
-
-    let messages = vec![RunMessage {
-        role: MessageRole::Developer,
-        content: message,
-    }];
-
-    let provider: Box<dyn ModelProvider> = match config.provider.as_str() {
-        "openai" | "openai-compatible" => Box::new(OpenAiCompatibleProvider::new(
+    match config.provider.as_str() {
+        "openai" | "openai-compatible" => Ok(Arc::new(OpenAiCompatibleProvider::new(
             byte_models::ModelProviderConfig {
                 provider: config.provider,
                 base_url: normalize_base_url(&config.base_url),
                 api_key: config.api_key,
                 model: config.model,
             },
-        )),
+        ))),
         "echo" => {
             debug!("using echo provider");
-            Box::new(EchoProvider::default())
+            Ok(Arc::new(EchoProvider::default()))
         }
-        other => {
-            warn!(provider = %other, "unknown provider");
-            emit_run_error(
-                &event_tx,
-                &event_sequence,
-                &active_runs,
-                &session_id,
-                &run_id,
-                format!("unknown provider: {other}"),
-            )
-            .await;
-            return;
-        }
-    };
-
-    let mut stream = match provider.send_message(messages).await {
-        Ok(stream) => stream,
-        Err(error) => {
-            emit_run_error(
-                &event_tx,
-                &event_sequence,
-                &active_runs,
-                &session_id,
-                &run_id,
-                error.to_string(),
-            )
-            .await;
-            return;
-        }
-    };
-
-    let mut message_id: Option<String> = None;
-    let mut assistant_content = String::new();
-    let mut delta_buffer = String::new();
-    let mut last_flush = tokio::time::Instant::now();
-    const DELTA_BATCH_INTERVAL: Duration = Duration::from_millis(16);
-    const DELTA_BATCH_MAX_LEN: usize = 64;
-
-    while let Some(event) = stream.next().await {
-        match event {
-            Ok(ProviderEvent::MessageStarted { message_id: id }) => {
-                message_id = Some(id.clone());
-                assistant_content.clear();
-                delta_buffer.clear();
-                last_flush = tokio::time::Instant::now();
-                debug!(message_id = %id, "assistant message started");
-                let _ = event_tx.send(RuntimeEvent::message_started(
-                    next_sequence(&event_sequence),
-                    run_id.clone(),
-                    id,
-                    byte_protocol::MessageRole::Assistant,
-                ));
-            }
-            Ok(ProviderEvent::TextDelta {
-                message_id: id,
-                delta,
-            }) => {
-                if message_id.as_ref() == Some(&id) {
-                    assistant_content.push_str(&delta);
-                    delta_buffer.push_str(&delta);
-                    let should_flush = delta_buffer.len() >= DELTA_BATCH_MAX_LEN
-                        || last_flush.elapsed() >= DELTA_BATCH_INTERVAL;
-                    if should_flush {
-                        let _ = event_tx.send(RuntimeEvent::message_delta(
-                            next_sequence(&event_sequence),
-                            run_id.clone(),
-                            id,
-                            std::mem::take(&mut delta_buffer),
-                        ));
-                        last_flush = tokio::time::Instant::now();
-                    }
-                }
-            }
-            Ok(ProviderEvent::MessageCompleted { message_id: id }) => {
-                if message_id.as_ref() == Some(&id) {
-                    if !delta_buffer.is_empty() {
-                        let _ = event_tx.send(RuntimeEvent::message_delta(
-                            next_sequence(&event_sequence),
-                            run_id.clone(),
-                            id.clone(),
-                            std::mem::take(&mut delta_buffer),
-                        ));
-                    }
-                    let _ = event_tx.send(RuntimeEvent::message_completed(
-                        next_sequence(&event_sequence),
-                        run_id.clone(),
-                        id.clone(),
-                    ));
-                    if let Err(error) = session_store
-                        .append_message(
-                            &session_id,
-                            Some(&id),
-                            Some(&developer_message_id),
-                            MessageRole::Assistant,
-                            &assistant_content,
-                        )
-                        .await
-                    {
-                        emit_run_error(
-                            &event_tx,
-                            &event_sequence,
-                            &active_runs,
-                            &session_id,
-                            &run_id,
-                            format!("failed to append assistant message: {error}"),
-                        )
-                        .await;
-                        return;
-                    }
-                }
-            }
-            Err(error) => {
-                if !delta_buffer.is_empty() {
-                    if let Some(id) = message_id.clone() {
-                        let _ = event_tx.send(RuntimeEvent::message_delta(
-                            next_sequence(&event_sequence),
-                            run_id.clone(),
-                            id,
-                            std::mem::take(&mut delta_buffer),
-                        ));
-                    }
-                }
-                emit_run_error(
-                    &event_tx,
-                    &event_sequence,
-                    &active_runs,
-                    &session_id,
-                    &run_id,
-                    error.to_string(),
-                )
-                .await;
-                return;
-            }
-        }
+        other => bail!("unknown provider: {other}"),
     }
-
-    if !delta_buffer.is_empty() {
-        if let Some(id) = message_id.clone() {
-            let _ = event_tx.send(RuntimeEvent::message_delta(
-                next_sequence(&event_sequence),
-                run_id.clone(),
-                id,
-                std::mem::take(&mut delta_buffer),
-            ));
-        }
-    }
-
-    let _ = event_tx.send(RuntimeEvent::run_finished(
-        next_sequence(&event_sequence),
-        run_id.clone(),
-        RunStatus::Succeeded,
-        None,
-    ));
-    info!("model run finished successfully");
-}
-
-#[cfg(unix)]
-#[instrument(skip_all)]
-async fn emit_run_error(
-    event_tx: &broadcast::Sender<RuntimeEvent>,
-    event_sequence: &AtomicU64,
-    active_runs: &Mutex<HashMap<String, String>>,
-    session_id: &str,
-    run_id: &str,
-    message: String,
-) {
-    error!(%run_id, %session_id, %message, "run failed");
-    let _ = event_tx.send(RuntimeEvent::error(
-        next_sequence(event_sequence),
-        Some(run_id.to_owned()),
-        message.clone(),
-    ));
-    let _ = event_tx.send(RuntimeEvent::run_finished(
-        next_sequence(event_sequence),
-        run_id.to_owned(),
-        RunStatus::Failed,
-        Some(message),
-    ));
-    active_runs.lock().await.remove(session_id);
-}
-
-#[cfg(unix)]
-fn daemon_state() -> DaemonState {
-    DaemonState::ready(env!("CARGO_PKG_VERSION"))
-}
-
-#[cfg(unix)]
-fn next_sequence(sequence: &AtomicU64) -> u64 {
-    sequence.fetch_add(1, Ordering::SeqCst) + 1
 }
 
 #[cfg(unix)]
