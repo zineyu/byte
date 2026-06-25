@@ -140,8 +140,15 @@ name = "byte-core"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "byte-models",
  "byte-protocol",
+ "byte-session",
+ "futures",
+ "tempfile",
+ "thiserror",
  "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

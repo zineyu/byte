@@ -174,6 +174,7 @@ function applyRuntimeEvent(state: AppState, event: RuntimeEvent): AppState {
         ),
       };
     case "run_finished": {
+      const cancelled = event.status === "cancelled";
       const failed = event.status === "failed";
       return {
         ...state,
@@ -184,17 +185,31 @@ function applyRuntimeEvent(state: AppState, event: RuntimeEvent): AppState {
         },
         messages: state.messages.map((message) =>
           message.status === "streaming"
-            ? failed
+            ? failed || cancelled
               ? {
                   ...message,
                   status: "error" as const,
-                  error: event.error ?? "运行失败",
+                  error: event.error ?? (cancelled ? "已取消" : "运行失败"),
                 }
               : { ...message, status: "completed" as const }
             : message,
         ),
       };
     }
+    case "run_cancelled":
+      return {
+        ...state,
+        events,
+        runState: {
+          runId: null,
+          isSending: false,
+        },
+        messages: state.messages.map((message) =>
+          message.status === "streaming"
+            ? { ...message, status: "error" as const, error: "已取消" }
+            : message,
+        ),
+      };
     case "session_changed":
       return { ...state, events };
   }

@@ -38,6 +38,8 @@ function makeEvent(
       return { ...base, type, run_id: "r1", message_id: "m1" };
     case "error":
       return { ...base, type, message: "oops", run_id: null };
+    case "run_cancelled":
+      return { ...base, type, run_id: "r1" };
     case "session_changed":
       return { ...base, type, session_id: "s1", action: "created" };
   }
