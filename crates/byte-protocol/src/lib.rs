@@ -157,6 +157,7 @@ pub enum SessionChangeAction {
 pub enum RunStatus {
     Succeeded,
     Failed,
+    Cancelled,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
@@ -251,6 +252,13 @@ impl RuntimeEvent {
         }
     }
 
+    pub fn run_cancelled(sequence: u64, run_id: String) -> Self {
+        Self {
+            sequence,
+            kind: RuntimeEventKind::RunCancelled { run_id },
+        }
+    }
+
     pub fn session_changed(sequence: u64, session_id: String, action: SessionChangeAction) -> Self {
         Self {
             sequence,
@@ -258,7 +266,6 @@ impl RuntimeEvent {
         }
     }
 }
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[ts(export, rename_all = "snake_case")]
@@ -298,13 +305,15 @@ pub enum RuntimeEventKind {
         run_id: String,
         message_id: String,
     },
+    RunCancelled {
+        run_id: String,
+    },
     SessionChanged {
         session_id: String,
         action: SessionChangeAction,
     },
 }
-
-// JSON-RPC request/result types for model provider operations.
+// JSON-RPC request/result types for session and model-provider operations.
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SendMessageParams {
@@ -541,6 +550,33 @@ mod tests {
                 session_id,
                 action: SessionChangeAction::Created,
             } if session_id == "session-test-1"
+        ));
+    }
+
+    #[test]
+    fn run_cancelled_event_roundtrips() {
+        let event = RuntimeEvent::run_cancelled(10, "run-test-cancel".into());
+        let decoded: RuntimeEvent = decode_json_line(&encode_json_line(&event).unwrap()).unwrap();
+
+        assert!(matches!(
+            decoded.kind,
+            RuntimeEventKind::RunCancelled { run_id } if run_id == "run-test-cancel"
+        ));
+    }
+
+    #[test]
+    fn run_status_cancelled_roundtrips() {
+        let event =
+            RuntimeEvent::run_finished(11, "run-test-cancel".into(), RunStatus::Cancelled, None);
+        let decoded: RuntimeEvent = decode_json_line(&encode_json_line(&event).unwrap()).unwrap();
+
+        assert!(matches!(
+            decoded.kind,
+            RuntimeEventKind::RunFinished {
+                status: RunStatus::Cancelled,
+                error: None,
+                ..
+            }
         ));
     }
 }

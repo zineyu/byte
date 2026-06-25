@@ -1,13 +1,13 @@
 [workspace]
 members = [
   "crates/byte-protocol",
+  "crates/byte-core",
   "crates/byte-session",
   "crates/byte-daemon",
   "crates/byte-models",
 ]
 exclude = ["apps/desktop/src-tauri"]
 resolver = "2"
-
 [workspace.package]
 edition = "2021"
 license = "MIT"
@@ -16,6 +16,7 @@ version = "0.1.0"
 [workspace.dependencies]
 anyhow = "1.0"
 byte-protocol = { path = "crates/byte-protocol" }
+byte-core = { path = "crates/byte-core" }
 byte-session = { path = "crates/byte-session" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
