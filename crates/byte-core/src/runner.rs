@@ -114,11 +114,24 @@ impl SessionRunner {
         Ok(run_id)
     }
 
-    #[cfg(test)]
-    #[cfg(test)]
+    /// Return true if the runner currently has an active run.
+    pub async fn is_running(&self) -> bool {
+        self.active_run.lock().await.is_some()
+    }
+
+    /// Acquire the active-run mutex guard.
+    ///
+    /// The guard is used by `SessionManager::delete_session` to hold the lock
+    /// across the file deletion so that no run can start on this session while
+    /// the session file is being removed.
+    pub(crate) async fn active_run_guard(&self) -> tokio::sync::MutexGuard<'_, Option<RunId>> {
+        self.active_run.lock().await
+    }
+
     /// Wait until there is no active run.
     ///
     /// Useful in tests to observe the full event sequence.
+    #[cfg(test)]
     pub async fn wait_until_idle(&self) {
         loop {
             let active = self.active_run.lock().await;
@@ -129,6 +142,7 @@ impl SessionRunner {
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
     }
+
     fn next_sequence(&self) -> u64 {
         self.sequence.fetch_add(1, Ordering::SeqCst) + 1
     }
