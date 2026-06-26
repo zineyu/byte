@@ -6,9 +6,9 @@ pub const RUNTIME_EVENT_METHOD: &str = "runtime_event";
 
 pub mod session;
 pub use session::{
-    DeleteSessionParams, DeleteSessionResult, ListSessionsResult, LoadSessionParams,
-    LoadSessionResult, NewSessionParams, NewSessionResult, SessionEntry, SessionMessage,
-    SessionMessageContent, SessionSummary, SessionView,
+    CompactionSummary, DeleteSessionParams, DeleteSessionResult, ListSessionsResult,
+    LoadSessionParams, LoadSessionResult, NewSessionParams, NewSessionResult, SessionEntry,
+    SessionMessage, SessionMessageContent, SessionSummary, SessionView,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -129,6 +129,7 @@ pub enum JsonRpcMessage {
 #[serde(rename_all = "snake_case")]
 #[ts(export, rename_all = "snake_case")]
 pub enum MessageRole {
+    System,
     Developer,
     Assistant,
 }
@@ -136,12 +137,12 @@ pub enum MessageRole {
 impl std::fmt::Display for MessageRole {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            MessageRole::System => write!(f, "system"),
             MessageRole::Developer => write!(f, "developer"),
             MessageRole::Assistant => write!(f, "assistant"),
         }
     }
 }
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export, rename_all = "snake_case")]

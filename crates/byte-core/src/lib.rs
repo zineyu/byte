@@ -1,4 +1,5 @@
 pub mod event_bus;
+pub mod prompt;
 pub mod runner;
 pub mod session_manager;
 

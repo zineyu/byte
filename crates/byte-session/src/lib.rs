@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use byte_protocol::{
-    encode_json_line, MessageRole, SessionEntry, SessionMessage, SessionMessageContent,
-    SessionSummary, SessionView,
+    encode_json_line, CompactionSummary, MessageRole, SessionEntry, SessionMessage,
+    SessionMessageContent, SessionSummary, SessionView,
 };
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
@@ -295,6 +295,7 @@ fn reconstruct_view(
     let mut workspace: Option<String> = None;
     let mut messages_by_id: HashMap<String, SessionMessage> = HashMap::new();
     let mut message_order: Vec<String> = Vec::new();
+    let mut compactions_by_parent: HashMap<String, CompactionSummary> = HashMap::new();
 
     for entry in entries {
         match entry {
@@ -319,11 +320,26 @@ fn reconstruct_view(
                     },
                 );
             }
+            SessionEntry::Compaction {
+                id,
+                parent_id,
+                summary,
+            } => {
+                compactions_by_parent.insert(
+                    parent_id.clone(),
+                    CompactionSummary {
+                        id,
+                        parent_id,
+                        summary,
+                    },
+                );
+            }
             _ => {}
         }
     }
 
     let mut messages: Vec<SessionMessage> = Vec::new();
+    let mut compactions: Vec<CompactionSummary> = Vec::new();
     if let Some(latest_id) = message_order.last().cloned() {
         let mut current: Option<String> = Some(latest_id);
         while let Some(id) = current {
@@ -331,16 +347,21 @@ fn reconstruct_view(
                 .get(&id)
                 .cloned()
                 .ok_or_else(|| SessionError::BrokenChain(session_id.to_owned()))?;
+            if let Some(compaction) = compactions_by_parent.get(&id).cloned() {
+                compactions.push(compaction);
+            }
             current = message.parent_id.clone();
             messages.push(message);
         }
         messages.reverse();
+        compactions.reverse();
     }
 
     Ok(SessionView {
         session_id: session_id.to_owned(),
         workspace,
         messages,
+        compactions,
     })
 }
 
@@ -485,6 +506,56 @@ mod tests {
         assert_eq!(summaries[0].workspace.as_deref(), Some("/workspace/b"));
         assert_eq!(summaries[1].session_id, "session-a");
         assert_eq!(summaries[1].workspace.as_deref(), Some("/workspace/a"));
+    }
+
+    #[tokio::test]
+    async fn load_session_reconstructs_compactions_on_active_path() {
+        let store = temp_store();
+        store
+            .new_session("session-1", Some("/workspace"))
+            .await
+            .unwrap();
+
+        let first_id = store
+            .append_message("session-1", None, None, MessageRole::Developer, "hello")
+            .await
+            .unwrap();
+        let second_id = store
+            .append_message(
+                "session-1",
+                None,
+                Some(&first_id),
+                MessageRole::Assistant,
+                "hi",
+            )
+            .await
+            .unwrap();
+
+        // Append a compaction entry for the assistant message.
+        let compaction_id = "compact-1";
+        let compaction = SessionEntry::Compaction {
+            id: compaction_id.into(),
+            parent_id: second_id.clone(),
+            summary: "assistant message compacted".into(),
+        };
+        let path = store.session_path("session-1").unwrap();
+        let line = encode_json_line(&compaction).unwrap();
+        tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .await
+            .unwrap()
+            .write_all(line.as_bytes())
+            .await
+            .unwrap();
+
+        let view = store.load_session("session-1").await.unwrap();
+        assert_eq!(view.messages.len(), 2);
+        assert_eq!(view.compactions.len(), 1);
+        assert_eq!(view.compactions[0].id, compaction_id);
+        assert_eq!(view.compactions[0].parent_id, second_id);
+        assert_eq!(view.compactions[0].summary, "assistant message compacted");
     }
 
     #[tokio::test]

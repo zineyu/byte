@@ -12,6 +12,16 @@ pub struct SessionSummary {
     pub created_at: String,
 }
 
+/// A lightweight summary of a compaction entry for the UI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, rename_all = "camelCase")]
+pub struct CompactionSummary {
+    pub id: String,
+    pub parent_id: String,
+    pub summary: String,
+}
+
 /// A normalized view of a Session for the React UI.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
@@ -20,6 +30,7 @@ pub struct SessionView {
     pub session_id: String,
     pub workspace: Option<String>,
     pub messages: Vec<SessionMessage>,
+    pub compactions: Vec<CompactionSummary>,
 }
 
 /// A message inside a `SessionView`.
@@ -151,6 +162,11 @@ mod tests {
                 parent_id: None,
                 role: MessageRole::Assistant,
                 content: "hi".into(),
+            }],
+            compactions: vec![CompactionSummary {
+                id: "compact-1".into(),
+                parent_id: "msg-1".into(),
+                summary: "summary text".into(),
             }],
         };
 

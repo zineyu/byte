@@ -220,6 +220,7 @@ describe("runtime event reducer", () => {
           content: "Hi there",
         },
       ],
+      compactions: [],
     };
 
     const next = reducer(initialState, { type: "load_session", session });
@@ -254,6 +255,7 @@ describe("runtime event reducer", () => {
             content: "Hello",
           },
         ],
+        compactions: [],
       },
     });
     const running = reducer(withMessage, {

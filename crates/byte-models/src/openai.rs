@@ -1,5 +1,6 @@
 use async_openai::config::OpenAIConfig;
 use async_openai::types::chat::{
+    ChatCompletionRequestAssistantMessage, ChatCompletionRequestAssistantMessageContent,
     ChatCompletionRequestMessage, ChatCompletionRequestSystemMessage,
     ChatCompletionRequestSystemMessageContent, ChatCompletionRequestUserMessage,
     ChatCompletionRequestUserMessageContent, CreateChatCompletionRequestArgs,
@@ -33,22 +34,20 @@ impl OpenAiCompatibleProvider {
 
 #[async_trait]
 impl ModelProvider for OpenAiCompatibleProvider {
+    #[allow(deprecated)]
     async fn send_message(
         &self,
         messages: Vec<RunMessage>,
     ) -> Result<ProviderStream, ProviderError> {
-        let system_message = ChatCompletionRequestMessage::System(
-            ChatCompletionRequestSystemMessage {
-                content: ChatCompletionRequestSystemMessageContent::Text(
-                    "You are Byte Agent's local coding assistant. This is a single-turn text response; do not use tools.".to_owned(),
-                ),
-                name: None,
-            },
-        );
-
         let chat_messages: Vec<ChatCompletionRequestMessage> = messages
             .into_iter()
             .map(|m| match m.role {
+                MessageRole::System => {
+                    ChatCompletionRequestMessage::System(ChatCompletionRequestSystemMessage {
+                        content: ChatCompletionRequestSystemMessageContent::Text(m.content),
+                        name: None,
+                    })
+                }
                 MessageRole::Developer => {
                     ChatCompletionRequestMessage::User(ChatCompletionRequestUserMessage {
                         content: ChatCompletionRequestUserMessageContent::Text(m.content),
@@ -56,9 +55,15 @@ impl ModelProvider for OpenAiCompatibleProvider {
                     })
                 }
                 MessageRole::Assistant => {
-                    ChatCompletionRequestMessage::User(ChatCompletionRequestUserMessage {
-                        content: ChatCompletionRequestUserMessageContent::Text(m.content),
+                    ChatCompletionRequestMessage::Assistant(ChatCompletionRequestAssistantMessage {
+                        content: Some(ChatCompletionRequestAssistantMessageContent::Text(
+                            m.content,
+                        )),
                         name: None,
+                        tool_calls: None,
+                        function_call: None,
+                        refusal: None,
+                        audio: None,
                     })
                 }
             })
@@ -66,12 +71,7 @@ impl ModelProvider for OpenAiCompatibleProvider {
 
         let request = CreateChatCompletionRequestArgs::default()
             .model(&self.model)
-            .messages(
-                [system_message]
-                    .into_iter()
-                    .chain(chat_messages)
-                    .collect::<Vec<_>>(),
-            )
+            .messages(chat_messages)
             .stream(true)
             .build()
             .map_err(|e| ProviderError::Configuration(e.to_string()))?;

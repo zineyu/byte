@@ -3,7 +3,8 @@ use std::time::Duration;
 
 use byte_models::{ModelProvider, ProviderError, ProviderEvent};
 use byte_protocol::{
-    CancelRunResult, MessageRole, RunMessage, RunStatus, RuntimeEventKind, SendMessageParams,
+    CancelRunResult, CompactionSummary, MessageRole, RunStatus, RuntimeEventKind,
+    SendMessageParams, SessionMessage,
 };
 use byte_session::{SessionError, SessionStore};
 use futures::StreamExt;
@@ -12,6 +13,9 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, instrument};
 
 use crate::event_bus::RuntimeEventBus;
+use crate::prompt::{PromptBuilder, PromptContext};
+
+/// Buffers small provider deltas so that a run can be cancelled cleanly: the
 /// cancellation can flush any remaining content as a final `message_delta`
 /// before emitting `run_cancelled`.
 pub struct DeltaBuffer {
@@ -114,13 +118,14 @@ impl SessionRunner {
             return Err(RunnerError::SessionStore(error));
         }
 
-        let parent_id = match self.store.load_session(&params.session_id).await {
-            Ok(view) => view.messages.last().map(|message| message.id.clone()),
+        let view = match self.store.load_session(&params.session_id).await {
+            Ok(view) => view,
             Err(error) => {
                 self.clear_active_run().await;
                 return Err(RunnerError::SessionStore(error));
             }
         };
+        let parent_id = view.messages.last().map(|message| message.id.clone());
 
         let developer_message_id = match self
             .store
@@ -146,6 +151,8 @@ impl SessionRunner {
             session_id: params.session_id,
             message: params.message,
             developer_message_id,
+            history: view.messages,
+            compactions: view.compactions,
             cancel_token: token.child_token(),
         };
 
@@ -245,6 +252,8 @@ struct RunExecutor {
     session_id: String,
     message: String,
     developer_message_id: String,
+    history: Vec<SessionMessage>,
+    compactions: Vec<CompactionSummary>,
     cancel_token: CancellationToken,
 }
 
@@ -262,10 +271,12 @@ impl RunExecutor {
             })
             .await;
 
-        let messages = vec![RunMessage {
-            role: MessageRole::Developer,
-            content: self.message,
-        }];
+        let prompt_context = PromptContext {
+            user_message: self.message,
+            history: self.history,
+            compactions: self.compactions,
+        };
+        let messages = PromptBuilder::new().build(prompt_context);
 
         let mut stream = match runner.provider.send_message(messages).await {
             Ok(stream) => stream,

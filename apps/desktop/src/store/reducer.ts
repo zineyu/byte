@@ -1,10 +1,10 @@
+import type { SessionMessage } from "../generated/SessionMessage";
 import type {
   AppState,
   RuntimeEvent,
   RuntimeEventLogEntry,
   StoreAction,
 } from "./types";
-
 // Hard cap for the in-memory runtime event log.
 const MAX_EVENTS = 64;
 
@@ -16,12 +16,20 @@ export function reducer(state: AppState, action: StoreAction): AppState {
       return {
         ...state,
         currentSessionId: action.session.sessionId,
-        messages: action.session.messages.map((message) => ({
-          id: message.id,
-          role: message.role,
-          content: message.content,
-          status: "completed" as const,
-        })),
+        messages: action.session.messages
+          .filter(
+            (
+              message,
+            ): message is SessionMessage & {
+              role: "developer" | "assistant";
+            } => message.role === "developer" || message.role === "assistant",
+          )
+          .map((message) => ({
+            id: message.id,
+            role: message.role,
+            content: message.content,
+            status: "completed" as const,
+          })),
       };
     case "set_sessions":
       return { ...state, sessions: action.sessions };

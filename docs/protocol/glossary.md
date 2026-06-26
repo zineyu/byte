@@ -34,9 +34,8 @@ _Avoid_: Log line, notification, bus message
 
 The role of a message inside a Run:
 
+- `system`: a dynamic, per-run instruction and tool context built by `PromptBuilder`. It is **not** persisted in the Session.
 - `developer`: the human Developer message
 - `assistant`: the model-generated response
 
-At the provider adapter boundary, `developer` maps to the OpenAI `user` role.
-
-_Avoid_: User, bot
+At the provider adapter boundary, `system` maps to the OpenAI `system` role and `developer` maps to the OpenAI `user` role.
