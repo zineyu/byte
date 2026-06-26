@@ -96,6 +96,7 @@ impl SessionStore {
         parent_id: Option<&str>,
         role: MessageRole,
         content: impl Into<String>,
+        tool_calls: Option<Vec<byte_protocol::ToolCall>>,
     ) -> Result<String, SessionError> {
         let path = self.session_path(session_id)?;
         let id = id
@@ -106,8 +107,33 @@ impl SessionStore {
             parent_id: parent_id.map(|s| s.to_owned()),
             message: SessionMessageContent {
                 role,
-                content: content.into(),
+                text: Some(content.into()),
+                tool_calls,
             },
+        };
+        self.write_line(&path, &entry).await?;
+        Ok(id)
+    }
+
+    /// Append a tool result entry to the session file and return its stable id.
+    /// If `id` is `None`, a UUID is generated.
+    pub async fn append_tool_result(
+        &self,
+        session_id: &str,
+        id: Option<&str>,
+        parent_id: &str,
+        tool_call_id: impl Into<String>,
+        content: impl Into<String>,
+    ) -> Result<String, SessionError> {
+        let path = self.session_path(session_id)?;
+        let id = id
+            .map(|s| s.to_owned())
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let entry = SessionEntry::ToolResult {
+            id: id.clone(),
+            parent_id: parent_id.to_owned(),
+            tool_call_id: tool_call_id.into(),
+            content: content.into(),
         };
         self.write_line(&path, &entry).await?;
         Ok(id)
@@ -316,7 +342,28 @@ fn reconstruct_view(
                         id,
                         parent_id,
                         role: message.role,
-                        content: message.content,
+                        content: message.text.unwrap_or_default(),
+                        tool_call_id: None,
+                        tool_calls: message.tool_calls,
+                    },
+                );
+            }
+            SessionEntry::ToolResult {
+                id,
+                parent_id,
+                tool_call_id,
+                content,
+            } => {
+                message_order.push(id.clone());
+                messages_by_id.insert(
+                    id.clone(),
+                    SessionMessage {
+                        id,
+                        parent_id: Some(parent_id),
+                        role: MessageRole::Tool,
+                        content,
+                        tool_call_id: Some(tool_call_id),
+                        tool_calls: None,
                     },
                 );
             }
@@ -334,7 +381,7 @@ fn reconstruct_view(
                     },
                 );
             }
-            _ => {}
+            SessionEntry::Session { .. } => {}
         }
     }
 
@@ -409,7 +456,14 @@ mod tests {
         store.new_session("session-1", None).await.unwrap();
 
         let first_id = store
-            .append_message("session-1", None, None, MessageRole::Developer, "hello")
+            .append_message(
+                "session-1",
+                None,
+                None,
+                MessageRole::Developer,
+                "hello",
+                None,
+            )
             .await
             .expect("append first");
 
@@ -420,6 +474,7 @@ mod tests {
                 Some(&first_id),
                 MessageRole::Assistant,
                 "hi",
+                None,
             )
             .await
             .expect("append second");
@@ -430,9 +485,9 @@ mod tests {
         let lines: Vec<&str> = contents.lines().collect();
         assert_eq!(lines.len(), 3);
 
-        let second: SessionEntry = serde_json::from_str(lines[2]).unwrap();
+        let second: SessionEntry = serde_json::from_str(lines[2]).expect("parse second entry");
         assert!(
-            matches!(second, SessionEntry::Message { id, parent_id: Some(parent), message } if id == second_id && parent == first_id && message.role == MessageRole::Assistant && message.content == "hi")
+            matches!(second, SessionEntry::Message { id, parent_id: Some(parent), message } if id == second_id && parent == first_id && message.role == MessageRole::Assistant && message.text == Some("hi".into()))
         );
     }
 
@@ -443,9 +498,15 @@ mod tests {
             .new_session("session-1", Some("/workspace"))
             .await
             .unwrap();
-
         let first_id = store
-            .append_message("session-1", None, None, MessageRole::Developer, "hello")
+            .append_message(
+                "session-1",
+                None,
+                None,
+                MessageRole::Developer,
+                "hello",
+                None,
+            )
             .await
             .unwrap();
         let second_id = store
@@ -455,6 +516,7 @@ mod tests {
                 Some(&first_id),
                 MessageRole::Assistant,
                 "hi",
+                None,
             )
             .await
             .unwrap();
@@ -471,6 +533,56 @@ mod tests {
         assert_eq!(view.messages[1].parent_id, Some(first_id));
         assert_eq!(view.messages[1].role, MessageRole::Assistant);
         assert_eq!(view.messages[1].content, "hi");
+    }
+    #[tokio::test]
+    async fn load_session_preserves_tool_calls_and_tool_results() {
+        let store = temp_store();
+        store.new_session("session-1", None).await.unwrap();
+
+        let dev_id = store
+            .append_message(
+                "session-1",
+                None,
+                None,
+                MessageRole::Developer,
+                "read main.rs",
+                None,
+            )
+            .await
+            .unwrap();
+        let tool_call = byte_protocol::ToolCall {
+            id: "call-1".into(),
+            name: "read_file".into(),
+            arguments: serde_json::json!({"path": "main.rs"}),
+        };
+        let assistant_id = store
+            .append_message(
+                "session-1",
+                None,
+                Some(&dev_id),
+                MessageRole::Assistant,
+                "",
+                Some(vec![tool_call.clone()]),
+            )
+            .await
+            .unwrap();
+        store
+            .append_tool_result("session-1", None, &assistant_id, "call-1", "fn main() {}")
+            .await
+            .unwrap();
+
+        let view = store.load_session("session-1").await.unwrap();
+        assert_eq!(view.messages.len(), 3);
+        assert_eq!(view.messages[0].role, MessageRole::Developer);
+        assert_eq!(view.messages[1].role, MessageRole::Assistant);
+        assert_eq!(
+            view.messages[1].tool_calls,
+            Some(vec![tool_call]),
+            "assistant tool_calls should be preserved"
+        );
+        assert_eq!(view.messages[2].role, MessageRole::Tool);
+        assert_eq!(view.messages[2].tool_call_id.as_deref(), Some("call-1"));
+        assert_eq!(view.messages[2].content, "fn main() {}");
     }
 
     #[tokio::test]
@@ -515,9 +627,15 @@ mod tests {
             .new_session("session-1", Some("/workspace"))
             .await
             .unwrap();
-
         let first_id = store
-            .append_message("session-1", None, None, MessageRole::Developer, "hello")
+            .append_message(
+                "session-1",
+                None,
+                None,
+                MessageRole::Developer,
+                "hello",
+                None,
+            )
             .await
             .unwrap();
         let second_id = store
@@ -527,6 +645,7 @@ mod tests {
                 Some(&first_id),
                 MessageRole::Assistant,
                 "hi",
+                None,
             )
             .await
             .unwrap();

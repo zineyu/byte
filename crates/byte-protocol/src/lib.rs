@@ -1,4 +1,5 @@
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use std::path::PathBuf;
 
 pub const JSON_RPC_VERSION: &str = "2.0";
 pub const PROTOCOL_VERSION: u16 = 1;
@@ -124,6 +125,43 @@ pub enum JsonRpcMessage {
     Response(JsonRpcResponse),
     Notification(JsonRpcNotification),
 }
+/// Definition of a tool available to the model.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, rename_all = "camelCase")]
+pub struct ToolDefinition {
+    pub name: String,
+    pub description: String,
+    pub parameters: serde_json::Value,
+}
+
+/// A tool call requested by the model.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, rename_all = "camelCase")]
+pub struct ToolCall {
+    pub id: String,
+    pub name: String,
+    pub arguments: serde_json::Value,
+}
+
+/// The result of executing a tool call.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, rename_all = "camelCase")]
+pub struct ToolResult {
+    pub tool_call_id: String,
+    pub content: String,
+    pub is_error: bool,
+}
+
+/// Runtime context supplied to tool invocations.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, rename_all = "camelCase")]
+pub struct SessionContext {
+    pub workspace_root: Option<PathBuf>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
@@ -132,6 +170,7 @@ pub enum MessageRole {
     System,
     Developer,
     Assistant,
+    Tool,
 }
 
 impl std::fmt::Display for MessageRole {
@@ -140,6 +179,7 @@ impl std::fmt::Display for MessageRole {
             MessageRole::System => write!(f, "system"),
             MessageRole::Developer => write!(f, "developer"),
             MessageRole::Assistant => write!(f, "assistant"),
+            MessageRole::Tool => write!(f, "tool"),
         }
     }
 }
@@ -230,10 +270,34 @@ impl RuntimeEventKind {
         }
     }
 
-    pub fn message_completed(run_id: impl Into<String>, message_id: impl Into<String>) -> Self {
+    pub fn message_completed(
+        run_id: impl Into<String>,
+        message_id: impl Into<String>,
+        tool_calls: Option<Vec<ToolCall>>,
+    ) -> Self {
         Self::MessageCompleted {
             run_id: run_id.into(),
             message_id: message_id.into(),
+            tool_calls,
+        }
+    }
+
+    pub fn tool_started(tool_call_id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self::ToolStarted {
+            tool_call_id: tool_call_id.into(),
+            name: name.into(),
+        }
+    }
+
+    pub fn tool_finished(
+        tool_call_id: impl Into<String>,
+        output: impl Into<String>,
+        is_error: bool,
+    ) -> Self {
+        Self::ToolFinished {
+            tool_call_id: tool_call_id.into(),
+            output: output.into(),
+            is_error,
         }
     }
 
@@ -250,6 +314,7 @@ impl RuntimeEventKind {
         }
     }
 }
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[ts(export, rename_all = "snake_case")]
@@ -288,6 +353,17 @@ pub enum RuntimeEventKind {
     MessageCompleted {
         run_id: String,
         message_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tool_calls: Option<Vec<ToolCall>>,
+    },
+    ToolStarted {
+        tool_call_id: String,
+        name: String,
+    },
+    ToolFinished {
+        tool_call_id: String,
+        output: String,
+        is_error: bool,
     },
     RunCancelled {
         run_id: String,
@@ -299,6 +375,47 @@ pub enum RuntimeEventKind {
 }
 // JSON-RPC request/result types for session and model-provider operations.
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunMessage {
+    pub role: MessageRole,
+    pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCall>>,
+}
+
+impl RunMessage {
+    /// Create a simple text message with the given role.
+    pub fn text(role: MessageRole, content: impl Into<String>) -> Self {
+        Self {
+            role,
+            content: content.into(),
+            tool_call_id: None,
+            tool_calls: None,
+        }
+    }
+
+    /// Create a tool result message.
+    pub fn tool_result(tool_call_id: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            role: MessageRole::Tool,
+            content: content.into(),
+            tool_call_id: Some(tool_call_id.into()),
+            tool_calls: None,
+        }
+    }
+
+    /// Create an assistant message that may carry tool calls.
+    pub fn assistant(content: impl Into<String>, tool_calls: Option<Vec<ToolCall>>) -> Self {
+        Self {
+            role: MessageRole::Assistant,
+            content: content.into(),
+            tool_call_id: None,
+            tool_calls,
+        }
+    }
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SendMessageParams {
     pub session_id: String,
@@ -313,12 +430,6 @@ pub struct SendMessageResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CancelRunParams {
     pub session_id: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RunMessage {
-    pub role: MessageRole,
-    pub content: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -366,7 +477,6 @@ pub struct DaemonConnectionView {
     pub state: Option<DaemonState>,
     pub error: Option<String>,
 }
-
 impl DaemonConnectionView {
     pub fn connected(state: DaemonState) -> Self {
         Self {
@@ -480,7 +590,7 @@ mod tests {
             },
             RuntimeEvent {
                 sequence: 6,
-                kind: RuntimeEventKind::message_completed(run_id, message_id),
+                kind: RuntimeEventKind::message_completed(run_id, message_id, None),
             },
             RuntimeEvent {
                 sequence: 7,
@@ -612,5 +722,129 @@ mod tests {
             decoded.result,
             Some(serde_json::to_value(CancelRunResult {}).unwrap())
         );
+    }
+
+    #[test]
+    fn tool_definition_roundtrips() {
+        let def = ToolDefinition {
+            name: "read_file".into(),
+            description: "Read a file".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": { "path": { "type": "string" } },
+                "required": ["path"]
+            }),
+        };
+        let decoded: ToolDefinition = decode_json_line(&encode_json_line(&def).unwrap()).unwrap();
+        assert_eq!(decoded, def);
+    }
+
+    #[test]
+    fn tool_call_and_result_roundtrip() {
+        let call = ToolCall {
+            id: "call-1".into(),
+            name: "read_file".into(),
+            arguments: serde_json::json!({"path": "src/main.rs"}),
+        };
+        let decoded: ToolCall = decode_json_line(&encode_json_line(&call).unwrap()).unwrap();
+        assert_eq!(decoded, call);
+
+        let result = ToolResult {
+            tool_call_id: "call-1".into(),
+            content: "contents".into(),
+            is_error: false,
+        };
+        let decoded: ToolResult = decode_json_line(&encode_json_line(&result).unwrap()).unwrap();
+        assert_eq!(decoded, result);
+    }
+
+    #[test]
+    fn session_context_roundtrips() {
+        let ctx = SessionContext {
+            workspace_root: Some(PathBuf::from("/tmp/workspace")),
+        };
+        let decoded: SessionContext = decode_json_line(&encode_json_line(&ctx).unwrap()).unwrap();
+        assert_eq!(decoded, ctx);
+    }
+
+    #[test]
+    fn run_message_with_tool_call_id_roundtrips() {
+        let message = RunMessage::tool_result("call-1", "contents");
+        let decoded: RunMessage = decode_json_line(&encode_json_line(&message).unwrap()).unwrap();
+        assert_eq!(decoded.role, MessageRole::Tool);
+        assert_eq!(decoded.tool_call_id, Some("call-1".into()));
+        assert_eq!(decoded.content, "contents");
+    }
+    #[test]
+    fn run_message_without_tool_call_id_roundtrips() {
+        let message = RunMessage::text(MessageRole::Developer, "hello");
+        let decoded: RunMessage = decode_json_line(&encode_json_line(&message).unwrap()).unwrap();
+        assert_eq!(decoded.role, MessageRole::Developer);
+        assert_eq!(decoded.tool_call_id, None);
+        assert_eq!(decoded.content, "hello");
+    }
+
+    #[test]
+    fn session_message_content_text_roundtrips() {
+        let content = SessionMessageContent::text(MessageRole::Assistant, "hello");
+        let decoded: SessionMessageContent =
+            decode_json_line(&encode_json_line(&content).unwrap()).unwrap();
+        assert_eq!(decoded.role, MessageRole::Assistant);
+        assert_eq!(decoded.text, Some("hello".into()));
+        assert_eq!(decoded.tool_calls, None);
+    }
+
+    #[test]
+    fn message_role_tool_serializes_as_snake_case() {
+        let value = serde_json::to_value(MessageRole::Tool).unwrap();
+        assert_eq!(value, serde_json::json!("tool"));
+    }
+
+    #[test]
+    fn tool_lifecycle_events_roundtrip() {
+        let started = RuntimeEvent {
+            sequence: 12,
+            kind: RuntimeEventKind::tool_started("call-1", "read_file"),
+        };
+        let decoded: RuntimeEvent = decode_json_line(&encode_json_line(&started).unwrap()).unwrap();
+        assert!(matches!(
+            decoded.kind,
+            RuntimeEventKind::ToolStarted { tool_call_id, name }
+            if tool_call_id == "call-1" && name == "read_file"
+        ));
+
+        let finished = RuntimeEvent {
+            sequence: 13,
+            kind: RuntimeEventKind::tool_finished("call-1", "contents", false),
+        };
+        let decoded: RuntimeEvent =
+            decode_json_line(&encode_json_line(&finished).unwrap()).unwrap();
+        assert!(matches!(
+            decoded.kind,
+            RuntimeEventKind::ToolFinished { tool_call_id, output, is_error }
+            if tool_call_id == "call-1" && output == "contents" && !is_error
+        ));
+    }
+
+    #[test]
+    fn message_completed_with_tool_calls_roundtrips() {
+        let event = RuntimeEvent {
+            sequence: 14,
+            kind: RuntimeEventKind::message_completed(
+                "run-1",
+                "msg-1",
+                Some(vec![ToolCall {
+                    id: "call-1".into(),
+                    name: "read_file".into(),
+                    arguments: serde_json::json!({"path": "src/main.rs"}),
+                }]),
+            ),
+        };
+        let decoded: RuntimeEvent = decode_json_line(&encode_json_line(&event).unwrap()).unwrap();
+        assert!(matches!(
+            decoded.kind,
+            RuntimeEventKind::MessageCompleted { run_id, message_id, tool_calls }
+            if run_id == "run-1" && message_id == "msg-1" && tool_calls.as_ref().map(std::vec::Vec::len) == Some(1)
+        ));
     }
 }

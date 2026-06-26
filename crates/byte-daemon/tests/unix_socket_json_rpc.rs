@@ -209,7 +209,11 @@ fn send_message_persists_messages_to_session() {
     let config_path =
         write_config("provider = 'echo'\nbase_url = ''\napi_key = ''\nmodel = 'echo'");
     let data_dir = unique_data_dir();
+    let workspace_dir = unique_workspace_dir();
     let child = start_daemon_with_config(&socket_path, &config_path, &data_dir);
+
+    std::fs::create_dir_all(&workspace_dir).expect("workspace dir creates");
+    std::fs::write(workspace_dir.join("main.rs"), "fn main() {}").expect("main.rs writes");
 
     let mut stream = connect_with_retry(&socket_path);
     stream
@@ -221,8 +225,31 @@ fn send_message_persists_messages_to_session() {
         matches!(kind, RuntimeEventKind::DaemonStarted { .. })
     });
 
+    let new_params = serde_json::to_value(NewSessionParams {
+        workspace: Some(workspace_dir.to_string_lossy().into_owned()),
+    })
+    .expect("new session params encode");
+    let new_request = JsonRpcRequest::new(20, "new_session", Some(new_params));
+    write_request(&mut stream, &new_request);
+
+    let mut session_id: Option<String> = None;
+    while session_id.is_none() {
+        let line = read_line(&mut reader);
+        if let JsonRpcMessage::Response(response) =
+            decode_json_line::<JsonRpcMessage>(&line).expect("message decodes")
+        {
+            assert_eq!(response.id, RpcId::Number(20));
+            assert!(response.error.is_none(), "new_session should succeed");
+            let result: NewSessionResult =
+                serde_json::from_value(response.result.expect("response has result"))
+                    .expect("new_session result decodes");
+            session_id = Some(result.session_id);
+        }
+    }
+    let session_id = session_id.expect("session was created");
+
     let params = serde_json::to_value(SendMessageParams {
-        session_id: "default".to_owned(),
+        session_id: session_id.clone(),
         message: "world".to_owned(),
     })
     .expect("params encode");
@@ -241,7 +268,7 @@ fn send_message_persists_messages_to_session() {
     });
 
     let load_params = serde_json::to_value(LoadSessionParams {
-        session_id: "default".to_owned(),
+        session_id: session_id.clone(),
     })
     .expect("load params encode");
     let load_request = JsonRpcRequest::new(4, "load_session", Some(load_params));
@@ -261,8 +288,12 @@ fn send_message_persists_messages_to_session() {
         }
     };
 
-    assert_eq!(session.session_id, "default");
-    assert_eq!(session.messages.len(), 2);
+    assert_eq!(session.session_id, session_id);
+    assert_eq!(
+        session.messages.len(),
+        4,
+        "developer + assistant tool_call + tool result + final assistant"
+    );
     assert_eq!(
         session.messages[0].role,
         byte_protocol::MessageRole::Developer
@@ -272,14 +303,26 @@ fn send_message_persists_messages_to_session() {
         session.messages[1].role,
         byte_protocol::MessageRole::Assistant
     );
-    assert_eq!(session.messages[1].content, "Echo: world");
+    assert!(session.messages[1].tool_calls.is_some());
+    assert_eq!(session.messages[2].role, byte_protocol::MessageRole::Tool);
+    assert_eq!(session.messages[2].content, "fn main() {}");
+    assert_eq!(
+        session.messages[3].role,
+        byte_protocol::MessageRole::Assistant
+    );
+    assert_eq!(session.messages[3].content, "Echo: world");
     assert_eq!(
         session.messages[1].parent_id,
         Some(session.messages[0].id.clone())
     );
+    assert_eq!(
+        session.messages[3].parent_id,
+        Some(session.messages[2].id.clone())
+    );
 
     drop(stream);
     stop_daemon(child, &socket_path, Some(&data_dir));
+    let _ = std::fs::remove_dir_all(&workspace_dir);
 }
 
 #[test]
@@ -587,6 +630,112 @@ fn cancel_run_emits_run_cancelled_and_run_finished_cancelled() {
 
     drop(stream);
     stop_daemon(child, &socket_path, Some(&data_dir));
+}
+#[test]
+fn per_session_workspace_resolves_relative_read_file_path() {
+    let socket_path = unique_socket_path();
+    let data_dir = unique_data_dir();
+    let workspace_dir = unique_workspace_dir();
+    let child = start_daemon_with_config(
+        &socket_path,
+        &write_config("provider = 'echo'\nbase_url = ''\napi_key = ''\nmodel = 'echo'"),
+        &data_dir,
+    );
+
+    std::fs::create_dir_all(&workspace_dir).expect("workspace dir creates");
+    std::fs::write(workspace_dir.join("main.rs"), "fn main() {}").expect("main.rs writes");
+
+    let mut stream = connect_with_retry(&socket_path);
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("read timeout is set");
+
+    let mut reader = BufReader::new(stream.try_clone().expect("stream clones"));
+    wait_for_event_type(&mut reader, |kind| {
+        matches!(kind, RuntimeEventKind::DaemonStarted { .. })
+    });
+
+    let new_params = serde_json::to_value(NewSessionParams {
+        workspace: Some(workspace_dir.to_string_lossy().into_owned()),
+    })
+    .expect("new session params encode");
+    let new_request = JsonRpcRequest::new(13, "new_session", Some(new_params));
+    write_request(&mut stream, &new_request);
+
+    let mut session_id: Option<String> = None;
+    while session_id.is_none() {
+        let line = read_line(&mut reader);
+        if let JsonRpcMessage::Response(response) =
+            decode_json_line::<JsonRpcMessage>(&line).expect("message decodes")
+        {
+            assert_eq!(response.id, RpcId::Number(13));
+            assert!(response.error.is_none(), "new_session should succeed");
+            let result: NewSessionResult =
+                serde_json::from_value(response.result.expect("response has result"))
+                    .expect("new_session result decodes");
+            session_id = Some(result.session_id);
+        }
+    }
+    let session_id = session_id.expect("session was created");
+
+    let send_params = serde_json::to_value(SendMessageParams {
+        session_id,
+        message: "read main.rs".to_owned(),
+    })
+    .expect("send params encode");
+    let send_request = JsonRpcRequest::new(14, "send_message", Some(send_params));
+    write_request(&mut stream, &send_request);
+
+    let mut saw_tool_finished = false;
+    let mut saw_run_finished_success = false;
+
+    while !(saw_tool_finished && saw_run_finished_success) {
+        let line = read_line(&mut reader);
+
+        match decode_json_line::<JsonRpcMessage>(&line).expect("message decodes") {
+            JsonRpcMessage::Notification(notification) => {
+                assert_eq!(notification.method, byte_protocol::RUNTIME_EVENT_METHOD);
+                let event: byte_protocol::RuntimeEvent =
+                    serde_json::from_value(notification.params.expect("notification has params"))
+                        .expect("runtime event decodes");
+                match event.kind {
+                    RuntimeEventKind::ToolFinished {
+                        output,
+                        is_error: false,
+                        ..
+                    } => {
+                        assert_eq!(
+                            output, "fn main() {}",
+                            "read_file should resolve relative path against session workspace"
+                        );
+                        saw_tool_finished = true;
+                    }
+                    RuntimeEventKind::RunFinished {
+                        status: RunStatus::Succeeded,
+                        error: None,
+                        ..
+                    } => {
+                        saw_run_finished_success = true;
+                    }
+                    _ => {}
+                }
+            }
+            JsonRpcMessage::Response(_) => {}
+            JsonRpcMessage::Request(_) => panic!("daemon must not send requests to clients"),
+        }
+    }
+
+    drop(stream);
+    stop_daemon(child, &socket_path, Some(&data_dir));
+    let _ = std::fs::remove_dir_all(&workspace_dir);
+}
+
+fn unique_workspace_dir() -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "byte-daemon-workspace-test-{}-{}",
+        std::process::id(),
+        unique_suffix()
+    ))
 }
 
 fn start_daemon(socket_path: &Path) -> std::process::Child {

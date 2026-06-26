@@ -405,8 +405,11 @@ async fn send_message(
 ) -> Result<(), String> {
     let mut daemon = state.daemon.lock().await;
     let client = daemon.ensure_client(app_handle).await?;
-    let params = serde_json::to_value(byte_protocol::SendMessageParams { session_id, message })
-        .map_err(|error| error.to_string())?;
+    let params = serde_json::to_value(byte_protocol::SendMessageParams {
+        session_id,
+        message,
+    })
+    .map_err(|error| error.to_string())?;
     client.request("send_message", Some(params)).await?;
     Ok(())
 }

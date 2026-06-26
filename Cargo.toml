@@ -1,12 +1,13 @@
 [workspace]
 members = [
-  "crates/byte-protocol",
-  "crates/byte-core",
-  "crates/byte-session",
-  "crates/byte-daemon",
-  "crates/byte-models",
+    "crates/byte-protocol",
+    "crates/byte-core",
+    "crates/byte-session",
+    "crates/byte-daemon",
+    "crates/byte-models",
+    "crates/byte-tools",
+    "apps/desktop/src-tauri",
 ]
-exclude = ["apps/desktop/src-tauri"]
 resolver = "2"
 [workspace.package]
 edition = "2021"
@@ -19,6 +20,7 @@ async-trait = "0.1.89"
 byte-protocol = { path = "crates/byte-protocol" }
 byte-core = { path = "crates/byte-core" }
 byte-models = { path = "crates/byte-models" }
+byte-tools = { path = "crates/byte-tools" }
 futures = "0.3.32"
 tempfile = "3"
 tracing = "0.1"
@@ -27,10 +29,21 @@ byte-session = { path = "crates/byte-session" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"
-tokio = { version = "1.48", features = [
-  "io-util",
-  "macros",
-  "net",
-  "rt-multi-thread",
-  "sync",
+tokio = { version = "1.52", features = [
+    "io-util",
+    "macros",
+    "net",
+    "rt-multi-thread",
+    "sync",
 ] }
+
+
+[workspace.lints.clippy]
+
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+style = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+
+must_use_candidate = "allow"
+missing_errors_doc = "allow"

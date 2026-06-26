@@ -155,10 +155,7 @@ mod tests {
         let mut path = std::env::temp_dir();
         path.push(format!(
             "byte-models-config-test-{}.toml",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            uuid::Uuid::new_v4()
         ));
         let mut file = std::fs::File::create(&path).unwrap();
         file.write_all(contents.as_bytes()).unwrap();

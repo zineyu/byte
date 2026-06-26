@@ -1,20 +1,20 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use byte_models::{ModelProvider, ProviderError, ProviderEvent};
+use byte_models::{ProviderError, ProviderEvent};
 use byte_protocol::{
-    CancelRunResult, CompactionSummary, MessageRole, RunStatus, RuntimeEventKind,
-    SendMessageParams, SessionMessage,
+    CancelRunResult, CompactionSummary, MessageRole, RunMessage, RunStatus, RuntimeEventKind,
+    SendMessageParams, SessionContext, SessionMessage, ToolCall,
 };
-use byte_session::{SessionError, SessionStore};
+use byte_session::SessionError;
 use futures::StreamExt;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, instrument};
 
-use crate::event_bus::RuntimeEventBus;
 use crate::prompt::{PromptBuilder, PromptContext};
-
+use crate::runtime_services::RuntimeServices;
 /// Buffers small provider deltas so that a run can be cancelled cleanly: the
 /// cancellation can flush any remaining content as a final `message_delta`
 /// before emitting `run_cancelled`.
@@ -77,23 +77,15 @@ pub enum RunnerError {
 /// emits lifecycle runtime events during the run.
 #[derive(Clone)]
 pub struct SessionRunner {
-    provider: Arc<dyn ModelProvider>,
-    store: Arc<SessionStore>,
-    bus: Arc<dyn RuntimeEventBus>,
+    services: RuntimeServices,
     active_run: Arc<Mutex<Option<(RunId, CancellationToken)>>>,
 }
 
 impl SessionRunner {
-    /// Create a new runner for one session.
-    pub fn new(
-        provider: Arc<dyn ModelProvider>,
-        store: Arc<SessionStore>,
-        bus: Arc<dyn RuntimeEventBus>,
-    ) -> Self {
+    /// Create a new runner with aggregated runtime services.
+    pub fn new(services: RuntimeServices) -> Self {
         Self {
-            provider,
-            store,
-            bus,
+            services,
             active_run: Arc::new(Mutex::new(None)),
         }
     }
@@ -113,12 +105,17 @@ impl SessionRunner {
         active.replace((run_id.clone(), token.clone()));
         drop(active);
 
-        if let Err(error) = self.store.new_session(&params.session_id, None).await {
+        if let Err(error) = self
+            .services
+            .store
+            .new_session(&params.session_id, None)
+            .await
+        {
             self.clear_active_run().await;
             return Err(RunnerError::SessionStore(error));
         }
 
-        let view = match self.store.load_session(&params.session_id).await {
+        let view = match self.services.store.load_session(&params.session_id).await {
             Ok(view) => view,
             Err(error) => {
                 self.clear_active_run().await;
@@ -128,6 +125,7 @@ impl SessionRunner {
         let parent_id = view.messages.last().map(|message| message.id.clone());
 
         let developer_message_id = match self
+            .services
             .store
             .append_message(
                 &params.session_id,
@@ -135,6 +133,7 @@ impl SessionRunner {
                 parent_id.as_deref(),
                 MessageRole::Developer,
                 &params.message,
+                None,
             )
             .await
         {
@@ -223,7 +222,7 @@ impl SessionRunner {
     }
 
     async fn emit(&self, kind: RuntimeEventKind) {
-        self.bus.emit(kind).await;
+        self.services.event_bus.emit(kind).await;
     }
 
     async fn clear_active_run(&self) {
@@ -271,161 +270,309 @@ impl RunExecutor {
             })
             .await;
 
-        let prompt_context = PromptContext {
-            user_message: self.message,
-            history: self.history,
-            compactions: self.compactions,
-        };
-        let messages = PromptBuilder::new().build(prompt_context);
-
-        let mut stream = match runner.provider.send_message(messages).await {
-            Ok(stream) => stream,
+        // Resolve the workspace from the session header so each session uses
+        // its own workspace root for relative tool paths.
+        let view = match runner.services.store.load_session(&self.session_id).await {
+            Ok(view) => view,
             Err(error) => {
-                error!(%error, "provider request failed");
+                error!(%error, "failed to load session view");
                 runner.emit_run_error(&self.run_id, error.to_string()).await;
                 runner.clear_active_run().await;
                 return;
             }
         };
-        let mut message_id: Option<String> = None;
-        let mut assistant_content = String::new();
-        let mut completed = false;
-        let mut delta_buffer = DeltaBuffer::new(8);
+        let session_ctx = SessionContext {
+            workspace_root: view.workspace.map(PathBuf::from),
+        };
+        let tools = runner.services.tool_registry.definitions();
+        // ID of the most recently persisted entry in this run. Used to chain
+        // assistant messages and tool results into a single linear history.
+        let mut last_entry_id = self.developer_message_id.clone();
+
+        let prompt_context = PromptContext {
+            user_message: self.message,
+            history: self.history,
+            compactions: self.compactions,
+            tools,
+        };
+        let mut messages = PromptBuilder::new().build(prompt_context);
+        let mut turn_messages: Vec<RunMessage> = Vec::new();
+        let mut saw_message = false;
 
         loop {
-            tokio::select! {
-                biased;
-                _ = self.cancel_token.cancelled() => {
-                    if let Some(id) = message_id.as_ref() {
-                        if let Some(flush) = delta_buffer.flush() {
-                            runner.emit(RuntimeEventKind::MessageDelta {
-                                run_id: self.run_id.clone(),
-                                message_id: id.clone(),
-                                delta: flush,
-                            }).await;
-                        }
-                        runner.emit(RuntimeEventKind::RunCancelled {
+            if self.cancel_token.is_cancelled() {
+                if saw_message {
+                    runner
+                        .emit(RuntimeEventKind::RunCancelled {
                             run_id: self.run_id.clone(),
-                        }).await;
-                    }
-                    runner.emit(RuntimeEventKind::RunFinished {
+                        })
+                        .await;
+                }
+                runner
+                    .emit(RuntimeEventKind::RunFinished {
                         run_id: self.run_id.clone(),
                         status: RunStatus::Cancelled,
                         error: None,
-                    }).await;
-                    info!("run cancelled");
+                    })
+                    .await;
+                info!("run cancelled");
+                runner.clear_active_run().await;
+                return;
+            }
+
+            if turn_messages.is_empty() {
+                // First request of the run: use the full prompt from PromptBuilder.
+            } else {
+                // Subsequent request after tool calls: append the last turn's
+                // assistant message and tool results to the conversation.
+                messages.extend(turn_messages);
+                turn_messages = Vec::new();
+            }
+
+            let tools = runner.services.tool_registry.definitions();
+            let mut stream = match runner
+                .services
+                .provider
+                .send_message(messages.clone(), tools)
+                .await
+            {
+                Ok(stream) => stream,
+                Err(error) => {
+                    error!(%error, "provider request failed");
+                    runner.emit_run_error(&self.run_id, error.to_string()).await;
                     runner.clear_active_run().await;
                     return;
                 }
-                maybe_event = stream.next() => {
-                    match maybe_event {
-                        Some(event) => {
-                            match event {
-                                Ok(ProviderEvent::MessageStarted { message_id: id }) => {
-                                    debug!(message_id = %id, "assistant message started");
-                                    message_id = Some(id.clone());
-                                    assistant_content.clear();
-                                    completed = false;
-                                    runner
-                                        .emit(RuntimeEventKind::MessageStarted {
-                                            run_id: self.run_id.clone(),
-                                            message_id: id,
-                                            role: MessageRole::Assistant,
-                                        })
-                                        .await;
-                                }
-                                Ok(ProviderEvent::TextDelta {
-                                    message_id: id,
-                                    delta,
-                                }) => {
-                                    if message_id.as_ref() == Some(&id) {
-                                        assistant_content.push_str(&delta);
-                                        if let Some(flush) = delta_buffer.push(&delta) {
-                                            runner
-                                                .emit(RuntimeEventKind::MessageDelta {
-                                                    run_id: self.run_id.clone(),
-                                                    message_id: id,
-                                                    delta: flush,
-                                                })
-                                                .await;
-                                        }
-                                    }
-                                }
-                                Ok(ProviderEvent::MessageCompleted { message_id: id }) => {
-                                    if message_id.as_ref() == Some(&id) {
-                                        if let Some(flush) = delta_buffer.flush() {
-                                            runner
-                                                .emit(RuntimeEventKind::MessageDelta {
-                                                    run_id: self.run_id.clone(),
-                                                    message_id: id.clone(),
-                                                    delta: flush,
-                                                })
-                                                .await;
-                                        }
+            };
+
+            let mut message_id: Option<String> = None;
+            let mut assistant_content = String::new();
+            let mut tool_calls: Option<Vec<ToolCall>> = None;
+            let mut completed = false;
+            let mut delta_buffer = DeltaBuffer::new(8);
+
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = self.cancel_token.cancelled() => {
+                        if let Some(id) = message_id.as_ref() {
+                            if let Some(flush) = delta_buffer.flush() {
+                                runner.emit(RuntimeEventKind::MessageDelta {
+                                    run_id: self.run_id.clone(),
+                                    message_id: id.clone(),
+                                    delta: flush,
+                                }).await;
+                            }
+                            runner.emit(RuntimeEventKind::RunCancelled {
+                                run_id: self.run_id.clone(),
+                            }).await;
+                        }
+                        runner.emit(RuntimeEventKind::RunFinished {
+                            run_id: self.run_id.clone(),
+                            status: RunStatus::Cancelled,
+                            error: None,
+                        }).await;
+                        info!("run cancelled");
+                        runner.clear_active_run().await;
+                        return;
+                    }
+                    maybe_event = stream.next() => {
+                        match maybe_event {
+                            Some(event) => {
+                                match event {
+                                    Ok(ProviderEvent::MessageStarted { message_id: id }) => {
+                                        debug!(message_id = %id, "assistant message started");
+                                        saw_message = true;
+                                        message_id = Some(id.clone());
+                                        assistant_content.clear();
+                                        tool_calls = None;
+                                        completed = false;
                                         runner
-                                            .emit(RuntimeEventKind::MessageCompleted {
+                                            .emit(RuntimeEventKind::MessageStarted {
                                                 run_id: self.run_id.clone(),
-                                                message_id: id.clone(),
+                                                message_id: id,
+                                                role: MessageRole::Assistant,
                                             })
                                             .await;
-
-                                        if let Err(error) = runner
-                                            .store
-                                            .append_message(
-                                                &self.session_id,
-                                                Some(&id),
-                                                Some(&self.developer_message_id),
-                                                MessageRole::Assistant,
-                                                &assistant_content,
-                                            )
-                                            .await
-                                        {
-                                            error!(%error, "failed to persist assistant message");
-                                            runner
-                                                .emit_run_error(
-                                                    &self.run_id,
-                                                    format!("failed to persist assistant message: {error}"),
-                                                )
-                                                .await;
-                                            runner.clear_active_run().await;
-                                            return;
+                                    }
+                                    Ok(ProviderEvent::TextDelta {
+                                        message_id: id,
+                                        delta,
+                                    }) => {
+                                        if message_id.as_ref() == Some(&id) {
+                                            assistant_content.push_str(&delta);
+                                            if let Some(flush) = delta_buffer.push(&delta) {
+                                                runner
+                                                    .emit(RuntimeEventKind::MessageDelta {
+                                                        run_id: self.run_id.clone(),
+                                                        message_id: id,
+                                                        delta: flush,
+                                                    })
+                                                    .await;
+                                            }
                                         }
+                                    }
+                                    Ok(ProviderEvent::MessageCompleted { message_id: id, tool_calls: calls }) => {
+                                        if message_id.as_ref() == Some(&id) {
+                                            if let Some(flush) = delta_buffer.flush() {
+                                                runner
+                                                    .emit(RuntimeEventKind::MessageDelta {
+                                                        run_id: self.run_id.clone(),
+                                                        message_id: id.clone(),
+                                                        delta: flush,
+                                                    })
+                                                    .await;
+                                            }
+                                            runner
+                                                .emit(RuntimeEventKind::MessageCompleted {
+                                                    run_id: self.run_id.clone(),
+                                                    message_id: id.clone(),
+                                                    tool_calls: calls.clone(),
+                                                })
+                                                .await;
 
-                                        completed = true;
+                                            if let Err(error) = runner
+                                                .services
+                                                .store
+                                                .append_message(
+                                                    &self.session_id,
+                                                    Some(&id),
+                                                    Some(&last_entry_id),
+                                                    MessageRole::Assistant,
+                                                    &assistant_content,
+                                                    calls.clone(),
+                                                )
+                                                .await
+                                            {
+                                                error!(%error, "failed to persist assistant message");
+                                                runner
+                                                    .emit_run_error(
+                                                        &self.run_id,
+                                                        format!("failed to persist assistant message: {error}"),
+                                                    )
+                                                    .await;
+                                                runner.clear_active_run().await;
+                                                return;
+                                            }
+                                            last_entry_id = id.clone();
+
+                                            tool_calls = calls;
+                                            completed = true;
+                                        }
+                                    }
+                                    Err(error) => {
+                                        error!(%error, "provider stream error");
+                                        runner.emit_run_error(&self.run_id, error.to_string()).await;
+                                        runner.clear_active_run().await;
+                                        return;
                                     }
                                 }
-                                Err(error) => {
-                                    error!(%error, "provider stream error");
-                                    runner.emit_run_error(&self.run_id, error.to_string()).await;
-                                    runner.clear_active_run().await;
-                                    return;
-                                }
                             }
+                            None => break,
                         }
-                        None => break,
                     }
                 }
             }
-        }
 
-        if completed {
-            runner
-                .emit(RuntimeEventKind::RunFinished {
-                    run_id: self.run_id.clone(),
-                    status: RunStatus::Succeeded,
-                    error: None,
-                })
-                .await;
-            info!("run finished successfully");
-        } else {
-            runner
-                .emit_run_error(
-                    &self.run_id,
-                    "provider stream ended without completing the assistant message".into(),
-                )
-                .await;
+            if !completed {
+                runner
+                    .emit_run_error(
+                        &self.run_id,
+                        "provider stream ended without completing the assistant message".into(),
+                    )
+                    .await;
+                runner.clear_active_run().await;
+                return;
+            }
+
+            let Some(calls) = tool_calls.clone() else {
+                runner
+                    .emit(RuntimeEventKind::RunFinished {
+                        run_id: self.run_id.clone(),
+                        status: RunStatus::Succeeded,
+                        error: None,
+                    })
+                    .await;
+                info!("run finished successfully");
+                runner.clear_active_run().await;
+                return;
+            };
+            // Execute tool calls and collect results for the next turn.
+            if self.cancel_token.is_cancelled() {
+                runner
+                    .emit(RuntimeEventKind::RunCancelled {
+                        run_id: self.run_id.clone(),
+                    })
+                    .await;
+                runner
+                    .emit(RuntimeEventKind::RunFinished {
+                        run_id: self.run_id.clone(),
+                        status: RunStatus::Cancelled,
+                        error: None,
+                    })
+                    .await;
+                info!("run cancelled");
+                runner.clear_active_run().await;
+                return;
+            }
+
+            let assistant_run_message = RunMessage {
+                role: MessageRole::Assistant,
+                content: assistant_content.clone(),
+                tool_call_id: None,
+                tool_calls: tool_calls.clone(),
+            };
+            turn_messages.push(assistant_run_message);
+
+            for call in calls {
+                runner
+                    .emit(RuntimeEventKind::ToolStarted {
+                        tool_call_id: call.id.clone(),
+                        name: call.name.clone(),
+                    })
+                    .await;
+
+                let (output, is_error) = match runner
+                    .services
+                    .tool_registry
+                    .invoke(&call, &session_ctx, &self.cancel_token)
+                    .await
+                {
+                    Ok(output) => (output, false),
+                    Err(error) => (error.to_string(), true),
+                };
+
+                runner
+                    .emit(RuntimeEventKind::ToolFinished {
+                        tool_call_id: call.id.clone(),
+                        output: output.clone(),
+                        is_error,
+                    })
+                    .await;
+                let tool_result_id = match runner
+                    .services
+                    .store
+                    .append_tool_result(&self.session_id, None, &last_entry_id, &call.id, &output)
+                    .await
+                {
+                    Ok(id) => id,
+                    Err(error) => {
+                        error!(%error, "failed to persist tool result");
+                        runner
+                            .emit_run_error(
+                                &self.run_id,
+                                format!("failed to persist tool result: {error}"),
+                            )
+                            .await;
+                        runner.clear_active_run().await;
+                        return;
+                    }
+                };
+                last_entry_id = tool_result_id;
+
+                turn_messages.push(RunMessage::tool_result(&call.id, output));
+            }
         }
-        runner.clear_active_run().await;
     }
 }
 
@@ -435,18 +582,46 @@ mod tests {
     use std::time::Duration;
 
     use async_trait::async_trait;
-    use byte_models::{EchoProvider, ModelProvider, ProviderError, ProviderStream};
+    use byte_models::{EchoProvider, ModelProvider, ProviderError, ProviderEvent, ProviderStream};
     use byte_protocol::{MessageRole, RunMessage, RunStatus, RuntimeEventKind, SendMessageParams};
     use byte_session::SessionStore;
+    use byte_tools::{AllowAllPolicy, MvpToolRegistry, ReadFileTool, ToolRegistry};
     use tempfile::tempdir;
+    use tokio::sync::Mutex;
 
     use crate::event_bus::RecordingEventBus;
+    use crate::runtime_services::RuntimeServices;
 
     use super::{DeltaBuffer, RunnerError, SessionRunner};
 
     fn temp_store() -> Arc<SessionStore> {
         let dir = tempdir().expect("temp dir");
         Arc::new(SessionStore::new(dir.path().to_path_buf()).expect("store creates"))
+    }
+    fn runner_with_tools(store: Arc<SessionStore>, bus: Arc<RecordingEventBus>) -> SessionRunner {
+        let mut registry = MvpToolRegistry::new();
+        registry.register(
+            "read_file".to_string(),
+            Arc::new(ReadFileTool),
+            Arc::new(AllowAllPolicy),
+        );
+
+        let services = RuntimeServices::new(
+            Arc::new(EchoProvider::default()),
+            store,
+            bus,
+            Arc::new(registry),
+        );
+        SessionRunner::new(services)
+    }
+
+    fn runner_without_tools(
+        provider: Arc<dyn ModelProvider>,
+        store: Arc<SessionStore>,
+        bus: Arc<RecordingEventBus>,
+    ) -> SessionRunner {
+        let services = RuntimeServices::new(provider, store, bus, Arc::new(MvpToolRegistry::new()));
+        SessionRunner::new(services)
     }
 
     #[test]
@@ -467,10 +642,9 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_send_message_returns_busy() {
-        let provider = Arc::new(EchoProvider::default());
         let store = temp_store();
         let bus = Arc::new(RecordingEventBus::new());
-        let runner = SessionRunner::new(provider, store, bus);
+        let runner = runner_with_tools(store.clone(), bus.clone());
 
         let params = SendMessageParams {
             session_id: "s1".into(),
@@ -492,8 +666,11 @@ mod tests {
     async fn echo_run_emits_lifecycle_events_and_persists_messages() {
         let bus = Arc::new(RecordingEventBus::new());
         let store = temp_store();
-        let provider = Arc::new(EchoProvider::default());
-        let runner = SessionRunner::new(provider, store.clone(), bus.clone());
+        let runner = runner_without_tools(
+            Arc::new(EchoProvider::default()),
+            store.clone(),
+            bus.clone(),
+        );
         let params = SendMessageParams {
             session_id: "s1".into(),
             message: "hello".into(),
@@ -529,7 +706,7 @@ mod tests {
             "should emit message_completed"
         );
         assert!(
-            matches!(events.last().unwrap().kind, RuntimeEventKind::RunFinished { status: RunStatus::Succeeded, error: None, run_id: ref rid } if rid == &run_id),
+            matches!(&events.last().unwrap().kind, RuntimeEventKind::RunFinished { status: RunStatus::Succeeded, error: None, run_id: rid } if rid == &run_id),
             "last event should be successful run_finished"
         );
 
@@ -552,7 +729,15 @@ mod tests {
             chunk_size: 3,
             ..Default::default()
         });
-        let runner = SessionRunner::new(provider, temp_store(), bus.clone());
+        let mut registry = MvpToolRegistry::new();
+        registry.register(
+            "read_file".to_string(),
+            Arc::new(ReadFileTool),
+            Arc::new(AllowAllPolicy),
+        );
+        let services =
+            RuntimeServices::new(provider, temp_store(), bus.clone(), Arc::new(registry));
+        let runner = SessionRunner::new(services);
         let params = SendMessageParams {
             session_id: "s1".into(),
             message: "hello world".into(),
@@ -583,6 +768,7 @@ mod tests {
         async fn send_message(
             &self,
             _messages: Vec<RunMessage>,
+            _tools: Vec<byte_protocol::ToolDefinition>,
         ) -> Result<ProviderStream, ProviderError> {
             Err(ProviderError::Request("boom".into()))
         }
@@ -592,8 +778,19 @@ mod tests {
     async fn provider_error_emits_error_and_failed_run() {
         let bus = Arc::new(RecordingEventBus::new());
         let store = temp_store();
-        let provider = Arc::new(BoomProvider);
-        let runner = SessionRunner::new(provider, store.clone(), bus.clone());
+        let mut registry = MvpToolRegistry::new();
+        registry.register(
+            "read_file".to_string(),
+            Arc::new(ReadFileTool),
+            Arc::new(AllowAllPolicy),
+        );
+        let services = RuntimeServices::new(
+            Arc::new(BoomProvider),
+            store.clone(),
+            bus.clone(),
+            Arc::new(registry),
+        );
+        let runner = SessionRunner::new(services);
         let params = SendMessageParams {
             session_id: "s1".into(),
             message: "hi".into(),
@@ -611,13 +808,13 @@ mod tests {
             "should emit error event containing boom"
         );
         assert!(
-            matches!(events.last().unwrap().kind, RuntimeEventKind::RunFinished { status: RunStatus::Failed, error: Some(ref msg), run_id: ref rid } if rid == &run_id && msg.contains("boom")),
+            matches!(&events.last().unwrap().kind, RuntimeEventKind::RunFinished { status: RunStatus::Failed, error: Some(msg), run_id: rid } if rid == &run_id && msg.contains("boom")),
             "last event should be failed run_finished with boom"
         );
         assert!(
             !events
                 .iter()
-                .any(|event| matches!(event.kind, RuntimeEventKind::MessageStarted { .. })),
+                .any(|event| matches!(&event.kind, RuntimeEventKind::MessageStarted { .. })),
             "should not emit message events on provider error"
         );
 
@@ -634,7 +831,7 @@ mod tests {
             chunk_size: 1,
             delay: Duration::from_millis(10),
         });
-        let runner = SessionRunner::new(provider, store.clone(), bus.clone());
+        let runner = runner_without_tools(provider, store.clone(), bus.clone());
         let params = SendMessageParams {
             session_id: "s1".into(),
             message: "hello".into(),
@@ -651,7 +848,7 @@ mod tests {
             .iter()
             .filter(|event| {
                 matches!(
-                    event.kind,
+                    &event.kind,
                     RuntimeEventKind::RunStarted { .. }
                         | RuntimeEventKind::RunFinished { .. }
                         | RuntimeEventKind::RunCancelled { .. }
@@ -662,25 +859,25 @@ mod tests {
             .collect();
 
         assert!(
-            matches!(run_events[0].kind, RuntimeEventKind::RunStarted { run_id: ref rid, .. } if rid == &run_id)
+            matches!(&run_events[0].kind, RuntimeEventKind::RunStarted { run_id: rid, .. } if rid == &run_id)
         );
         assert!(
-            run_events.iter().any(|event| matches!(event.kind, RuntimeEventKind::MessageStarted { run_id: ref rid, .. } if rid == &run_id)),
+            run_events.iter().any(|event| matches!(&event.kind, RuntimeEventKind::MessageStarted { run_id: rid, .. } if rid == &run_id)),
             "should emit message_started"
         );
 
         let last_three: Vec<_> = run_events.iter().rev().take(3).rev().copied().collect();
         assert_eq!(last_three.len(), 3, "should have at least three run events");
         assert!(
-            matches!(last_three[0].kind, RuntimeEventKind::MessageDelta { run_id: ref rid, .. } if rid == &run_id),
+            matches!(&last_three[0].kind, RuntimeEventKind::MessageDelta { run_id: rid, .. } if rid == &run_id),
             "second-to-last event before run_cancelled should be a message_delta flush"
         );
         assert!(
-            matches!(last_three[1].kind, RuntimeEventKind::RunCancelled { run_id: ref rid } if rid == &run_id),
+            matches!(&last_three[1].kind, RuntimeEventKind::RunCancelled { run_id: rid } if rid == &run_id),
             "should emit run_cancelled"
         );
         assert!(
-            matches!(last_three[2].kind, RuntimeEventKind::RunFinished { run_id: ref rid, status: RunStatus::Cancelled, error: None } if rid == &run_id),
+            matches!(&last_three[2].kind, RuntimeEventKind::RunFinished { run_id: rid, status: RunStatus::Cancelled, error: None } if rid == &run_id),
             "last event should be run_finished(Cancelled)"
         );
 
@@ -695,7 +892,7 @@ mod tests {
     #[tokio::test]
     async fn cancel_run_is_idempotent_when_idle() {
         let bus = Arc::new(RecordingEventBus::new());
-        let runner = SessionRunner::new(Arc::new(EchoProvider::default()), temp_store(), bus);
+        let runner = runner_with_tools(temp_store(), bus.clone());
 
         runner.cancel_run().await.expect("first cancel succeeds");
         runner.cancel_run().await.expect("second cancel succeeds");
@@ -709,7 +906,7 @@ mod tests {
             chunk_size: 1,
             delay: Duration::from_millis(10),
         });
-        let runner = SessionRunner::new(provider, store.clone(), bus.clone());
+        let runner = runner_without_tools(provider, store.clone(), bus.clone());
         let params = SendMessageParams {
             session_id: "s1".into(),
             message: "hello".into(),
@@ -734,8 +931,8 @@ mod tests {
             .iter()
             .filter(|event| {
                 matches!(
-                    event.kind,
-                    RuntimeEventKind::RunFinished { run_id: ref rid, .. } if rid == &second_id
+                    &event.kind,
+                    RuntimeEventKind::RunFinished { run_id: rid, .. } if rid == &second_id
                 )
             })
             .collect();
@@ -757,7 +954,14 @@ mod tests {
             chunk_size: 1,
             delay: Duration::from_millis(20),
         });
-        let runner = SessionRunner::new(provider, store, bus.clone());
+        let mut registry = MvpToolRegistry::new();
+        registry.register(
+            "read_file".to_string(),
+            Arc::new(ReadFileTool),
+            Arc::new(AllowAllPolicy),
+        );
+        let services = RuntimeServices::new(provider, store, bus.clone(), Arc::new(registry));
+        let runner = SessionRunner::new(services);
         let params = SendMessageParams {
             session_id: "s1".into(),
             message: "hello".into(),
@@ -781,12 +985,232 @@ mod tests {
         let events = bus.take_events().await;
         let cancelled_events: Vec<_> = events
             .iter()
-            .filter(|event| matches!(event.kind, RuntimeEventKind::RunCancelled { run_id: ref rid } if rid == &run_id))
+            .filter(|event| matches!(&event.kind, RuntimeEventKind::RunCancelled { run_id: rid } if rid == &run_id))
             .collect();
         assert_eq!(
             cancelled_events.len(),
             1,
             "should emit exactly one run_cancelled event"
         );
+    }
+    #[tokio::test]
+    async fn read_file_tool_loop_end_to_end() {
+        let params = SendMessageParams {
+            session_id: "s1".into(),
+            message: "读一下 main.rs".into(),
+        };
+        let bus = Arc::new(RecordingEventBus::new());
+        let store_dir = tempdir().expect("temp dir");
+        let store =
+            Arc::new(SessionStore::new(store_dir.path().to_path_buf()).expect("store creates"));
+        let temp = tempdir().expect("temp dir");
+        let workspace = temp.path().to_path_buf();
+        store
+            .new_session(&params.session_id, Some(workspace.to_str().unwrap()))
+            .await
+            .expect("create session with workspace");
+        tokio::fs::write(workspace.join("main.rs"), "fn main() {}")
+            .await
+            .expect("write main.rs");
+
+        let runner = runner_with_tools(store.clone(), bus.clone());
+
+        let run_id = runner.send_message(params).await.expect("send accepted");
+        runner.wait_until_idle().await;
+
+        let events = bus.take_events().await;
+
+        // Expected sequence:
+        // RunStarted, MessageStarted(Assistant), MessageCompleted(tool_calls),
+        // ToolStarted, ToolFinished, MessageStarted(Assistant), MessageCompleted(no tool_calls),
+        // RunFinished(Succeeded)
+        let run_event_kinds: Vec<_> = events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    &event.kind,
+                    RuntimeEventKind::RunStarted { .. }
+                        | RuntimeEventKind::MessageStarted { .. }
+                        | RuntimeEventKind::MessageCompleted { .. }
+                        | RuntimeEventKind::ToolStarted { .. }
+                        | RuntimeEventKind::ToolFinished { .. }
+                        | RuntimeEventKind::RunFinished { .. }
+                )
+            })
+            .map(|event| &event.kind)
+            .collect();
+
+        assert!(
+            matches!(&run_event_kinds[0], RuntimeEventKind::RunStarted { run_id: rid, .. } if rid == &run_id),
+            "first event should be run_started"
+        );
+        assert!(
+            matches!(&run_event_kinds[1], RuntimeEventKind::MessageStarted { role: MessageRole::Assistant, run_id: rid, .. } if rid == &run_id),
+            "second event should be assistant message_started"
+        );
+        assert!(
+            matches!(&run_event_kinds[2], RuntimeEventKind::MessageCompleted { run_id: rid, tool_calls: Some(_), .. } if rid == &run_id),
+            "third event should be message_completed with tool_calls"
+        );
+        assert!(
+            matches!(&run_event_kinds[3], RuntimeEventKind::ToolStarted { .. }),
+            "fourth event should be tool_started"
+        );
+        assert!(
+            matches!(&run_event_kinds[4], RuntimeEventKind::ToolFinished { output: out, is_error: false, .. } if out == "fn main() {}"),
+            "fifth event should be tool_finished with file contents"
+        );
+        assert!(
+            matches!(&run_event_kinds[6], RuntimeEventKind::MessageCompleted { run_id: rid, tool_calls: None, .. } if rid == &run_id),
+            "seventh event should be message_completed without tool_calls"
+        );
+        let view = store.load_session("s1").await.expect("session loads");
+        assert_eq!(
+            view.messages.len(),
+            4,
+            "developer + assistant + tool result + final assistant"
+        );
+        assert_eq!(view.messages[0].role, MessageRole::Developer);
+        assert_eq!(view.messages[0].content, "读一下 main.rs");
+        assert_eq!(view.messages[1].role, MessageRole::Assistant);
+        assert!(
+            view.messages[1].tool_calls.is_some(),
+            "assistant message should keep its tool_calls"
+        );
+        assert_eq!(view.messages[2].role, MessageRole::Tool);
+        assert_eq!(
+            view.messages[2].tool_call_id.as_deref(),
+            Some("echo-call-1")
+        );
+        assert_eq!(view.messages[2].content, "fn main() {}");
+        assert_eq!(view.messages[3].role, MessageRole::Assistant);
+        assert_eq!(view.messages[3].content, "Echo: 读一下 main.rs");
+
+        let contents = tokio::fs::read_to_string(store_dir.path().join("s1.jsonl"))
+            .await
+            .expect("read session file");
+        assert!(contents.contains("echo-call-1"));
+        assert!(contents.contains("fn main() {}"));
+    }
+
+    /// A provider that records every `messages` slice it receives and drives a
+    /// deterministic two-turn conversation: turn 0 requests one tool call, turn 1
+    /// returns a plain text answer.
+    struct RecordingProvider {
+        calls: Arc<Mutex<Vec<Vec<RunMessage>>>>,
+    }
+
+    #[async_trait]
+    impl ModelProvider for RecordingProvider {
+        async fn send_message(
+            &self,
+            messages: Vec<RunMessage>,
+            _tools: Vec<byte_protocol::ToolDefinition>,
+        ) -> Result<ProviderStream, ProviderError> {
+            let mut calls = self.calls.lock().await;
+            let turn = calls.len();
+            calls.push(messages);
+            drop(calls);
+
+            let events: Vec<Result<ProviderEvent, ProviderError>> = if turn == 0 {
+                let message_id = "assistant-1".to_string();
+                vec![
+                    Ok(ProviderEvent::MessageStarted {
+                        message_id: message_id.clone(),
+                    }),
+                    Ok(ProviderEvent::MessageCompleted {
+                        message_id,
+                        tool_calls: Some(vec![byte_protocol::ToolCall {
+                            id: "call-1".into(),
+                            name: "read_file".into(),
+                            arguments: serde_json::json!({"path": "main.rs"}),
+                        }]),
+                    }),
+                ]
+            } else {
+                let message_id = "assistant-2".to_string();
+                vec![
+                    Ok(ProviderEvent::MessageStarted {
+                        message_id: message_id.clone(),
+                    }),
+                    Ok(ProviderEvent::TextDelta {
+                        message_id: message_id.clone(),
+                        delta: "done".into(),
+                    }),
+                    Ok(ProviderEvent::MessageCompleted {
+                        message_id,
+                        tool_calls: None,
+                    }),
+                ]
+            };
+            Ok(Box::pin(futures::stream::iter(events)))
+        }
+    }
+
+    #[tokio::test]
+    async fn assistant_tool_calls_are_passed_to_next_provider_call() {
+        let params = SendMessageParams {
+            session_id: "s1".into(),
+            message: "读一下 main.rs".into(),
+        };
+        let bus = Arc::new(RecordingEventBus::new());
+        let store_dir = tempdir().expect("temp dir");
+        let store =
+            Arc::new(SessionStore::new(store_dir.path().to_path_buf()).expect("store creates"));
+        let temp = tempdir().expect("temp dir");
+        let workspace = temp.path().to_path_buf();
+        store
+            .new_session(&params.session_id, Some(workspace.to_str().unwrap()))
+            .await
+            .expect("create session with workspace");
+        tokio::fs::write(workspace.join("main.rs"), "fn main() {}")
+            .await
+            .expect("write main.rs");
+
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let provider = Arc::new(RecordingProvider {
+            calls: calls.clone(),
+        });
+        let mut registry = MvpToolRegistry::new();
+        registry.register(
+            "read_file".to_string(),
+            Arc::new(ReadFileTool),
+            Arc::new(AllowAllPolicy),
+        );
+        let services =
+            RuntimeServices::new(provider, store.clone(), bus.clone(), Arc::new(registry));
+        let runner = SessionRunner::new(services);
+
+        let run_id = runner.send_message(params).await.expect("send accepted");
+        runner.wait_until_idle().await;
+
+        let events = bus.take_events().await;
+        assert!(
+            events.iter().any(|event| matches!(&event.kind, RuntimeEventKind::RunFinished { status: RunStatus::Succeeded, run_id: rid, .. } if rid == &run_id)),
+            "run should finish successfully"
+        );
+
+        let calls = calls.lock().await;
+        assert_eq!(calls.len(), 2, "should make exactly two provider calls");
+
+        // First turn: system prompt + current user message.
+        assert_eq!(calls[0].len(), 2);
+        assert_eq!(calls[0][0].role, MessageRole::System);
+        assert_eq!(calls[0][1].role, MessageRole::Developer);
+
+        // Second turn: system, user, assistant (must carry tool_calls), tool result.
+        assert_eq!(calls[1].len(), 4);
+        assert_eq!(calls[1][2].role, MessageRole::Assistant);
+        assert!(
+            calls[1][2].tool_calls.is_some(),
+            "assistant RunMessage passed to the next turn must carry tool_calls"
+        );
+        let tool_calls = calls[1][2].tool_calls.as_ref().unwrap();
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(tool_calls[0].id, "call-1");
+        assert_eq!(tool_calls[0].name, "read_file");
+
+        assert_eq!(calls[1][3].role, MessageRole::Tool);
+        assert_eq!(calls[1][3].tool_call_id, Some("call-1".into()));
     }
 }

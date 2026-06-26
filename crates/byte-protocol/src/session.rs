@@ -42,14 +42,44 @@ pub struct SessionMessage {
     pub parent_id: Option<String>,
     pub role: MessageRole,
     pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<crate::ToolCall>>,
 }
 
-/// Raw content stored inside a `message` session entry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionMessageContent {
     pub role: MessageRole,
-    pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<crate::ToolCall>>,
+}
+
+impl SessionMessageContent {
+    /// Create a plain text message content.
+    pub fn text(role: MessageRole, content: impl Into<String>) -> Self {
+        Self {
+            role,
+            text: Some(content.into()),
+            tool_calls: None,
+        }
+    }
+
+    /// Create assistant content that includes tool calls.
+    pub fn with_tool_calls(
+        role: MessageRole,
+        content: impl Into<String>,
+        tool_calls: Vec<crate::ToolCall>,
+    ) -> Self {
+        Self {
+            role,
+            text: Some(content.into()),
+            tool_calls: Some(tool_calls),
+        }
+    }
 }
 
 /// A single persisted record inside a Session JSONL file.
@@ -133,16 +163,13 @@ mod tests {
         let decoded: SessionEntry = decode_json_line(&line).expect("entry decodes");
 
         assert_eq!(decoded, entry);
-    }
-
-    #[test]
-    fn message_entry_roundtrips() {
         let entry = SessionEntry::Message {
             id: "msg-1".into(),
             parent_id: Some("msg-0".into()),
             message: SessionMessageContent {
                 role: MessageRole::Developer,
-                content: "hello".into(),
+                text: Some("hello".into()),
+                tool_calls: None,
             },
         };
 
@@ -162,6 +189,8 @@ mod tests {
                 parent_id: None,
                 role: MessageRole::Assistant,
                 content: "hi".into(),
+                tool_call_id: None,
+                tool_calls: None,
             }],
             compactions: vec![CompactionSummary {
                 id: "compact-1".into(),
@@ -188,5 +217,39 @@ mod tests {
         let decoded: SessionSummary = serde_json::from_value(value).expect("summary decodes");
 
         assert_eq!(decoded, summary);
+    }
+
+    #[test]
+    fn message_content_with_tool_calls_roundtrips() {
+        let content = SessionMessageContent::with_tool_calls(
+            MessageRole::Assistant,
+            String::new(),
+            vec![crate::ToolCall {
+                id: "call-1".into(),
+                name: "read_file".into(),
+                arguments: serde_json::json!({"path": "src/main.rs"}),
+            }],
+        );
+
+        let line = serde_json::to_string(&content).expect("content encodes");
+        let decoded: SessionMessageContent =
+            crate::decode_json_line(&line).expect("content decodes");
+
+        assert_eq!(decoded, content);
+    }
+
+    #[test]
+    fn tool_result_entry_roundtrips() {
+        let entry = SessionEntry::ToolResult {
+            id: "tr-1".into(),
+            parent_id: "msg-1".into(),
+            tool_call_id: "call-1".into(),
+            content: "file contents".into(),
+        };
+
+        let line = serde_json::to_string(&entry).expect("entry encodes");
+        let decoded: SessionEntry = crate::decode_json_line(&line).expect("entry decodes");
+
+        assert_eq!(decoded, entry);
     }
 }

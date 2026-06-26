@@ -11,6 +11,7 @@ byte-core.workspace = true
 byte-models.workspace = true
 byte-session.workspace = true
 byte-protocol.workspace = true
+byte-tools.workspace = true
 futures.workspace = true
 serde_json.workspace = true
 serde.workspace = true
@@ -18,3 +19,6 @@ tokio.workspace = true
 uuid = { version = "1.23.3", features = ["v4"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[lints]
+workspace = true

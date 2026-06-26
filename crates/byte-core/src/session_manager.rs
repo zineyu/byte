@@ -1,17 +1,15 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use byte_models::ModelProvider;
 use byte_protocol::{
     CancelRunParams, CancelRunResult, DeleteSessionResult, ListSessionsResult, LoadSessionResult,
     NewSessionResult, RuntimeEventKind, SessionChangeAction,
 };
-use byte_session::SessionStore;
 use tokio::sync::Mutex;
 use tracing::{debug, info, instrument};
 
-use crate::event_bus::RuntimeEventBus;
 use crate::runner::{RunnerError, SessionRunner};
+use crate::runtime_services::RuntimeServices;
 
 /// Manages the lifecycle of per-session runners and session CRUD.
 ///
@@ -22,23 +20,15 @@ use crate::runner::{RunnerError, SessionRunner};
 /// session lifecycles.
 #[derive(Clone)]
 pub struct SessionManager {
-    provider: Arc<dyn ModelProvider>,
-    store: Arc<SessionStore>,
-    bus: Arc<dyn RuntimeEventBus>,
+    services: RuntimeServices,
     runners: Arc<Mutex<HashMap<String, Arc<SessionRunner>>>>,
 }
 
 impl SessionManager {
-    /// Create a new session manager with the given shared dependencies.
-    pub fn new(
-        provider: Arc<dyn ModelProvider>,
-        store: Arc<SessionStore>,
-        bus: Arc<dyn RuntimeEventBus>,
-    ) -> Self {
+    /// Create a new session manager with the given shared runtime services.
+    pub fn new(services: RuntimeServices) -> Self {
         Self {
-            provider,
-            store,
-            bus,
+            services,
             runners: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -52,7 +42,10 @@ impl SessionManager {
         session_id: &str,
         workspace: Option<&str>,
     ) -> Result<NewSessionResult, RunnerError> {
-        self.store.new_session(session_id, workspace).await?;
+        self.services
+            .store
+            .new_session(session_id, workspace)
+            .await?;
         self.emit_session_changed(session_id.to_owned(), SessionChangeAction::Created)
             .await;
         info!(%session_id, "session created");
@@ -66,7 +59,7 @@ impl SessionManager {
     /// Emits `session_changed(Loaded)` on success.
     #[instrument(skip(self))]
     pub async fn load_session(&self, session_id: &str) -> Result<LoadSessionResult, RunnerError> {
-        let session = self.store.load_session(session_id).await?;
+        let session = self.services.store.load_session(session_id).await?;
         self.emit_session_changed(session_id.to_owned(), SessionChangeAction::Loaded)
             .await;
         debug!(%session_id, message_count = session.messages.len(), "session loaded");
@@ -75,7 +68,7 @@ impl SessionManager {
 
     /// List all sessions ordered by created time descending.
     pub async fn list_sessions(&self) -> Result<ListSessionsResult, RunnerError> {
-        let sessions = self.store.list_sessions().await?;
+        let sessions = self.services.store.list_sessions().await?;
         Ok(ListSessionsResult { sessions })
     }
 
@@ -100,11 +93,11 @@ impl SessionManager {
             if active.is_some() {
                 return Err(RunnerError::Busy);
             }
-            self.store.delete_session(session_id).await?;
+            self.services.store.delete_session(session_id).await?;
             runners.remove(session_id);
         } else {
             drop(runners);
-            self.store.delete_session(session_id).await?;
+            self.services.store.delete_session(session_id).await?;
         }
 
         self.emit_session_changed(session_id.to_owned(), SessionChangeAction::Deleted)
@@ -160,18 +153,13 @@ impl SessionManager {
         let mut runners = self.runners.lock().await;
         runners
             .entry(session_id.to_owned())
-            .or_insert_with(|| {
-                Arc::new(SessionRunner::new(
-                    Arc::clone(&self.provider),
-                    Arc::clone(&self.store),
-                    Arc::clone(&self.bus),
-                ))
-            })
+            .or_insert_with(|| Arc::new(SessionRunner::new(self.services.clone())))
             .clone()
     }
 
     async fn emit_session_changed(&self, session_id: String, action: SessionChangeAction) {
-        self.bus
+        self.services
+            .event_bus
             .emit(RuntimeEventKind::SessionChanged { session_id, action })
             .await;
     }
@@ -187,9 +175,11 @@ mod tests {
         CancelRunParams, RunStatus, RuntimeEventKind, SendMessageParams, SessionChangeAction,
     };
     use byte_session::SessionStore;
+    use byte_tools::{AllowAllPolicy, MvpToolRegistry, ReadFileTool, ToolRegistry};
     use tempfile::tempdir;
 
     use crate::event_bus::{RecordingEventBus, RuntimeEventBus};
+    use crate::runtime_services::RuntimeServices;
 
     use super::SessionManager;
 
@@ -198,12 +188,43 @@ mod tests {
         Arc::new(SessionStore::new(dir.path().to_path_buf()).expect("store creates"))
     }
 
+    fn services(
+        provider: Arc<dyn ModelProvider>,
+        store: Arc<SessionStore>,
+        bus: Arc<dyn RuntimeEventBus>,
+    ) -> RuntimeServices {
+        let mut registry = MvpToolRegistry::new();
+        registry.register(
+            "read_file".to_string(),
+            Arc::new(ReadFileTool),
+            Arc::new(AllowAllPolicy),
+        );
+        RuntimeServices::new(provider, store, bus, Arc::new(registry))
+    }
+
+    fn services_without_tools(
+        provider: Arc<dyn ModelProvider>,
+        store: Arc<SessionStore>,
+        bus: Arc<dyn RuntimeEventBus>,
+    ) -> RuntimeServices {
+        RuntimeServices::new(provider, store, bus, Arc::new(MvpToolRegistry::new()))
+    }
+
     fn manager() -> (SessionManager, Arc<RecordingEventBus>, Arc<SessionStore>) {
         let provider: Arc<dyn ModelProvider> = Arc::new(EchoProvider::default());
         let store = temp_store();
         let recording_bus = Arc::new(RecordingEventBus::new());
         let bus: Arc<dyn RuntimeEventBus> = Arc::clone(&recording_bus) as Arc<dyn RuntimeEventBus>;
-        let manager = SessionManager::new(provider, Arc::clone(&store), bus);
+        let manager = SessionManager::new(services(provider, Arc::clone(&store), bus));
+        (manager, recording_bus, store)
+    }
+    fn manager_without_tools() -> (SessionManager, Arc<RecordingEventBus>, Arc<SessionStore>) {
+        let provider: Arc<dyn ModelProvider> = Arc::new(EchoProvider::default());
+        let store = temp_store();
+        let recording_bus = Arc::new(RecordingEventBus::new());
+        let bus: Arc<dyn RuntimeEventBus> = Arc::clone(&recording_bus) as Arc<dyn RuntimeEventBus>;
+        let manager =
+            SessionManager::new(services_without_tools(provider, Arc::clone(&store), bus));
         (manager, recording_bus, store)
     }
 
@@ -259,7 +280,7 @@ mod tests {
         let store = temp_store();
         let recording_bus = Arc::new(RecordingEventBus::new());
         let bus: Arc<dyn RuntimeEventBus> = Arc::clone(&recording_bus) as Arc<dyn RuntimeEventBus>;
-        let manager = SessionManager::new(provider, Arc::clone(&store), bus);
+        let manager = SessionManager::new(services(provider, Arc::clone(&store), bus));
         manager.new_session("s1", None).await.unwrap();
         recording_bus.take_events().await;
 
@@ -283,8 +304,7 @@ mod tests {
 
     #[tokio::test]
     async fn send_message_lazily_creates_runner_and_rejects_concurrent_runs() {
-        let (manager, bus, store) = manager();
-        manager.new_session("s1", None).await.unwrap();
+        let (manager, bus, store) = manager_without_tools();
         bus.take_events().await;
 
         let params = SendMessageParams {
@@ -387,7 +407,8 @@ mod tests {
         let store = temp_store();
         let recording_bus = Arc::new(RecordingEventBus::new());
         let bus: Arc<dyn RuntimeEventBus> = Arc::clone(&recording_bus) as Arc<dyn RuntimeEventBus>;
-        let manager = SessionManager::new(provider, Arc::clone(&store), bus);
+        let manager =
+            SessionManager::new(services_without_tools(provider, Arc::clone(&store), bus));
         manager.new_session("s1", None).await.unwrap();
         recording_bus.take_events().await;
 
@@ -407,11 +428,11 @@ mod tests {
 
         let events = recording_bus.take_events().await;
         assert!(
-            events.iter().any(|event| matches!(event.kind, RuntimeEventKind::RunCancelled { run_id: ref rid } if rid == &run_id)),
+            events.iter().any(|event| matches!(&event.kind, RuntimeEventKind::RunCancelled { run_id: rid } if rid == &run_id)),
             "should emit run_cancelled"
         );
         assert!(
-            events.iter().any(|event| matches!(event.kind, RuntimeEventKind::RunFinished { run_id: ref rid, status: RunStatus::Cancelled, .. } if rid == &run_id)),
+            events.iter().any(|event| matches!(&event.kind, RuntimeEventKind::RunFinished { run_id: rid, status: RunStatus::Cancelled, .. } if rid == &run_id)),
             "should emit run_finished(Cancelled)"
         );
 

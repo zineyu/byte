@@ -9,6 +9,8 @@ use anyhow::{bail, Context};
 use async_trait::async_trait;
 use byte_core::event_bus::{BroadcastEventBus, RuntimeEventBus};
 #[cfg(unix)]
+use byte_core::runtime_services::RuntimeServices;
+#[cfg(unix)]
 use byte_core::session_manager::SessionManager;
 #[cfg(unix)]
 use byte_models::{
@@ -22,6 +24,8 @@ use byte_protocol::{
 };
 #[cfg(unix)]
 use byte_session::SessionStore;
+#[cfg(unix)]
+use byte_tools::{AllowAllPolicy, MvpToolRegistry, ReadFileTool, ToolRegistry};
 #[cfg(unix)]
 use futures::StreamExt;
 #[cfg(unix)]
@@ -77,11 +81,22 @@ async fn run_socket_server(socket_path: &Path) -> anyhow::Result<()> {
     let session_store =
         Arc::new(SessionStore::with_default_dir().context("failed to initialize session store")?);
     let provider: Arc<dyn ModelProvider> = Arc::new(LazyConfigProvider::new());
-    let session_manager = SessionManager::new(
+
+    let mut registry = MvpToolRegistry::new();
+    registry.register(
+        "read_file".to_string(),
+        Arc::new(ReadFileTool),
+        Arc::new(AllowAllPolicy),
+    );
+    let tool_registry: Arc<dyn byte_tools::ToolRegistry> = Arc::new(registry);
+
+    let services = RuntimeServices::new(
         Arc::clone(&provider),
         Arc::clone(&session_store),
         Arc::clone(&event_bus),
+        tool_registry,
     );
+    let session_manager = SessionManager::new(services);
     let rpc_context = RpcContext { session_manager };
 
     info!("daemon ready, waiting for connections");
@@ -210,6 +225,7 @@ impl ModelProvider for LazyConfigProvider {
     async fn send_message(
         &self,
         messages: Vec<RunMessage>,
+        tools: Vec<byte_protocol::ToolDefinition>,
     ) -> Result<ProviderStream, ProviderError> {
         let provider = {
             let mut guard = self.inner.lock().await;
@@ -223,7 +239,7 @@ impl ModelProvider for LazyConfigProvider {
         };
         provider
             .expect("provider initialized above")
-            .send_message(messages)
+            .send_message(messages, tools)
             .await
     }
 }
