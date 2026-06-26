@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use byte_models::ModelProvider;
 use byte_protocol::{
-    DeleteSessionResult, ListSessionsResult, LoadSessionResult, NewSessionResult, RuntimeEventKind,
-    SessionChangeAction,
+    CancelRunParams, CancelRunResult, DeleteSessionResult, ListSessionsResult, LoadSessionResult,
+    NewSessionResult, RuntimeEventKind, SessionChangeAction,
 };
 use byte_session::SessionStore;
 use tokio::sync::Mutex;
@@ -128,6 +128,23 @@ impl SessionManager {
         runner.send_message(params).await
     }
 
+    /// Cancel the active run for a session, if any.
+    ///
+    /// Returns success immediately when the session has no runner or no active
+    /// run.
+    #[instrument(skip(self))]
+    pub async fn cancel_run(
+        &self,
+        params: CancelRunParams,
+    ) -> Result<CancelRunResult, RunnerError> {
+        let runners = self.runners.lock().await;
+        if let Some(runner) = runners.get(&params.session_id).cloned() {
+            drop(runners);
+            runner.cancel_run().await?;
+        }
+        Ok(CancelRunResult {})
+    }
+
     /// Return true if the session has an active run.
     pub async fn is_running(&self, session_id: &str) -> bool {
         let runners = self.runners.lock().await;
@@ -166,9 +183,12 @@ impl SessionManager {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::time::Duration;
 
     use byte_models::{EchoProvider, ModelProvider};
-    use byte_protocol::{RunStatus, RuntimeEventKind, SendMessageParams, SessionChangeAction};
+    use byte_protocol::{
+        CancelRunParams, RunStatus, RuntimeEventKind, SendMessageParams, SessionChangeAction,
+    };
     use byte_session::SessionStore;
     use tempfile::tempdir;
 
@@ -236,7 +256,7 @@ mod tests {
     #[tokio::test]
     async fn delete_session_with_active_run_returns_busy() {
         let provider: Arc<dyn ModelProvider> = Arc::new(EchoProvider {
-            delay: std::time::Duration::from_millis(50),
+            delay: Duration::from_millis(50),
             ..Default::default()
         });
         let store = temp_store();
@@ -359,5 +379,67 @@ mod tests {
             .collect();
         assert!(ids.contains(&"s1".to_owned()));
         assert!(ids.contains(&"s2".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn cancel_run_forwards_to_runner() {
+        let provider: Arc<dyn ModelProvider> = Arc::new(EchoProvider {
+            chunk_size: 1,
+            delay: Duration::from_millis(10),
+        });
+        let store = temp_store();
+        let recording_bus = Arc::new(RecordingEventBus::new());
+        let bus: Arc<dyn RuntimeEventBus> = Arc::clone(&recording_bus) as Arc<dyn RuntimeEventBus>;
+        let manager = SessionManager::new(provider, Arc::clone(&store), bus);
+        manager.new_session("s1", None).await.unwrap();
+        recording_bus.take_events().await;
+
+        let params = SendMessageParams {
+            session_id: "s1".into(),
+            message: "hi".into(),
+        };
+        let run_id = manager.send_message(params).await.expect("run accepted");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        manager
+            .cancel_run(CancelRunParams {
+                session_id: "s1".into(),
+            })
+            .await
+            .expect("cancel succeeds");
+
+        let events = recording_bus.take_events().await;
+        assert!(
+            events.iter().any(|event| matches!(event.kind, RuntimeEventKind::RunCancelled { run_id: ref rid } if rid == &run_id)),
+            "should emit run_cancelled"
+        );
+        assert!(
+            events.iter().any(|event| matches!(event.kind, RuntimeEventKind::RunFinished { run_id: ref rid, status: RunStatus::Cancelled, .. } if rid == &run_id)),
+            "should emit run_finished(Cancelled)"
+        );
+
+        let view = store.load_session("s1").await.expect("session loads");
+        assert_eq!(
+            view.messages.len(),
+            1,
+            "assistant message should not be persisted"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_run_without_runner_succeeds() {
+        let (manager, bus, _store) = manager();
+        manager.new_session("s1", None).await.unwrap();
+        bus.take_events().await;
+
+        let result = manager
+            .cancel_run(CancelRunParams {
+                session_id: "s1".into(),
+            })
+            .await;
+        assert!(
+            result.is_ok(),
+            "cancel_run should succeed when session has no runner"
+        );
     }
 }

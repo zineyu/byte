@@ -13,6 +13,18 @@ pub struct ModelProviderConfig {
     pub base_url: String,
     pub api_key: String,
     pub model: String,
+    pub echo_chunk_size: Option<usize>,
+    pub echo_delay_ms: Option<u64>,
+}
+
+impl ModelProviderConfig {
+    pub fn echo_chunk_size_or_default(&self) -> usize {
+        self.echo_chunk_size.unwrap_or(5)
+    }
+
+    pub fn echo_delay_or_default(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.echo_delay_ms.unwrap_or(0))
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -21,6 +33,8 @@ struct RawConfig {
     base_url: Option<String>,
     api_key: Option<String>,
     model: Option<String>,
+    echo_chunk_size: Option<usize>,
+    echo_delay_ms: Option<u64>,
     openai: Option<OpenAiSection>,
 }
 
@@ -115,6 +129,8 @@ fn parse_config(contents: &str) -> Result<ModelProviderConfig, ConfigError> {
         base_url,
         api_key,
         model,
+        echo_chunk_size: raw.echo_chunk_size,
+        echo_delay_ms: raw.echo_delay_ms,
     })
 }
 

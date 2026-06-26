@@ -247,11 +247,16 @@ async fn build_provider() -> anyhow::Result<Arc<dyn ModelProvider>> {
                 base_url: normalize_base_url(&config.base_url),
                 api_key: config.api_key,
                 model: config.model,
+                echo_chunk_size: config.echo_chunk_size,
+                echo_delay_ms: config.echo_delay_ms,
             },
         ))),
         "echo" => {
             debug!("using echo provider");
-            Ok(Arc::new(EchoProvider::default()))
+            Ok(Arc::new(EchoProvider {
+                chunk_size: config.echo_chunk_size_or_default(),
+                delay: config.echo_delay_or_default(),
+            }))
         }
         other => bail!("unknown provider: {other}"),
     }

@@ -7,9 +7,9 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use byte_protocol::{
-    decode_json_line, encode_json_line, DaemonState, DeleteSessionParams, JsonRpcMessage,
-    JsonRpcRequest, ListSessionsResult, LoadSessionParams, LoadSessionResult, NewSessionParams,
-    NewSessionResult, RpcId, RunStatus, RuntimeEventKind, SendMessageParams,
+    decode_json_line, encode_json_line, CancelRunParams, DaemonState, DeleteSessionParams,
+    JsonRpcMessage, JsonRpcRequest, ListSessionsResult, LoadSessionParams, LoadSessionResult,
+    NewSessionParams, NewSessionResult, RpcId, RunStatus, RuntimeEventKind, SendMessageParams,
 };
 
 #[test]
@@ -501,6 +501,87 @@ fn list_sessions_and_delete_session() {
                 assert!(result.sessions.is_empty());
                 saw_empty_list = true;
             }
+        }
+    }
+
+    drop(stream);
+    stop_daemon(child, &socket_path, Some(&data_dir));
+}
+
+#[test]
+fn cancel_run_emits_run_cancelled_and_run_finished_cancelled() {
+    let socket_path = unique_socket_path();
+    let data_dir = unique_data_dir();
+    let child = start_daemon_with_config(
+        &socket_path,
+        &write_config("provider = 'echo'\nbase_url = ''\napi_key = ''\nmodel = 'echo'\necho_chunk_size = 1\necho_delay_ms = 20"),
+        &data_dir,
+    );
+
+    let mut stream = connect_with_retry(&socket_path);
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("read timeout is set");
+
+    let mut reader = BufReader::new(stream.try_clone().expect("stream clones"));
+    wait_for_event_type(&mut reader, |kind| {
+        matches!(kind, RuntimeEventKind::DaemonStarted { .. })
+    });
+
+    let send_params = serde_json::to_value(SendMessageParams {
+        session_id: "cancel-session".to_owned(),
+        message: "hello world".to_owned(),
+    })
+    .expect("send params encode");
+    let send_request = JsonRpcRequest::new(11, "send_message", Some(send_params));
+    write_request(&mut stream, &send_request);
+
+    // Wait until the assistant message has started so the run is active.
+    wait_for_event_type(&mut reader, |kind| {
+        matches!(kind, RuntimeEventKind::MessageStarted { .. })
+    });
+
+    let cancel_params = serde_json::to_value(CancelRunParams {
+        session_id: "cancel-session".to_owned(),
+    })
+    .expect("cancel params encode");
+    let cancel_request = JsonRpcRequest::new(12, "cancel_run", Some(cancel_params));
+    write_request(&mut stream, &cancel_request);
+
+    let mut saw_cancel_response = false;
+    let mut saw_run_cancelled = false;
+    let mut saw_run_finished_cancelled = false;
+
+    while !(saw_cancel_response && saw_run_cancelled && saw_run_finished_cancelled) {
+        let line = read_line(&mut reader);
+
+        match decode_json_line::<JsonRpcMessage>(&line).expect("message decodes") {
+            JsonRpcMessage::Response(response) => {
+                if response.id == RpcId::Number(12) {
+                    assert!(response.error.is_none(), "cancel_run should succeed");
+                    saw_cancel_response = true;
+                }
+            }
+            JsonRpcMessage::Notification(notification) => {
+                assert_eq!(notification.method, byte_protocol::RUNTIME_EVENT_METHOD);
+                let event: byte_protocol::RuntimeEvent =
+                    serde_json::from_value(notification.params.expect("notification has params"))
+                        .expect("runtime event decodes");
+                match event.kind {
+                    RuntimeEventKind::RunCancelled { .. } => {
+                        saw_run_cancelled = true;
+                    }
+                    RuntimeEventKind::RunFinished {
+                        status: RunStatus::Cancelled,
+                        error: None,
+                        ..
+                    } => {
+                        saw_run_finished_cancelled = true;
+                    }
+                    _ => {}
+                }
+            }
+            JsonRpcMessage::Request(_) => panic!("daemon must not send requests to clients"),
         }
     }
 

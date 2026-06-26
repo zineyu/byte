@@ -1,8 +1,8 @@
 use byte_core::runner::RunnerError;
 use byte_core::session_manager::SessionManager;
 use byte_protocol::{
-    DaemonState, DeleteSessionParams, JsonRpcRequest, JsonRpcResponse, LoadSessionParams,
-    NewSessionParams, SendMessageParams, SendMessageResult,
+    CancelRunParams, DaemonState, DeleteSessionParams, JsonRpcRequest, JsonRpcResponse,
+    LoadSessionParams, NewSessionParams, SendMessageParams, SendMessageResult,
 };
 use tracing::{debug, instrument, warn};
 
@@ -27,6 +27,7 @@ pub async fn handle_request(context: &RpcContext, request: JsonRpcRequest) -> Js
         "list_sessions" => handle_list_sessions(context, &request).await,
         "delete_session" => handle_delete_session(context, &request).await,
         "send_message" => handle_send_message(context, &request).await,
+        "cancel_run" => handle_cancel_run(context, &request).await,
         method => {
             JsonRpcResponse::failure(request.id, -32601, format!("method not found: {method}"))
         }
@@ -119,6 +120,23 @@ async fn handle_send_message(context: &RpcContext, request: &JsonRpcRequest) -> 
     match context.session_manager.send_message(params).await {
         Ok(run_id) => {
             let result = SendMessageResult { run_id };
+            JsonRpcResponse::success(request.id.clone(), result).unwrap_or_else(|error| {
+                JsonRpcResponse::failure(request.id.clone(), -32603, error.to_string())
+            })
+        }
+        Err(error) => runner_error_response(request, Some(&session_id), error),
+    }
+}
+
+async fn handle_cancel_run(context: &RpcContext, request: &JsonRpcRequest) -> JsonRpcResponse {
+    let params: CancelRunParams = match parse_params(request) {
+        Ok(params) => params,
+        Err(response) => return response,
+    };
+
+    let session_id = params.session_id.clone();
+    match context.session_manager.cancel_run(params).await {
+        Ok(result) => {
             JsonRpcResponse::success(request.id.clone(), result).unwrap_or_else(|error| {
                 JsonRpcResponse::failure(request.id.clone(), -32603, error.to_string())
             })

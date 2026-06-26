@@ -327,10 +327,18 @@ pub struct SendMessageResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CancelRunParams {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunMessage {
     pub role: MessageRole,
     pub content: String,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CancelRunResult {}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct JsonRpcError {
@@ -578,5 +586,24 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn cancel_run_params_and_result_roundtrip() {
+        let params = CancelRunParams {
+            session_id: "session-cancel-1".into(),
+        };
+        let decoded: CancelRunParams =
+            decode_json_line(&encode_json_line(&params).unwrap()).unwrap();
+        assert_eq!(decoded, params);
+
+        let result = CancelRunResult {};
+        let response = JsonRpcResponse::success(7, result).expect("response encodes");
+        let decoded: JsonRpcResponse =
+            decode_json_line(&encode_json_line(&response).unwrap()).unwrap();
+        assert_eq!(
+            decoded.result,
+            Some(serde_json::to_value(CancelRunResult {}).unwrap())
+        );
     }
 }
