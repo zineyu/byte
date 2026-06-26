@@ -218,6 +218,8 @@ function applyRuntimeEvent(state: AppState, event: RuntimeEvent): AppState {
             : message,
         ),
       };
+    case "tool_started":
+    case "tool_finished":
     case "session_changed":
       return { ...state, events };
   }

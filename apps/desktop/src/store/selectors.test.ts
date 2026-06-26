@@ -35,7 +35,23 @@ function makeEvent(
     case "message_delta":
       return { ...base, type, run_id: "r1", message_id: "m1", delta: "hi" };
     case "message_completed":
-      return { ...base, type, run_id: "r1", message_id: "m1" };
+      return {
+        ...base,
+        type,
+        run_id: "r1",
+        message_id: "m1",
+        tool_calls: null,
+      };
+    case "tool_started":
+      return { ...base, type, tool_call_id: "tc1", name: "read_file" };
+    case "tool_finished":
+      return {
+        ...base,
+        type,
+        tool_call_id: "tc1",
+        output: "ok",
+        is_error: false,
+      };
     case "error":
       return { ...base, type, message: "oops", run_id: null };
     case "run_cancelled":

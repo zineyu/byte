@@ -222,9 +222,12 @@ async fn spawn_daemon_client(app_handle: AppHandle) -> Result<DaemonClient, Stri
         .stderr(Stdio::null())
         .kill_on_drop(true);
 
-    let mut child = command
-        .spawn()
-        .map_err(|error| format!("failed to launch daemon at {daemon_path:?}: {error}"))?;
+    let mut child = command.spawn().map_err(|error| {
+        format!(
+            "failed to launch daemon at {}: {error}",
+            daemon_path.display()
+        )
+    })?;
 
     let stream = match connect_daemon_socket(&socket_path).await {
         Ok(stream) => stream,
@@ -257,7 +260,7 @@ async fn spawn_daemon_client(app_handle: AppHandle) -> Result<DaemonClient, Stri
         let mut reader = BufReader::new(read_half).lines();
         loop {
             match reader.next_line().await {
-                Ok(Some(line)) if line.trim().is_empty() => continue,
+                Ok(Some(line)) if line.trim().is_empty() => {}
                 Ok(Some(line)) => handle_daemon_message(&app_handle, &reader_pending, &line).await,
                 Ok(None) => break,
                 Err(error) => {
@@ -286,11 +289,6 @@ async fn spawn_daemon_client(app_handle: AppHandle) -> Result<DaemonClient, Stri
         writer_task,
         next_request_id: 1,
     })
-}
-
-#[cfg(not(unix))]
-async fn spawn_daemon_client(_app_handle: AppHandle) -> Result<DaemonClient, String> {
-    Err("byte-daemon currently supports Unix Domain Socket RPC on Unix platforms only".to_owned())
 }
 
 async fn handle_daemon_message(
@@ -327,7 +325,7 @@ async fn handle_daemon_message(
                 }
             }
         }
-        Ok(JsonRpcMessage::Notification(_)) | Ok(JsonRpcMessage::Request(_)) => {}
+        Ok(JsonRpcMessage::Notification(_) | JsonRpcMessage::Request(_)) => {}
         Err(error) => {
             let _ = app_handle.emit(
                 "daemon-event",
@@ -358,10 +356,9 @@ async fn connect_daemon_socket(socket_path: &Path) -> Result<UnixStream, String>
     }
 
     Err(format!(
-        "failed to connect daemon RPC socket at {socket_path:?}: {}",
-        last_error
-            .map(|error| error.to_string())
-            .unwrap_or_else(|| "timed out".to_owned())
+        "failed to connect daemon RPC socket at {}: {}",
+        socket_path.display(),
+        last_error.map_or_else(|| "timed out".to_owned(), |error| error.to_string())
     ))
 }
 
@@ -375,12 +372,18 @@ fn create_rpc_socket_path() -> Result<(PathBuf, PathBuf), String> {
         std::env::temp_dir().join(format!("byte-daemon-{}-{suffix}", std::process::id()));
 
     std::fs::create_dir(&socket_dir).map_err(|error| {
-        format!("failed to create private daemon RPC directory {socket_dir:?}: {error}")
+        format!(
+            "failed to create private daemon RPC directory {}: {error}",
+            socket_dir.display()
+        )
     })?;
     std::fs::set_permissions(&socket_dir, std::fs::Permissions::from_mode(0o700)).map_err(
         |error| {
             let _ = std::fs::remove_dir_all(&socket_dir);
-            format!("failed to secure daemon RPC directory {socket_dir:?}: {error}")
+            format!(
+                "failed to secure daemon RPC directory {}: {error}",
+                socket_dir.display()
+            )
         },
     )?;
 
@@ -457,6 +460,9 @@ async fn load_session(
     client.load_session(session_id).await
 }
 
+/// # Panics
+///
+/// panic when tauri start failed
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {

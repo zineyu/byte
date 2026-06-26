@@ -72,10 +72,13 @@ fn resolve_config_path_with_env(
         return PathBuf::from(path);
     }
 
-    let config_dir = xdg_config_home.map(PathBuf::from).unwrap_or_else(|| {
-        let home = home.unwrap_or_else(|| String::from("."));
-        PathBuf::from(home).join(".config")
-    });
+    let config_dir = xdg_config_home.map_or_else(
+        || {
+            let home = home.unwrap_or_else(|| String::from("."));
+            PathBuf::from(home).join(".config")
+        },
+        PathBuf::from,
+    );
 
     config_dir.join("byte").join(DEFAULT_FILE_NAME)
 }
@@ -136,7 +139,7 @@ fn parse_config(contents: &str) -> Result<ModelProviderConfig, ConfigError> {
 
 fn require_field(name: &str, value: Option<&str>) -> Result<String, ConfigError> {
     value
-        .map(|value| value.to_owned())
+        .map(std::borrow::ToOwned::to_owned)
         .ok_or_else(|| ConfigError::MissingField {
             field: name.to_owned(),
         })

@@ -7,9 +7,9 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use byte_protocol::{
-    decode_json_line, encode_json_line, CancelRunParams, DaemonState, DeleteSessionParams,
-    JsonRpcMessage, JsonRpcRequest, ListSessionsResult, LoadSessionParams, LoadSessionResult,
-    NewSessionParams, NewSessionResult, RpcId, RunStatus, RuntimeEventKind, SendMessageParams,
+    CancelRunParams, DaemonState, DeleteSessionParams, JsonRpcMessage, JsonRpcRequest,
+    ListSessionsResult, LoadSessionParams, LoadSessionResult, NewSessionParams, NewSessionResult,
+    RpcId, RunStatus, RuntimeEventKind, SendMessageParams, decode_json_line, encode_json_line,
 };
 
 #[test]
@@ -204,6 +204,7 @@ fn send_message_with_echo_provider_streams_assistant_message() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn send_message_persists_messages_to_session() {
     let socket_path = unique_socket_path();
     let config_path =
@@ -278,13 +279,12 @@ fn send_message_persists_messages_to_session() {
         let line = read_line(&mut reader);
         if let JsonRpcMessage::Response(response) =
             decode_json_line::<JsonRpcMessage>(&line).expect("message decodes")
+            && response.id == RpcId::Number(4)
         {
-            if response.id == RpcId::Number(4) {
-                let result: LoadSessionResult =
-                    serde_json::from_value(response.result.expect("response has result"))
-                        .expect("load_session result decodes");
-                break result.session;
-            }
+            let result: LoadSessionResult =
+                serde_json::from_value(response.result.expect("response has result"))
+                    .expect("load_session result decodes");
+            break result.session;
         }
     };
 
@@ -372,10 +372,9 @@ fn session_operations_emit_session_changed_event() {
                     session_id: ref id,
                     action: byte_protocol::SessionChangeAction::Created,
                 } = event.kind
+                    && Some(id) == created_id.as_ref()
                 {
-                    if Some(id) == created_id.as_ref() {
-                        saw_created = true;
-                    }
+                    saw_created = true;
                 }
             }
             JsonRpcMessage::Request(_) => panic!("daemon must not send requests to clients"),
@@ -422,6 +421,7 @@ fn session_operations_emit_session_changed_event() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn list_sessions_and_delete_session() {
     let socket_path = unique_socket_path();
     let data_dir = unique_data_dir();
@@ -474,20 +474,19 @@ fn list_sessions_and_delete_session() {
         let line = read_line(&mut reader);
         if let JsonRpcMessage::Response(response) =
             decode_json_line::<JsonRpcMessage>(&line).expect("message decodes")
+            && response.id == RpcId::Number(8)
         {
-            if response.id == RpcId::Number(8) {
-                assert!(response.error.is_none(), "list_sessions should succeed");
-                let result: ListSessionsResult =
-                    serde_json::from_value(response.result.expect("response has result"))
-                        .expect("list_sessions result decodes");
-                assert_eq!(result.sessions.len(), 1);
-                assert_eq!(result.sessions[0].session_id, session_id);
-                assert_eq!(
-                    result.sessions[0].workspace.as_deref(),
-                    Some("/workspace/project")
-                );
-                saw_list = true;
-            }
+            assert!(response.error.is_none(), "list_sessions should succeed");
+            let result: ListSessionsResult =
+                serde_json::from_value(response.result.expect("response has result"))
+                    .expect("list_sessions result decodes");
+            assert_eq!(result.sessions.len(), 1);
+            assert_eq!(result.sessions[0].session_id, session_id);
+            assert_eq!(
+                result.sessions[0].workspace.as_deref(),
+                Some("/workspace/project")
+            );
+            saw_list = true;
         }
     }
 
@@ -535,15 +534,14 @@ fn list_sessions_and_delete_session() {
         let line = read_line(&mut reader);
         if let JsonRpcMessage::Response(response) =
             decode_json_line::<JsonRpcMessage>(&line).expect("message decodes")
+            && response.id == RpcId::Number(10)
         {
-            if response.id == RpcId::Number(10) {
-                assert!(response.error.is_none(), "list_sessions should succeed");
-                let result: ListSessionsResult =
-                    serde_json::from_value(response.result.expect("response has result"))
-                        .expect("list_sessions result decodes");
-                assert!(result.sessions.is_empty());
-                saw_empty_list = true;
-            }
+            assert!(response.error.is_none(), "list_sessions should succeed");
+            let result: ListSessionsResult =
+                serde_json::from_value(response.result.expect("response has result"))
+                    .expect("list_sessions result decodes");
+            assert!(result.sessions.is_empty());
+            saw_empty_list = true;
         }
     }
 
@@ -557,7 +555,9 @@ fn cancel_run_emits_run_cancelled_and_run_finished_cancelled() {
     let data_dir = unique_data_dir();
     let child = start_daemon_with_config(
         &socket_path,
-        &write_config("provider = 'echo'\nbase_url = ''\napi_key = ''\nmodel = 'echo'\necho_chunk_size = 1\necho_delay_ms = 20"),
+        &write_config(
+            "provider = 'echo'\nbase_url = ''\napi_key = ''\nmodel = 'echo'\necho_chunk_size = 1\necho_delay_ms = 20",
+        ),
         &data_dir,
     );
 
@@ -787,7 +787,10 @@ fn connect_with_retry(socket_path: &Path) -> UnixStream {
                 std::thread::sleep(Duration::from_millis(20));
                 let _ = error;
             }
-            Err(error) => panic!("failed to connect to daemon socket {socket_path:?}: {error}"),
+            Err(error) => panic!(
+                "failed to connect to daemon socket {}: {error}",
+                socket_path.display()
+            ),
         }
     }
 }

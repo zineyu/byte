@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use byte_protocol::{
-    encode_json_line, CompactionSummary, MessageRole, SessionEntry, SessionMessage,
-    SessionMessageContent, SessionSummary, SessionView,
+    CompactionSummary, MessageRole, SessionEntry, SessionMessage, SessionMessageContent,
+    SessionSummary, SessionView, encode_json_line,
 };
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
@@ -58,7 +58,7 @@ impl SessionStore {
     /// Create a store using the default XDG data directory
     /// (`$XDG_DATA_HOME/byte/sessions`, falling back to `$HOME/.local/share/byte/sessions`).
     pub fn with_default_dir() -> Result<Self, SessionError> {
-        Self::new(default_base_dir()?)
+        Self::new(default_base_dir())
     }
 
     /// Ensure a session file exists with a valid header. The write is atomic
@@ -74,7 +74,7 @@ impl SessionStore {
         let header = SessionEntry::Session {
             version: byte_protocol::PROTOCOL_VERSION,
             id: session_id.to_owned(),
-            workspace: workspace.map(|s| s.to_owned()),
+            workspace: workspace.map(std::borrow::ToOwned::to_owned),
             created_at: now_epoch_millis(),
         };
 
@@ -98,13 +98,15 @@ impl SessionStore {
         content: impl Into<String>,
         tool_calls: Option<Vec<byte_protocol::ToolCall>>,
     ) -> Result<String, SessionError> {
+        let _ = content;
         let path = self.session_path(session_id)?;
-        let id = id
-            .map(|s| s.to_owned())
-            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let id = id.map_or_else(
+            || uuid::Uuid::new_v4().to_string(),
+            std::borrow::ToOwned::to_owned,
+        );
         let entry = SessionEntry::Message {
             id: id.clone(),
-            parent_id: parent_id.map(|s| s.to_owned()),
+            parent_id: parent_id.map(std::borrow::ToOwned::to_owned),
             message: SessionMessageContent {
                 role,
                 text: Some(content.into()),
@@ -126,9 +128,10 @@ impl SessionStore {
         content: impl Into<String>,
     ) -> Result<String, SessionError> {
         let path = self.session_path(session_id)?;
-        let id = id
-            .map(|s| s.to_owned())
-            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let id = id.map_or_else(
+            || uuid::Uuid::new_v4().to_string(),
+            std::borrow::ToOwned::to_owned,
+        );
         let entry = SessionEntry::ToolResult {
             id: id.clone(),
             parent_id: parent_id.to_owned(),
@@ -192,9 +195,8 @@ impl SessionStore {
                 None => continue,
             };
 
-            let header = match read_session_header(&path).await {
-                Ok(header) => header,
-                Err(_) => continue,
+            let Ok(header) = read_session_header(&path).await else {
+                continue;
             };
 
             if let SessionEntry::Session {
@@ -203,14 +205,13 @@ impl SessionStore {
                 created_at,
                 ..
             } = header
+                && id == session_id
             {
-                if id == session_id {
-                    summaries.push(SessionSummary {
-                        session_id: id,
-                        workspace,
-                        created_at,
-                    });
-                }
+                summaries.push(SessionSummary {
+                    session_id: id,
+                    workspace,
+                    created_at,
+                });
             }
         }
 
@@ -283,14 +284,15 @@ impl SessionStore {
     }
 }
 
-fn default_base_dir() -> Result<PathBuf, SessionError> {
-    let data_dir = std::env::var("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
+fn default_base_dir() -> PathBuf {
+    let data_dir = std::env::var("XDG_DATA_HOME").map_or_else(
+        |_| {
             let home = std::env::var("HOME").unwrap_or_else(|_| String::from("."));
             PathBuf::from(home).join(".local").join("share")
-        });
-    Ok(data_dir.join("byte").join("sessions"))
+        },
+        PathBuf::from,
+    );
+    data_dir.join("byte").join("sessions")
 }
 
 fn now_epoch_millis() -> String {
@@ -389,15 +391,15 @@ fn reconstruct_view(
     let mut compactions: Vec<CompactionSummary> = Vec::new();
     if let Some(latest_id) = message_order.last().cloned() {
         let mut current: Option<String> = Some(latest_id);
-        while let Some(id) = current {
+        while let Some(id) = &current {
             let message = messages_by_id
-                .get(&id)
+                .get(id)
                 .cloned()
                 .ok_or_else(|| SessionError::BrokenChain(session_id.to_owned()))?;
-            if let Some(compaction) = compactions_by_parent.get(&id).cloned() {
+            if let Some(compaction) = compactions_by_parent.get(id).cloned() {
                 compactions.push(compaction);
             }
-            current = message.parent_id.clone();
+            current.clone_from(&message.parent_id);
             messages.push(message);
         }
         messages.reverse();

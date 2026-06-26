@@ -1,10 +1,10 @@
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
-use byte_protocol::{encode_json_line, JsonRpcNotification, RuntimeEvent, RuntimeEventKind};
+use byte_protocol::{JsonRpcNotification, RuntimeEvent, RuntimeEventKind, encode_json_line};
 use futures::stream::BoxStream;
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::{Mutex, broadcast};
 
 /// A sink for runtime events emitted during a run.
 ///
@@ -263,7 +263,7 @@ mod tests {
             .await
             .expect("first event received")
             .expect("stream open");
-        assert!(line1.contains("1"));
+        assert!(line1.contains('1'));
 
         // Emit more events than the channel capacity without reading, forcing
         // the subscriber to lag.
@@ -278,7 +278,7 @@ mod tests {
             .await
             .expect("later event received after lag")
             .expect("stream open");
-        assert!(line2.contains('"') && (line2.contains("3") || line2.contains("4")));
+        assert!(line2.contains('"') && (line2.contains('3') || line2.contains('4')));
     }
 
     #[test]

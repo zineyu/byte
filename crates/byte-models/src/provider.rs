@@ -70,8 +70,7 @@ impl ModelProvider for EchoProvider {
         let has_read_file = tools.iter().any(|tool| tool.name == "read_file");
         let last_was_tool = messages
             .last()
-            .map(|message| message.role == MessageRole::Tool)
-            .unwrap_or(false);
+            .is_some_and(|message| message.role == MessageRole::Tool);
 
         if has_read_file && !last_was_tool {
             let message_id = uuid::Uuid::new_v4().to_string();
@@ -101,7 +100,7 @@ impl ModelProvider for EchoProvider {
             .next_back()
             .unwrap_or_default();
 
-        let content = format!("Echo: {}", last);
+        let content = format!("Echo: {last}");
         let chunks: Vec<String> = content
             .chars()
             .collect::<Vec<_>>()

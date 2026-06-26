@@ -2,10 +2,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use byte_models::{ProviderError, ProviderEvent};
+use byte_models::{ProviderError, ProviderEvent, ProviderStream};
 use byte_protocol::{
     CancelRunResult, CompactionSummary, MessageRole, RunMessage, RunStatus, RuntimeEventKind,
-    SendMessageParams, SessionContext, SessionMessage, ToolCall,
+    SendMessageParams, SessionContext, SessionMessage, ToolCall, ToolDefinition,
 };
 use byte_session::SessionError;
 use futures::StreamExt;
@@ -256,6 +256,15 @@ struct RunExecutor {
     cancel_token: CancellationToken,
 }
 
+/// Mutable state carried through a single provider response stream.
+struct StreamState<'a> {
+    message_id: &'a mut Option<String>,
+    assistant_content: &'a mut String,
+    tool_calls: &'a mut Option<Vec<ToolCall>>,
+    completed: &'a mut bool,
+    delta_buffer: &'a mut DeltaBuffer,
+}
+
 impl RunExecutor {
     #[instrument(skip_all, fields(run_id, session_id))]
     async fn run(self, runner: Arc<SessionRunner>) {
@@ -270,309 +279,394 @@ impl RunExecutor {
             })
             .await;
 
-        // Resolve the workspace from the session header so each session uses
-        // its own workspace root for relative tool paths.
-        let view = match runner.services.store.load_session(&self.session_id).await {
-            Ok(view) => view,
-            Err(error) => {
-                error!(%error, "failed to load session view");
-                runner.emit_run_error(&self.run_id, error.to_string()).await;
-                runner.clear_active_run().await;
-                return;
-            }
+        let Some(session_ctx) = self.load_session_context(&runner).await else {
+            return;
         };
-        let session_ctx = SessionContext {
-            workspace_root: view.workspace.map(PathBuf::from),
-        };
-        let tools = runner.services.tool_registry.definitions();
-        // ID of the most recently persisted entry in this run. Used to chain
-        // assistant messages and tool results into a single linear history.
-        let mut last_entry_id = self.developer_message_id.clone();
 
+        let tools = runner.services.tool_registry.definitions();
         let prompt_context = PromptContext {
-            user_message: self.message,
-            history: self.history,
-            compactions: self.compactions,
+            user_message: self.message.clone(),
+            history: self.history.clone(),
+            compactions: self.compactions.clone(),
             tools,
         };
         let mut messages = PromptBuilder::new().build(prompt_context);
         let mut turn_messages: Vec<RunMessage> = Vec::new();
+        // ID of the most recently persisted entry in this run. Used to chain
+        // assistant messages and tool results into a single linear history.
+        let mut last_entry_id = self.developer_message_id.clone();
         let mut saw_message = false;
 
         loop {
             if self.cancel_token.is_cancelled() {
-                if saw_message {
-                    runner
-                        .emit(RuntimeEventKind::RunCancelled {
-                            run_id: self.run_id.clone(),
-                        })
-                        .await;
-                }
-                runner
-                    .emit(RuntimeEventKind::RunFinished {
-                        run_id: self.run_id.clone(),
-                        status: RunStatus::Cancelled,
-                        error: None,
-                    })
-                    .await;
-                info!("run cancelled");
-                runner.clear_active_run().await;
+                self.finish_cancelled(&runner, saw_message).await;
                 return;
             }
 
-            if turn_messages.is_empty() {
-                // First request of the run: use the full prompt from PromptBuilder.
-            } else {
+            if !turn_messages.is_empty() {
                 // Subsequent request after tool calls: append the last turn's
                 // assistant message and tool results to the conversation.
                 messages.extend(turn_messages);
                 turn_messages = Vec::new();
             }
-
             let tools = runner.services.tool_registry.definitions();
-            let mut stream = match runner
-                .services
-                .provider
-                .send_message(messages.clone(), tools)
+            let Some(mut stream) = self
+                .request_provider_stream(&runner, messages.clone(), tools)
                 .await
-            {
-                Ok(stream) => stream,
-                Err(error) => {
-                    error!(%error, "provider request failed");
-                    runner.emit_run_error(&self.run_id, error.to_string()).await;
-                    runner.clear_active_run().await;
-                    return;
-                }
-            };
-
-            let mut message_id: Option<String> = None;
-            let mut assistant_content = String::new();
-            let mut tool_calls: Option<Vec<ToolCall>> = None;
-            let mut completed = false;
-            let mut delta_buffer = DeltaBuffer::new(8);
-
-            loop {
-                tokio::select! {
-                    biased;
-                    _ = self.cancel_token.cancelled() => {
-                        if let Some(id) = message_id.as_ref() {
-                            if let Some(flush) = delta_buffer.flush() {
-                                runner.emit(RuntimeEventKind::MessageDelta {
-                                    run_id: self.run_id.clone(),
-                                    message_id: id.clone(),
-                                    delta: flush,
-                                }).await;
-                            }
-                            runner.emit(RuntimeEventKind::RunCancelled {
-                                run_id: self.run_id.clone(),
-                            }).await;
-                        }
-                        runner.emit(RuntimeEventKind::RunFinished {
-                            run_id: self.run_id.clone(),
-                            status: RunStatus::Cancelled,
-                            error: None,
-                        }).await;
-                        info!("run cancelled");
-                        runner.clear_active_run().await;
-                        return;
-                    }
-                    maybe_event = stream.next() => {
-                        match maybe_event {
-                            Some(event) => {
-                                match event {
-                                    Ok(ProviderEvent::MessageStarted { message_id: id }) => {
-                                        debug!(message_id = %id, "assistant message started");
-                                        saw_message = true;
-                                        message_id = Some(id.clone());
-                                        assistant_content.clear();
-                                        tool_calls = None;
-                                        completed = false;
-                                        runner
-                                            .emit(RuntimeEventKind::MessageStarted {
-                                                run_id: self.run_id.clone(),
-                                                message_id: id,
-                                                role: MessageRole::Assistant,
-                                            })
-                                            .await;
-                                    }
-                                    Ok(ProviderEvent::TextDelta {
-                                        message_id: id,
-                                        delta,
-                                    }) => {
-                                        if message_id.as_ref() == Some(&id) {
-                                            assistant_content.push_str(&delta);
-                                            if let Some(flush) = delta_buffer.push(&delta) {
-                                                runner
-                                                    .emit(RuntimeEventKind::MessageDelta {
-                                                        run_id: self.run_id.clone(),
-                                                        message_id: id,
-                                                        delta: flush,
-                                                    })
-                                                    .await;
-                                            }
-                                        }
-                                    }
-                                    Ok(ProviderEvent::MessageCompleted { message_id: id, tool_calls: calls }) => {
-                                        if message_id.as_ref() == Some(&id) {
-                                            if let Some(flush) = delta_buffer.flush() {
-                                                runner
-                                                    .emit(RuntimeEventKind::MessageDelta {
-                                                        run_id: self.run_id.clone(),
-                                                        message_id: id.clone(),
-                                                        delta: flush,
-                                                    })
-                                                    .await;
-                                            }
-                                            runner
-                                                .emit(RuntimeEventKind::MessageCompleted {
-                                                    run_id: self.run_id.clone(),
-                                                    message_id: id.clone(),
-                                                    tool_calls: calls.clone(),
-                                                })
-                                                .await;
-
-                                            if let Err(error) = runner
-                                                .services
-                                                .store
-                                                .append_message(
-                                                    &self.session_id,
-                                                    Some(&id),
-                                                    Some(&last_entry_id),
-                                                    MessageRole::Assistant,
-                                                    &assistant_content,
-                                                    calls.clone(),
-                                                )
-                                                .await
-                                            {
-                                                error!(%error, "failed to persist assistant message");
-                                                runner
-                                                    .emit_run_error(
-                                                        &self.run_id,
-                                                        format!("failed to persist assistant message: {error}"),
-                                                    )
-                                                    .await;
-                                                runner.clear_active_run().await;
-                                                return;
-                                            }
-                                            last_entry_id = id.clone();
-
-                                            tool_calls = calls;
-                                            completed = true;
-                                        }
-                                    }
-                                    Err(error) => {
-                                        error!(%error, "provider stream error");
-                                        runner.emit_run_error(&self.run_id, error.to_string()).await;
-                                        runner.clear_active_run().await;
-                                        return;
-                                    }
-                                }
-                            }
-                            None => break,
-                        }
-                    }
-                }
-            }
-
-            if !completed {
-                runner
-                    .emit_run_error(
-                        &self.run_id,
-                        "provider stream ended without completing the assistant message".into(),
-                    )
-                    .await;
-                runner.clear_active_run().await;
-                return;
-            }
-
-            let Some(calls) = tool_calls.clone() else {
-                runner
-                    .emit(RuntimeEventKind::RunFinished {
-                        run_id: self.run_id.clone(),
-                        status: RunStatus::Succeeded,
-                        error: None,
-                    })
-                    .await;
-                info!("run finished successfully");
-                runner.clear_active_run().await;
+            else {
                 return;
             };
-            // Execute tool calls and collect results for the next turn.
+
+            let Some((assistant_content, tool_calls)) = self
+                .process_provider_stream(&runner, &mut stream, &mut last_entry_id, &mut saw_message)
+                .await
+            else {
+                return;
+            };
+
+            let Some(calls) = tool_calls else {
+                self.finish_succeeded(&runner).await;
+                return;
+            };
+
             if self.cancel_token.is_cancelled() {
-                runner
-                    .emit(RuntimeEventKind::RunCancelled {
-                        run_id: self.run_id.clone(),
-                    })
-                    .await;
-                runner
-                    .emit(RuntimeEventKind::RunFinished {
-                        run_id: self.run_id.clone(),
-                        status: RunStatus::Cancelled,
-                        error: None,
-                    })
-                    .await;
-                info!("run cancelled");
-                runner.clear_active_run().await;
+                self.finish_cancelled(&runner, true).await;
                 return;
             }
 
-            let assistant_run_message = RunMessage {
+            turn_messages.push(RunMessage {
                 role: MessageRole::Assistant,
-                content: assistant_content.clone(),
+                content: assistant_content,
                 tool_call_id: None,
-                tool_calls: tool_calls.clone(),
-            };
-            turn_messages.push(assistant_run_message);
+                tool_calls: Some(calls.clone()),
+            });
 
             for call in calls {
+                if self
+                    .execute_tool_call(
+                        &runner,
+                        &call,
+                        &session_ctx,
+                        &mut last_entry_id,
+                        &mut turn_messages,
+                    )
+                    .await
+                    .is_none()
+                {
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Loads the session view and builds the runtime context for tool calls.
+    /// Returns `None` after emitting a run error and clearing the active run.
+    async fn load_session_context(&self, runner: &Arc<SessionRunner>) -> Option<SessionContext> {
+        match runner.services.store.load_session(&self.session_id).await {
+            Ok(view) => Some(SessionContext {
+                workspace_root: view.workspace.map(PathBuf::from),
+            }),
+            Err(error) => {
+                error!(%error, "failed to load session view");
+                runner.emit_run_error(&self.run_id, error.to_string()).await;
+                runner.clear_active_run().await;
+                None
+            }
+        }
+    }
+
+    /// Sends the current conversation to the provider and returns the response
+    /// stream, or `None` after emitting a run error and clearing the active run.
+    async fn request_provider_stream(
+        &self,
+        runner: &Arc<SessionRunner>,
+        messages: Vec<RunMessage>,
+        tools: Vec<ToolDefinition>,
+    ) -> Option<ProviderStream> {
+        match runner.services.provider.send_message(messages, tools).await {
+            Ok(stream) => Some(stream),
+            Err(error) => {
+                error!(%error, "provider request failed");
+                runner.emit_run_error(&self.run_id, error.to_string()).await;
+                runner.clear_active_run().await;
+                None
+            }
+        }
+    }
+
+    /// Consumes a provider stream, emits message lifecycle events, persists the
+    /// assistant message, and returns its content plus any tool calls. Returns
+    /// `None` if the run finished (success, cancellation, or error) inside the
+    /// stream loop.
+    async fn process_provider_stream(
+        &self,
+        runner: &Arc<SessionRunner>,
+        stream: &mut ProviderStream,
+        last_entry_id: &mut String,
+        saw_message: &mut bool,
+    ) -> Option<(String, Option<Vec<ToolCall>>)> {
+        let mut message_id: Option<String> = None;
+        let mut assistant_content = String::new();
+        let mut tool_calls: Option<Vec<ToolCall>> = None;
+        let mut completed = false;
+        let mut delta_buffer = DeltaBuffer::new(8);
+
+        loop {
+            tokio::select! {
+                biased;
+                () = self.cancel_token.cancelled() => {
+                    if let Some(id) = message_id.as_ref() {
+                        if let Some(flush) = delta_buffer.flush() {
+                            runner.emit(RuntimeEventKind::MessageDelta {
+                                run_id: self.run_id.clone(),
+                                message_id: id.clone(),
+                                delta: flush,
+                            }).await;
+                        }
+                        runner.emit(RuntimeEventKind::RunCancelled {
+                            run_id: self.run_id.clone(),
+                        }).await;
+                    }
+                    self.finish_cancelled(runner, false).await;
+                    return None;
+                }
+                maybe_event = stream.next() => {
+                    if let Some(event) = maybe_event {
+                        self.handle_provider_event(
+                            runner,
+                            event,
+                            &mut StreamState {
+                                message_id: &mut message_id,
+                                assistant_content: &mut assistant_content,
+                                tool_calls: &mut tool_calls,
+                                completed: &mut completed,
+                                delta_buffer: &mut delta_buffer,
+                            },
+                            last_entry_id,
+                            saw_message,
+                        )
+                        .await?;
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+
+        if !completed {
+            runner
+                .emit_run_error(
+                    &self.run_id,
+                    "provider stream ended without completing the assistant message".into(),
+                )
+                .await;
+            runner.clear_active_run().await;
+            return None;
+        }
+
+        Some((assistant_content, tool_calls))
+    }
+
+    /// Handles a single provider event inside the stream loop. Updates the
+    /// per-turn state and returns `None` when the run should finish.
+    async fn handle_provider_event(
+        &self,
+        runner: &Arc<SessionRunner>,
+        event: Result<ProviderEvent, ProviderError>,
+        state: &mut StreamState<'_>,
+        last_entry_id: &mut String,
+        saw_message: &mut bool,
+    ) -> Option<()> {
+        match event {
+            Ok(ProviderEvent::MessageStarted { message_id: id }) => {
+                debug!(message_id = %id, "assistant message started");
+                *saw_message = true;
+                state.message_id.clone_from(&Some(id.clone()));
+                state.assistant_content.clear();
+                *state.tool_calls = None;
+                *state.completed = false;
                 runner
-                    .emit(RuntimeEventKind::ToolStarted {
-                        tool_call_id: call.id.clone(),
-                        name: call.name.clone(),
+                    .emit(RuntimeEventKind::MessageStarted {
+                        run_id: self.run_id.clone(),
+                        message_id: id,
+                        role: MessageRole::Assistant,
                     })
                     .await;
+            }
+            Ok(ProviderEvent::TextDelta {
+                message_id: id,
+                delta,
+            }) => {
+                if state.message_id.as_ref() == Some(&id) {
+                    state.assistant_content.push_str(&delta);
+                    if let Some(flush) = state.delta_buffer.push(&delta) {
+                        runner
+                            .emit(RuntimeEventKind::MessageDelta {
+                                run_id: self.run_id.clone(),
+                                message_id: id,
+                                delta: flush,
+                            })
+                            .await;
+                    }
+                }
+            }
+            Ok(ProviderEvent::MessageCompleted {
+                message_id: id,
+                tool_calls: calls,
+            }) => {
+                if state.message_id.as_ref() == Some(&id) {
+                    if let Some(flush) = state.delta_buffer.flush() {
+                        runner
+                            .emit(RuntimeEventKind::MessageDelta {
+                                run_id: self.run_id.clone(),
+                                message_id: id.clone(),
+                                delta: flush,
+                            })
+                            .await;
+                    }
+                    runner
+                        .emit(RuntimeEventKind::MessageCompleted {
+                            run_id: self.run_id.clone(),
+                            message_id: id.clone(),
+                            tool_calls: calls.clone(),
+                        })
+                        .await;
 
-                let (output, is_error) = match runner
-                    .services
-                    .tool_registry
-                    .invoke(&call, &session_ctx, &self.cancel_token)
-                    .await
-                {
-                    Ok(output) => (output, false),
-                    Err(error) => (error.to_string(), true),
-                };
-
-                runner
-                    .emit(RuntimeEventKind::ToolFinished {
-                        tool_call_id: call.id.clone(),
-                        output: output.clone(),
-                        is_error,
-                    })
-                    .await;
-                let tool_result_id = match runner
-                    .services
-                    .store
-                    .append_tool_result(&self.session_id, None, &last_entry_id, &call.id, &output)
-                    .await
-                {
-                    Ok(id) => id,
-                    Err(error) => {
-                        error!(%error, "failed to persist tool result");
+                    if let Err(error) = runner
+                        .services
+                        .store
+                        .append_message(
+                            &self.session_id,
+                            Some(&id),
+                            Some(last_entry_id),
+                            MessageRole::Assistant,
+                            &**state.assistant_content,
+                            calls.clone(),
+                        )
+                        .await
+                    {
+                        error!(%error, "failed to persist assistant message");
                         runner
                             .emit_run_error(
                                 &self.run_id,
-                                format!("failed to persist tool result: {error}"),
+                                format!("failed to persist assistant message: {error}"),
                             )
                             .await;
                         runner.clear_active_run().await;
-                        return;
+                        return None;
                     }
-                };
-                last_entry_id = tool_result_id;
+                    last_entry_id.clone_from(&id);
 
-                turn_messages.push(RunMessage::tool_result(&call.id, output));
+                    *state.tool_calls = calls;
+                    *state.completed = true;
+                }
+            }
+            Err(error) => {
+                error!(%error, "provider stream error");
+                runner.emit_run_error(&self.run_id, error.to_string()).await;
+                runner.clear_active_run().await;
+                return None;
             }
         }
+
+        Some(())
+    }
+
+    /// Executes a single tool call, emits its lifecycle events, persists the
+    /// result, and appends a tool-result message to the turn. Returns `None`
+    /// after emitting a run error and clearing the active run.
+    async fn execute_tool_call(
+        &self,
+        runner: &Arc<SessionRunner>,
+        call: &ToolCall,
+        session_ctx: &SessionContext,
+        last_entry_id: &mut String,
+        turn_messages: &mut Vec<RunMessage>,
+    ) -> Option<()> {
+        runner
+            .emit(RuntimeEventKind::ToolStarted {
+                tool_call_id: call.id.clone(),
+                name: call.name.clone(),
+            })
+            .await;
+
+        let (output, is_error) = match runner
+            .services
+            .tool_registry
+            .invoke(call, session_ctx, &self.cancel_token)
+            .await
+        {
+            Ok(output) => (output, false),
+            Err(error) => (error.to_string(), true),
+        };
+
+        runner
+            .emit(RuntimeEventKind::ToolFinished {
+                tool_call_id: call.id.clone(),
+                output: output.clone(),
+                is_error,
+            })
+            .await;
+
+        let tool_result_id = match runner
+            .services
+            .store
+            .append_tool_result(&self.session_id, None, last_entry_id, &call.id, &output)
+            .await
+        {
+            Ok(id) => id,
+            Err(error) => {
+                error!(%error, "failed to persist tool result");
+                runner
+                    .emit_run_error(
+                        &self.run_id,
+                        format!("failed to persist tool result: {error}"),
+                    )
+                    .await;
+                runner.clear_active_run().await;
+                return None;
+            }
+        };
+        last_entry_id.clone_from(&tool_result_id);
+
+        turn_messages.push(RunMessage::tool_result(&call.id, output));
+        Some(())
+    }
+
+    /// Emits a successful run-finished event and clears the active run.
+    async fn finish_succeeded(&self, runner: &Arc<SessionRunner>) {
+        runner
+            .emit(RuntimeEventKind::RunFinished {
+                run_id: self.run_id.clone(),
+                status: RunStatus::Succeeded,
+                error: None,
+            })
+            .await;
+        info!("run finished successfully");
+        runner.clear_active_run().await;
+    }
+
+    /// Emits a cancelled run-finished event and clears the active run.
+    /// `emit_run_cancelled` controls whether a preceding `RunCancelled` event
+    /// should also be emitted (the stream loop already emits one when a message
+    /// is in flight).
+    async fn finish_cancelled(&self, runner: &Arc<SessionRunner>, emit_run_cancelled: bool) {
+        if emit_run_cancelled {
+            runner
+                .emit(RuntimeEventKind::RunCancelled {
+                    run_id: self.run_id.clone(),
+                })
+                .await;
+        }
+        runner
+            .emit(RuntimeEventKind::RunFinished {
+                run_id: self.run_id.clone(),
+                status: RunStatus::Cancelled,
+                error: None,
+            })
+            .await;
+        info!("run cancelled");
+        runner.clear_active_run().await;
     }
 }
 
@@ -968,7 +1062,26 @@ mod tests {
         };
 
         let run_id = runner.send_message(params).await.expect("send accepted");
-        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        // Wait until the assistant message has started so the cancellation is
+        // guaranteed to observe an in-flight message and emit a RunCancelled.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+        let mut accumulated = Vec::new();
+        let mut saw_started = false;
+        while !saw_started {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            accumulated.append(&mut bus.take_events().await);
+            saw_started = accumulated.iter().any(|event| {
+                matches!(
+                    &event.kind,
+                    RuntimeEventKind::MessageStarted { run_id: rid, .. } if rid == &run_id
+                )
+            });
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timeout waiting for message_started"
+            );
+        }
 
         let runner2 = runner.clone();
         let cancel1 = tokio::spawn(async move { runner.cancel_run().await });
@@ -982,7 +1095,8 @@ mod tests {
             .expect("cancel2 task joins")
             .expect("cancel2 succeeds");
 
-        let events = bus.take_events().await;
+        let mut events = accumulated;
+        events.extend(bus.take_events().await);
         let cancelled_events: Vec<_> = events
             .iter()
             .filter(|event| matches!(&event.kind, RuntimeEventKind::RunCancelled { run_id: rid } if rid == &run_id))

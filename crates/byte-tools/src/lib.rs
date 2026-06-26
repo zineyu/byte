@@ -98,14 +98,16 @@ mod tests {
             name: "read_file".into(),
             arguments: serde_json::json!({"path": "src/main.rs"}),
         };
-        assert!(policy
-            .check(
-                &call,
-                &SessionContext {
-                    workspace_root: None
-                }
-            )
-            .is_ok());
+        assert!(
+            policy
+                .check(
+                    &call,
+                    &SessionContext {
+                        workspace_root: None
+                    }
+                )
+                .is_ok()
+        );
     }
 
     #[tokio::test]

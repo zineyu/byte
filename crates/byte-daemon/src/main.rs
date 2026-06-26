@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 #[cfg(unix)]
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
 #[cfg(unix)]
 use async_trait::async_trait;
 use byte_core::event_bus::{BroadcastEventBus, RuntimeEventBus};
@@ -14,13 +14,13 @@ use byte_core::runtime_services::RuntimeServices;
 use byte_core::session_manager::SessionManager;
 #[cfg(unix)]
 use byte_models::{
-    load_config, normalize_base_url, EchoProvider, ModelProvider, OpenAiCompatibleProvider,
-    ProviderError, ProviderStream,
+    EchoProvider, ModelProvider, OpenAiCompatibleProvider, ProviderError, ProviderStream,
+    load_config, normalize_base_url,
 };
 #[cfg(unix)]
 use byte_protocol::{
-    decode_json_line, encode_json_line, JsonRpcRequest, JsonRpcResponse, RunMessage,
-    RuntimeEventKind,
+    JsonRpcRequest, JsonRpcResponse, RunMessage, RuntimeEventKind, decode_json_line,
+    encode_json_line,
 };
 #[cfg(unix)]
 use byte_session::SessionStore;
@@ -33,14 +33,14 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 #[cfg(unix)]
 use tokio::net::{UnixListener, UnixStream};
 #[cfg(unix)]
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 #[cfg(unix)]
 use tracing::{debug, error, info, trace, warn};
 
 #[cfg(unix)]
 mod rpc;
 #[cfg(unix)]
-use rpc::{handle_request, RpcContext};
+use rpc::{RpcContext, handle_request};
 
 #[cfg(unix)]
 #[tokio::main]
@@ -52,11 +52,6 @@ async fn main() -> anyhow::Result<()> {
     let socket_path = parse_rpc_socket_arg(std::env::args())?;
     info!(?socket_path, "starting byte daemon");
     run_socket_server(&socket_path).await
-}
-
-#[cfg(not(unix))]
-fn main() -> anyhow::Result<()> {
-    anyhow::bail!("byte-daemon currently supports Unix Domain Socket RPC on Unix platforms only")
 }
 
 #[cfg(unix)]
@@ -75,7 +70,7 @@ async fn run_socket_server(socket_path: &Path) -> anyhow::Result<()> {
     remove_stale_socket(socket_path)?;
     let _socket_file = SocketFile::new(socket_path.to_path_buf());
     let listener = UnixListener::bind(socket_path)
-        .with_context(|| format!("failed to bind RPC socket at {socket_path:?}"))?;
+        .with_context(|| format!("failed to bind RPC socket at {}", socket_path.display()))?;
 
     let event_bus: Arc<dyn RuntimeEventBus> = Arc::new(BroadcastEventBus::new());
     let session_store =
@@ -273,8 +268,12 @@ async fn build_provider() -> anyhow::Result<Arc<dyn ModelProvider>> {
 #[cfg(unix)]
 fn remove_stale_socket(socket_path: &Path) -> anyhow::Result<()> {
     if socket_path.exists() {
-        std::fs::remove_file(socket_path)
-            .with_context(|| format!("failed to remove stale RPC socket at {socket_path:?}"))?;
+        std::fs::remove_file(socket_path).with_context(|| {
+            format!(
+                "failed to remove stale RPC socket at {}",
+                socket_path.display()
+            )
+        })?;
     }
     Ok(())
 }

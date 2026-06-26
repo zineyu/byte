@@ -1,4 +1,5 @@
 use byte_protocol::{CompactionSummary, MessageRole, RunMessage, SessionMessage, ToolDefinition};
+use std::fmt::Write;
 
 /// Context supplied to `PromptBuilder` for a single run.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,7 +38,7 @@ impl PromptBuilder {
 
         messages.push(RunMessage {
             role: MessageRole::System,
-            content: self.build_system_prompt(&context.tools),
+            content: Self::build_system_prompt(&context.tools),
             tool_call_id: None,
             tool_calls: None,
         });
@@ -77,7 +78,7 @@ impl PromptBuilder {
         messages
     }
 
-    fn build_system_prompt(&self, tools: &[ToolDefinition]) -> String {
+    fn build_system_prompt(tools: &[ToolDefinition]) -> String {
         let mut prompt = String::new();
 
         prompt.push_str(
@@ -86,8 +87,8 @@ impl PromptBuilder {
 
         prompt.push_str("Available tools:\n");
         for tool in tools {
-            prompt.push_str(&format!("- {}: {}\n", tool.name, tool.description));
-            prompt.push_str(&format!("  parameters: {}\n", tool.parameters));
+            let _ = writeln!(prompt, "- {}: {}", tool.name, tool.description);
+            let _ = writeln!(prompt, "  parameters: {}", tool.parameters);
         }
 
         prompt.push_str("\nUse the tools when needed. Output tool calls in plain text for now.");

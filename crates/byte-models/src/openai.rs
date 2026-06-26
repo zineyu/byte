@@ -1,3 +1,4 @@
+use async_openai::Client;
 use async_openai::config::OpenAIConfig;
 use async_openai::types::chat::{
     ChatCompletionMessageToolCall, ChatCompletionMessageToolCallChunk,
@@ -9,7 +10,6 @@ use async_openai::types::chat::{
     ChatCompletionResponseStream, ChatCompletionTool, ChatCompletionTools,
     CreateChatCompletionRequestArgs, FunctionCall, FunctionObject,
 };
-use async_openai::Client;
 use async_trait::async_trait;
 use byte_protocol::{MessageRole, RunMessage, ToolCall};
 
