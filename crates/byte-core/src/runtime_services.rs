@@ -2,12 +2,13 @@ use std::sync::Arc;
 
 use byte_models::ModelProvider;
 use byte_session::SessionStore;
+use byte_skills::SkillRegistry;
 use byte_tools::ToolRegistry;
 
 use crate::event_bus::RuntimeEventBus;
 
-/// Aggregated runtime dependencies used by [`SessionManager`] and
-/// [`SessionRunner`].
+/// Aggregated runtime dependencies used by [`crate::SessionManager`] and
+/// [`crate::SessionRunner`].
 ///
 /// The workspace root for a run is stored per-session in the session header
 /// (`SessionView.workspace`) rather than here, so that each session resolves
@@ -18,6 +19,7 @@ pub struct RuntimeServices {
     pub store: Arc<SessionStore>,
     pub event_bus: Arc<dyn RuntimeEventBus>,
     pub tool_registry: Arc<dyn ToolRegistry>,
+    pub skill_registry: Arc<dyn SkillRegistry>,
 }
 
 impl RuntimeServices {
@@ -27,12 +29,14 @@ impl RuntimeServices {
         store: Arc<SessionStore>,
         event_bus: Arc<dyn RuntimeEventBus>,
         tool_registry: Arc<dyn ToolRegistry>,
+        skill_registry: Arc<dyn SkillRegistry>,
     ) -> Self {
         Self {
             provider,
             store,
             event_bus,
             tool_registry,
+            skill_registry,
         }
     }
 }

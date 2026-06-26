@@ -280,6 +280,7 @@ dependencies = [
  "byte-models",
  "byte-protocol",
  "byte-session",
+ "byte-skills",
  "byte-tools",
  "futures",
  "serde_json",
@@ -301,6 +302,7 @@ dependencies = [
  "byte-models",
  "byte-protocol",
  "byte-session",
+ "byte-skills",
  "byte-tools",
  "futures",
  "serde",
@@ -365,17 +367,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "byte-skills"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "byte-protocol",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "byte-tools"
 version = "0.1.0"
 dependencies = [
  "async-trait",
  "byte-protocol",
+ "glob",
+ "libc",
+ "regex",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
  "tracing",
+ "uuid",
+ "walkdir",
 ]
 
 [[package]]

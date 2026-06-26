@@ -175,7 +175,10 @@ mod tests {
         CancelRunParams, RunStatus, RuntimeEventKind, SendMessageParams, SessionChangeAction,
     };
     use byte_session::SessionStore;
-    use byte_tools::{AllowAllPolicy, MvpToolRegistry, ReadFileTool, ToolRegistry};
+    use byte_skills::{MvpSkillRegistry, SkillRegistry};
+    use byte_tools::{
+        AllowAllPolicy, MvpToolRegistry as ByteToolsMvpToolRegistry, ReadFileTool, ToolRegistry,
+    };
     use tempfile::tempdir;
 
     use crate::event_bus::{RecordingEventBus, RuntimeEventBus};
@@ -188,18 +191,28 @@ mod tests {
         Arc::new(SessionStore::new(dir.path().to_path_buf()).expect("store creates"))
     }
 
+    fn empty_skill_registry() -> Arc<dyn SkillRegistry> {
+        Arc::new(MvpSkillRegistry::new())
+    }
+
     fn services(
         provider: Arc<dyn ModelProvider>,
         store: Arc<SessionStore>,
         bus: Arc<dyn RuntimeEventBus>,
     ) -> RuntimeServices {
-        let mut registry = MvpToolRegistry::new();
+        let mut registry = ByteToolsMvpToolRegistry::new();
         registry.register(
             "read_file".to_string(),
             Arc::new(ReadFileTool),
             Arc::new(AllowAllPolicy),
         );
-        RuntimeServices::new(provider, store, bus, Arc::new(registry))
+        RuntimeServices::new(
+            provider,
+            store,
+            bus,
+            Arc::new(registry),
+            empty_skill_registry(),
+        )
     }
 
     fn services_without_tools(
@@ -207,7 +220,13 @@ mod tests {
         store: Arc<SessionStore>,
         bus: Arc<dyn RuntimeEventBus>,
     ) -> RuntimeServices {
-        RuntimeServices::new(provider, store, bus, Arc::new(MvpToolRegistry::new()))
+        RuntimeServices::new(
+            provider,
+            store,
+            bus,
+            Arc::new(ByteToolsMvpToolRegistry::new()),
+            empty_skill_registry(),
+        )
     }
 
     fn manager() -> (SessionManager, Arc<RecordingEventBus>, Arc<SessionStore>) {

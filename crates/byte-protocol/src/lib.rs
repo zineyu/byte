@@ -155,11 +155,40 @@ pub struct ToolResult {
     pub is_error: bool,
 }
 
+/// A skill available for activation by name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, rename_all = "camelCase")]
+pub struct SkillEntry {
+    pub name: String,
+    pub description: String,
+}
+
+/// The full definition of a skill, including its content.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, rename_all = "camelCase")]
+pub struct SkillDefinition {
+    pub name: String,
+    pub description: String,
+    pub content: String,
+}
+
+/// A skill that has been activated for the current session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, rename_all = "camelCase")]
+pub struct ActivatedSkill {
+    pub name: String,
+    pub content: String,
+}
+
 /// Runtime context supplied to tool invocations.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, rename_all = "camelCase")]
 pub struct SessionContext {
+    pub session_id: Option<String>,
     pub workspace_root: Option<PathBuf>,
 }
 
@@ -761,6 +790,7 @@ mod tests {
     #[test]
     fn session_context_roundtrips() {
         let ctx = SessionContext {
+            session_id: Some("session-1".into()),
             workspace_root: Some(PathBuf::from("/tmp/workspace")),
         };
         let decoded: SessionContext = decode_json_line(&encode_json_line(&ctx).unwrap()).unwrap();

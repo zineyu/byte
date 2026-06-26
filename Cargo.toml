@@ -6,6 +6,7 @@ members = [
     "crates/byte-daemon",
     "crates/byte-models",
     "crates/byte-tools",
+    "crates/byte-skills",
     "apps/desktop/src-tauri",
 ]
 resolver = "2"
@@ -26,6 +27,7 @@ tempfile = "3"
 tracing = "0.1"
 uuid = { version = "1.23.3", features = ["v4"] }
 byte-session = { path = "crates/byte-session" }
+byte-skills = { path = "crates/byte-skills" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"

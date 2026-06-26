@@ -1,4 +1,7 @@
-use byte_protocol::{CompactionSummary, MessageRole, RunMessage, SessionMessage, ToolDefinition};
+use byte_protocol::{
+    ActivatedSkill, CompactionSummary, MessageRole, RunMessage, SessionMessage, SkillEntry,
+    ToolDefinition,
+};
 use std::fmt::Write;
 
 /// Context supplied to `PromptBuilder` for a single run.
@@ -8,16 +11,20 @@ pub struct PromptContext {
     pub history: Vec<SessionMessage>,
     pub compactions: Vec<CompactionSummary>,
     pub tools: Vec<ToolDefinition>,
+    pub active_skills: Vec<ActivatedSkill>,
+    pub available_skills: Vec<SkillEntry>,
 }
 
 impl PromptContext {
-    /// Create a prompt context with no history, compactions, or tools.
+    /// Create a prompt context with no history, compactions, tools, skills, or active skills.
     pub fn new(user_message: impl Into<String>) -> Self {
         Self {
             user_message: user_message.into(),
             history: Vec::new(),
             compactions: Vec::new(),
             tools: Vec::new(),
+            active_skills: Vec::new(),
+            available_skills: Vec::new(),
         }
     }
 }
@@ -38,7 +45,11 @@ impl PromptBuilder {
 
         messages.push(RunMessage {
             role: MessageRole::System,
-            content: Self::build_system_prompt(&context.tools),
+            content: Self::build_system_prompt(
+                &context.tools,
+                &context.active_skills,
+                &context.available_skills,
+            ),
             tool_call_id: None,
             tool_calls: None,
         });
@@ -78,12 +89,26 @@ impl PromptBuilder {
         messages
     }
 
-    fn build_system_prompt(tools: &[ToolDefinition]) -> String {
+    pub(crate) fn build_system_prompt(
+        tools: &[ToolDefinition],
+        active_skills: &[ActivatedSkill],
+        available_skills: &[SkillEntry],
+    ) -> String {
         let mut prompt = String::new();
 
         prompt.push_str(
             "You are Byte Agent, a local coding assistant running on the user's machine.\n\n",
         );
+
+        if !active_skills.is_empty() {
+            prompt.push_str("Active skills:\n");
+            for skill in active_skills {
+                let _ = writeln!(prompt, "## {}", skill.name);
+                prompt.push_str(&skill.content);
+                prompt.push('\n');
+            }
+            prompt.push('\n');
+        }
 
         prompt.push_str("Available tools:\n");
         for tool in tools {
@@ -91,7 +116,21 @@ impl PromptBuilder {
             let _ = writeln!(prompt, "  parameters: {}", tool.parameters);
         }
 
-        prompt.push_str("\nUse the tools when needed. Output tool calls in plain text for now.");
+        let active_names: std::collections::HashSet<_> =
+            active_skills.iter().map(|s| &s.name).collect();
+        let inactive_skills: Vec<_> = available_skills
+            .iter()
+            .filter(|skill| !active_names.contains(&skill.name))
+            .collect();
+
+        if !inactive_skills.is_empty() {
+            prompt.push_str("\nAvailable skills (activate with the activate_skill tool):\n");
+            for skill in inactive_skills {
+                let _ = writeln!(prompt, "- {}: {}", skill.name, skill.description);
+            }
+        }
+
+        prompt.push_str("\nUse the tools when needed.");
 
         prompt
     }
@@ -114,6 +153,8 @@ mod tests {
                 description: "Read a file.".into(),
                 parameters: serde_json::json!({"path": "string"}),
             }],
+            active_skills: vec![],
+            available_skills: vec![],
         };
         let messages = builder.build(context);
 
@@ -143,6 +184,8 @@ mod tests {
                 summary: "old topic".into(),
             }],
             tools: vec![],
+            active_skills: vec![],
+            available_skills: vec![],
         };
         let messages = builder.build(context);
 
@@ -154,5 +197,68 @@ mod tests {
         assert_eq!(messages[2].content, "past");
         assert_eq!(messages[3].role, MessageRole::Developer);
         assert_eq!(messages[3].content, "current");
+    }
+
+    #[test]
+    fn builder_includes_available_skills_for_activation() {
+        let builder = PromptBuilder::new();
+        let context = PromptContext {
+            user_message: "hello".into(),
+            history: vec![],
+            compactions: vec![],
+            tools: vec![],
+            active_skills: vec![],
+            available_skills: vec![
+                SkillEntry {
+                    name: "rust".into(),
+                    description: "Rust best practices.".into(),
+                },
+                SkillEntry {
+                    name: "testing".into(),
+                    description: "Testing guidelines.".into(),
+                },
+            ],
+        };
+        let messages = builder.build(context);
+
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].role, MessageRole::System);
+        let system = &messages[0].content;
+        assert!(system.contains("rust: Rust best practices."));
+        assert!(system.contains("testing: Testing guidelines."));
+        assert!(system.contains("activate_skill"));
+    }
+
+    #[test]
+    fn builder_lists_only_inactive_available_skills() {
+        let builder = PromptBuilder::new();
+        let context = PromptContext {
+            user_message: "hello".into(),
+            history: vec![],
+            compactions: vec![],
+            tools: vec![],
+            active_skills: vec![ActivatedSkill {
+                name: "rust".into(),
+                content: "Rust content.".into(),
+            }],
+            available_skills: vec![
+                SkillEntry {
+                    name: "rust".into(),
+                    description: "Rust best practices.".into(),
+                },
+                SkillEntry {
+                    name: "testing".into(),
+                    description: "Testing guidelines.".into(),
+                },
+            ],
+        };
+        let messages = builder.build(context);
+
+        assert_eq!(messages.len(), 2);
+        let system = &messages[0].content;
+        assert!(system.contains("Active skills:"));
+        assert!(system.contains("## rust"));
+        assert!(system.contains("testing: Testing guidelines."));
+        assert!(!system.contains("rust: Rust best practices."));
     }
 }
