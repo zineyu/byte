@@ -1,11 +1,9 @@
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use byte_models::{ModelProvider, ProviderError, ProviderEvent};
 use byte_protocol::{
-    CancelRunResult, MessageRole, RunMessage, RunStatus, RuntimeEvent, RuntimeEventKind,
-    SendMessageParams,
+    CancelRunResult, MessageRole, RunMessage, RunStatus, RuntimeEventKind, SendMessageParams,
 };
 use byte_session::{SessionError, SessionStore};
 use futures::StreamExt;
@@ -14,8 +12,6 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, instrument};
 
 use crate::event_bus::RuntimeEventBus;
-
-/// Buffers provider text deltas until a size threshold is reached so that
 /// cancellation can flush any remaining content as a final `message_delta`
 /// before emitting `run_cancelled`.
 pub struct DeltaBuffer {
@@ -80,7 +76,6 @@ pub struct SessionRunner {
     provider: Arc<dyn ModelProvider>,
     store: Arc<SessionStore>,
     bus: Arc<dyn RuntimeEventBus>,
-    sequence: Arc<AtomicU64>,
     active_run: Arc<Mutex<Option<(RunId, CancellationToken)>>>,
 }
 
@@ -95,7 +90,6 @@ impl SessionRunner {
             provider,
             store,
             bus,
-            sequence: Arc::new(AtomicU64::new(0)),
             active_run: Arc::new(Mutex::new(None)),
         }
     }
@@ -221,16 +215,8 @@ impl SessionRunner {
         }
     }
 
-    fn next_sequence(&self) -> u64 {
-        self.sequence.fetch_add(1, Ordering::SeqCst) + 1
-    }
-
     async fn emit(&self, kind: RuntimeEventKind) {
-        let event = RuntimeEvent {
-            sequence: self.next_sequence(),
-            kind,
-        };
-        self.bus.emit(event).await;
+        self.bus.emit(kind).await;
     }
 
     async fn clear_active_run(&self) {

@@ -172,10 +172,7 @@ impl SessionManager {
 
     async fn emit_session_changed(&self, session_id: String, action: SessionChangeAction) {
         self.bus
-            .emit(byte_protocol::RuntimeEvent {
-                sequence: 0,
-                kind: RuntimeEventKind::SessionChanged { session_id, action },
-            })
+            .emit(RuntimeEventKind::SessionChanged { session_id, action })
             .await;
     }
 }

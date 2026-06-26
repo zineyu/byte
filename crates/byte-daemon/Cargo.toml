@@ -11,6 +11,7 @@ byte-core.workspace = true
 byte-models.workspace = true
 byte-session.workspace = true
 byte-protocol.workspace = true
+futures.workspace = true
 serde_json.workspace = true
 serde.workspace = true
 tokio.workspace = true

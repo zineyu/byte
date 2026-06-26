@@ -162,6 +162,7 @@ dependencies = [
  "byte-models",
  "byte-protocol",
  "byte-session",
+ "futures",
  "serde",
  "serde_json",
  "tokio",

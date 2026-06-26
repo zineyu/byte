@@ -9,8 +9,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use byte_protocol::{
     decode_json_line, encode_json_line, DaemonConnectionView, DaemonState, DeleteSessionParams,
     DeleteSessionResult, JsonRpcMessage, JsonRpcRequest, JsonRpcResponse, ListSessionsResult,
-    LoadSessionResult, NewSessionParams, NewSessionResult, RpcId, RuntimeEvent, SessionSummary,
-    SessionView, RUNTIME_EVENT_METHOD,
+    LoadSessionResult, NewSessionParams, NewSessionResult, RpcId, RuntimeEvent, RuntimeEventKind,
+    SessionSummary, SessionView, RUNTIME_EVENT_METHOD,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -263,11 +263,13 @@ async fn spawn_daemon_client(app_handle: AppHandle) -> Result<DaemonClient, Stri
                 Err(error) => {
                     let _ = app_handle.emit(
                         "daemon-event",
-                        RuntimeEvent::error(
-                            0,
-                            None,
-                            format!("failed to read daemon RPC frame: {error}"),
-                        ),
+                        RuntimeEvent {
+                            sequence: 0,
+                            kind: RuntimeEventKind::error(
+                                None,
+                                format!("failed to read daemon RPC frame: {error}"),
+                            ),
+                        },
                     );
                     break;
                 }
@@ -313,11 +315,13 @@ async fn handle_daemon_message(
                     Err(error) => {
                         let _ = app_handle.emit(
                             "daemon-event",
-                            RuntimeEvent::error(
-                                0,
-                                None,
-                                format!("failed to decode daemon runtime event: {error}"),
-                            ),
+                            RuntimeEvent {
+                                sequence: 0,
+                                kind: RuntimeEventKind::error(
+                                    None,
+                                    format!("failed to decode daemon runtime event: {error}"),
+                                ),
+                            },
                         );
                     }
                 }
@@ -327,11 +331,13 @@ async fn handle_daemon_message(
         Err(error) => {
             let _ = app_handle.emit(
                 "daemon-event",
-                RuntimeEvent::error(
-                    0,
-                    None,
-                    format!("failed to decode daemon RPC frame: {error}"),
-                ),
+                RuntimeEvent {
+                    sequence: 0,
+                    kind: RuntimeEventKind::error(
+                        None,
+                        format!("failed to decode daemon RPC frame: {error}"),
+                    ),
+                },
             );
         }
     }

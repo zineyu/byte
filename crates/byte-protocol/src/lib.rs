@@ -170,99 +170,82 @@ pub struct RuntimeEvent {
     pub kind: RuntimeEventKind,
 }
 
-impl RuntimeEvent {
-    pub fn daemon_started(sequence: u64, state: DaemonState) -> Self {
-        Self {
-            sequence,
-            kind: RuntimeEventKind::DaemonStarted { state },
+impl RuntimeEventKind {
+    pub fn daemon_started(state: DaemonState) -> Self {
+        Self::DaemonStarted { state }
+    }
+
+    pub fn state_changed(state: DaemonState) -> Self {
+        Self::StateChanged { state }
+    }
+
+    pub fn error(run_id: Option<String>, message: impl Into<String>) -> Self {
+        Self::Error {
+            run_id,
+            message: message.into(),
         }
     }
 
-    pub fn state_changed(sequence: u64, state: DaemonState) -> Self {
-        Self {
-            sequence,
-            kind: RuntimeEventKind::StateChanged { state },
-        }
-    }
-
-    pub fn error(sequence: u64, run_id: Option<String>, message: impl Into<String>) -> Self {
-        Self {
-            sequence,
-            kind: RuntimeEventKind::Error {
-                run_id,
-                message: message.into(),
-            },
-        }
-    }
-
-    pub fn run_started(sequence: u64, session_id: String, run_id: String) -> Self {
-        Self {
-            sequence,
-            kind: RuntimeEventKind::RunStarted { session_id, run_id },
+    pub fn run_started(session_id: impl Into<String>, run_id: impl Into<String>) -> Self {
+        Self::RunStarted {
+            session_id: session_id.into(),
+            run_id: run_id.into(),
         }
     }
 
     pub fn run_finished(
-        sequence: u64,
-        run_id: String,
+        run_id: impl Into<String>,
         status: RunStatus,
         error: Option<String>,
     ) -> Self {
-        Self {
-            sequence,
-            kind: RuntimeEventKind::RunFinished {
-                run_id,
-                status,
-                error,
-            },
+        Self::RunFinished {
+            run_id: run_id.into(),
+            status,
+            error,
         }
     }
 
     pub fn message_started(
-        sequence: u64,
-        run_id: String,
-        message_id: String,
+        run_id: impl Into<String>,
+        message_id: impl Into<String>,
         role: MessageRole,
     ) -> Self {
-        Self {
-            sequence,
-            kind: RuntimeEventKind::MessageStarted {
-                run_id,
-                message_id,
-                role,
-            },
+        Self::MessageStarted {
+            run_id: run_id.into(),
+            message_id: message_id.into(),
+            role,
         }
     }
 
-    pub fn message_delta(sequence: u64, run_id: String, message_id: String, delta: String) -> Self {
-        Self {
-            sequence,
-            kind: RuntimeEventKind::MessageDelta {
-                run_id,
-                message_id,
-                delta,
-            },
+    pub fn message_delta(
+        run_id: impl Into<String>,
+        message_id: impl Into<String>,
+        delta: impl Into<String>,
+    ) -> Self {
+        Self::MessageDelta {
+            run_id: run_id.into(),
+            message_id: message_id.into(),
+            delta: delta.into(),
         }
     }
 
-    pub fn message_completed(sequence: u64, run_id: String, message_id: String) -> Self {
-        Self {
-            sequence,
-            kind: RuntimeEventKind::MessageCompleted { run_id, message_id },
+    pub fn message_completed(run_id: impl Into<String>, message_id: impl Into<String>) -> Self {
+        Self::MessageCompleted {
+            run_id: run_id.into(),
+            message_id: message_id.into(),
         }
     }
 
-    pub fn run_cancelled(sequence: u64, run_id: String) -> Self {
-        Self {
-            sequence,
-            kind: RuntimeEventKind::RunCancelled { run_id },
+    pub fn run_cancelled(run_id: impl Into<String>) -> Self {
+        Self::RunCancelled {
+            run_id: run_id.into(),
         }
     }
 
-    pub fn session_changed(sequence: u64, session_id: String, action: SessionChangeAction) -> Self {
-        Self {
-            sequence,
-            kind: RuntimeEventKind::SessionChanged { session_id, action },
+    pub fn session_changed(session_id: impl Into<String>, action: SessionChangeAction) -> Self {
+        Self::SessionChanged {
+            session_id: session_id.into(),
+            action,
         }
     }
 }
@@ -478,17 +461,30 @@ mod tests {
         let message_id = "msg-test-1";
 
         let events = vec![
-            RuntimeEvent::run_started(2, session_id.into(), run_id.into()),
-            RuntimeEvent::message_started(
-                3,
-                run_id.into(),
-                message_id.into(),
-                MessageRole::Assistant,
-            ),
-            RuntimeEvent::message_delta(4, run_id.into(), message_id.into(), "Hello".into()),
-            RuntimeEvent::message_delta(5, run_id.into(), message_id.into(), " world".into()),
-            RuntimeEvent::message_completed(6, run_id.into(), message_id.into()),
-            RuntimeEvent::run_finished(7, run_id.into(), RunStatus::Succeeded, None),
+            RuntimeEvent {
+                sequence: 2,
+                kind: RuntimeEventKind::run_started(session_id, run_id),
+            },
+            RuntimeEvent {
+                sequence: 3,
+                kind: RuntimeEventKind::message_started(run_id, message_id, MessageRole::Assistant),
+            },
+            RuntimeEvent {
+                sequence: 4,
+                kind: RuntimeEventKind::message_delta(run_id, message_id, "Hello"),
+            },
+            RuntimeEvent {
+                sequence: 5,
+                kind: RuntimeEventKind::message_delta(run_id, message_id, " world"),
+            },
+            RuntimeEvent {
+                sequence: 6,
+                kind: RuntimeEventKind::message_completed(run_id, message_id),
+            },
+            RuntimeEvent {
+                sequence: 7,
+                kind: RuntimeEventKind::run_finished(run_id, RunStatus::Succeeded, None),
+            },
         ];
 
         for event in events {
@@ -513,7 +509,10 @@ mod tests {
 
     #[test]
     fn error_event_can_carry_run_id() {
-        let event = RuntimeEvent::error(8, Some("run-test-1".into()), "Provider config not found");
+        let event = RuntimeEvent {
+            sequence: 8,
+            kind: RuntimeEventKind::error(Some("run-test-1".into()), "Provider config not found"),
+        };
         let decoded: RuntimeEvent = decode_json_line(&encode_json_line(&event).unwrap()).unwrap();
 
         assert!(matches!(
@@ -529,10 +528,10 @@ mod tests {
     fn decodes_response_and_notification_from_multiplexed_stream() {
         let response = JsonRpcResponse::success(1, DaemonState::ready("test-daemon"))
             .expect("response encodes");
-        let notification = JsonRpcNotification::runtime_event(RuntimeEvent::daemon_started(
-            1,
-            DaemonState::ready("test-daemon"),
-        ))
+        let notification = JsonRpcNotification::runtime_event(RuntimeEvent {
+            sequence: 1,
+            kind: RuntimeEventKind::daemon_started(DaemonState::ready("test-daemon")),
+        })
         .expect("notification encodes");
         let input = format!(
             "{}{}",
@@ -548,8 +547,10 @@ mod tests {
 
     #[test]
     fn session_changed_event_roundtrips() {
-        let event =
-            RuntimeEvent::session_changed(9, "session-test-1".into(), SessionChangeAction::Created);
+        let event = RuntimeEvent {
+            sequence: 9,
+            kind: RuntimeEventKind::session_changed("session-test-1", SessionChangeAction::Created),
+        };
         let decoded: RuntimeEvent = decode_json_line(&encode_json_line(&event).unwrap()).unwrap();
 
         assert!(matches!(
@@ -563,7 +564,10 @@ mod tests {
 
     #[test]
     fn run_cancelled_event_roundtrips() {
-        let event = RuntimeEvent::run_cancelled(10, "run-test-cancel".into());
+        let event = RuntimeEvent {
+            sequence: 10,
+            kind: RuntimeEventKind::run_cancelled("run-test-cancel"),
+        };
         let decoded: RuntimeEvent = decode_json_line(&encode_json_line(&event).unwrap()).unwrap();
 
         assert!(matches!(
@@ -574,8 +578,10 @@ mod tests {
 
     #[test]
     fn run_status_cancelled_roundtrips() {
-        let event =
-            RuntimeEvent::run_finished(11, "run-test-cancel".into(), RunStatus::Cancelled, None);
+        let event = RuntimeEvent {
+            sequence: 11,
+            kind: RuntimeEventKind::run_finished("run-test-cancel", RunStatus::Cancelled, None),
+        };
         let decoded: RuntimeEvent = decode_json_line(&encode_json_line(&event).unwrap()).unwrap();
 
         assert!(matches!(

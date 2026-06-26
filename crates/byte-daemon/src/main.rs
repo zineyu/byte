@@ -7,7 +7,6 @@ use std::sync::Arc;
 use anyhow::{bail, Context};
 #[cfg(unix)]
 use async_trait::async_trait;
-#[cfg(unix)]
 use byte_core::event_bus::{BroadcastEventBus, RuntimeEventBus};
 #[cfg(unix)]
 use byte_core::session_manager::SessionManager;
@@ -18,11 +17,13 @@ use byte_models::{
 };
 #[cfg(unix)]
 use byte_protocol::{
-    decode_json_line, encode_json_line, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse,
-    RunMessage, RuntimeEvent,
+    decode_json_line, encode_json_line, JsonRpcRequest, JsonRpcResponse, RunMessage,
+    RuntimeEventKind,
 };
 #[cfg(unix)]
 use byte_session::SessionStore;
+#[cfg(unix)]
+use futures::StreamExt;
 #[cfg(unix)]
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 #[cfg(unix)]
@@ -72,14 +73,14 @@ async fn run_socket_server(socket_path: &Path) -> anyhow::Result<()> {
     let listener = UnixListener::bind(socket_path)
         .with_context(|| format!("failed to bind RPC socket at {socket_path:?}"))?;
 
-    let event_bus = BroadcastEventBus::new(64);
+    let event_bus: Arc<dyn RuntimeEventBus> = Arc::new(BroadcastEventBus::new());
     let session_store =
         Arc::new(SessionStore::with_default_dir().context("failed to initialize session store")?);
     let provider: Arc<dyn ModelProvider> = Arc::new(LazyConfigProvider::new());
     let session_manager = SessionManager::new(
         Arc::clone(&provider),
         Arc::clone(&session_store),
-        Arc::new(event_bus.clone()),
+        Arc::clone(&event_bus),
     );
     let rpc_context = RpcContext { session_manager };
 
@@ -91,7 +92,7 @@ async fn run_socket_server(socket_path: &Path) -> anyhow::Result<()> {
             .await
             .context("failed to accept RPC socket client")?;
         info!("accepted new RPC connection");
-        let event_bus = event_bus.clone();
+        let event_bus = Arc::clone(&event_bus);
         let rpc_context = rpc_context.clone();
         tokio::spawn(async move {
             if let Err(error) = handle_connection(stream, event_bus, rpc_context).await {
@@ -104,7 +105,7 @@ async fn run_socket_server(socket_path: &Path) -> anyhow::Result<()> {
 #[cfg(unix)]
 async fn handle_connection(
     stream: UnixStream,
-    event_bus: BroadcastEventBus,
+    event_bus: Arc<dyn RuntimeEventBus>,
     rpc_context: RpcContext,
 ) -> anyhow::Result<()> {
     let (read_half, mut write_half) = stream.into_split();
@@ -120,26 +121,18 @@ async fn handle_connection(
     });
 
     let event_output_tx = output_tx.clone();
-    let mut event_rx = event_bus.subscribe();
+    let mut event_stream = event_bus.subscribe_json_lines();
     let event_task = tokio::spawn(async move {
-        loop {
-            match event_rx.recv().await {
-                Ok(event) => {
-                    let notification = JsonRpcNotification::runtime_event(event)?;
-                    let line = encode_json_line(&notification)?;
-                    if event_output_tx.send(line).is_err() {
-                        break;
-                    }
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+        while let Some(line) = event_stream.next().await {
+            if event_output_tx.send(line).is_err() {
+                break;
             }
         }
         anyhow::Ok(())
     });
 
     event_bus
-        .emit(RuntimeEvent::daemon_started(0, rpc::daemon_state()))
+        .emit(RuntimeEventKind::daemon_started(rpc::daemon_state()))
         .await;
 
     let mut reader = BufReader::new(read_half).lines();
@@ -163,8 +156,7 @@ async fn handle_connection(
                     break;
                 }
                 event_bus
-                    .emit(RuntimeEvent::error(
-                        0,
+                    .emit(RuntimeEventKind::error(
                         None,
                         format!("failed to parse JSON-RPC request: {error}"),
                     ))
