@@ -4,10 +4,11 @@ use std::time::Duration;
 
 use byte_models::{ProviderError, ProviderEvent, ProviderStream};
 use byte_protocol::{
-    CancelRunResult, CompactionSummary, MessageRole, RunMessage, RunStatus, RuntimeEventKind,
-    SendMessageParams, SessionContext, SessionMessage, ToolCall, ToolDefinition,
+    ActivatedSkill, CancelRunResult, CompactionSummary, MessageRole, RunMessage, RunStatus,
+    RuntimeEventKind, SendMessageParams, SessionContext, SessionMessage, ToolCall, ToolDefinition,
 };
 use byte_session::SessionError;
+use byte_tools::AllowAllPolicy;
 use futures::StreamExt;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -78,14 +79,27 @@ pub enum RunnerError {
 #[derive(Clone)]
 pub struct SessionRunner {
     services: RuntimeServices,
+    active_skills: Arc<Mutex<Vec<ActivatedSkill>>>,
     active_run: Arc<Mutex<Option<(RunId, CancellationToken)>>>,
 }
 
 impl SessionRunner {
     /// Create a new runner with aggregated runtime services.
     pub fn new(services: RuntimeServices) -> Self {
+        let active_skills = Arc::new(Mutex::new(Vec::new()));
+        let tool_registry = Arc::new(crate::activate_skill::SessionToolRegistry::new(
+            Arc::clone(&services.tool_registry),
+            Arc::new(crate::activate_skill::ActivateSkillTool::new(
+                Arc::clone(&services.skill_registry),
+                Arc::clone(&active_skills),
+            )),
+            Arc::new(AllowAllPolicy),
+        ));
+        let mut services = services;
+        services.tool_registry = tool_registry;
         Self {
             services,
+            active_skills,
             active_run: Arc::new(Mutex::new(None)),
         }
     }
@@ -284,11 +298,17 @@ impl RunExecutor {
         };
 
         let tools = runner.services.tool_registry.definitions();
+        let active_skills = runner.active_skills.lock().await.clone();
+        let Some(available_skills) = self.load_available_skills(&runner, &session_ctx).await else {
+            return;
+        };
         let prompt_context = PromptContext {
             user_message: self.message.clone(),
             history: self.history.clone(),
             compactions: self.compactions.clone(),
             tools,
+            active_skills,
+            available_skills: available_skills.clone(),
         };
         let mut messages = PromptBuilder::new().build(prompt_context);
         let mut turn_messages: Vec<RunMessage> = Vec::new();
@@ -309,7 +329,16 @@ impl RunExecutor {
                 messages.extend(turn_messages);
                 turn_messages = Vec::new();
             }
+            // Rebuild the system prompt on every turn so skills activated
+            // mid-run are reflected in subsequent provider requests. Available
+            // skills are cached from the initial turn; they are stable for a run.
             let tools = runner.services.tool_registry.definitions();
+            let active_skills = runner.active_skills.lock().await.clone();
+            let available_skills = available_skills.clone();
+            if !messages.is_empty() && messages[0].role == MessageRole::System {
+                messages[0].content =
+                    PromptBuilder::build_system_prompt(&tools, &active_skills, &available_skills);
+            }
             let Some(mut stream) = self
                 .request_provider_stream(&runner, messages.clone(), tools)
                 .await
@@ -359,11 +388,40 @@ impl RunExecutor {
         }
     }
 
+    /// Loads the available skill catalog for the current workspace.
+    /// Returns `None` after emitting a run error and clearing the active run.
+    async fn load_available_skills(
+        &self,
+        runner: &Arc<SessionRunner>,
+        session_ctx: &SessionContext,
+    ) -> Option<Vec<byte_protocol::SkillEntry>> {
+        match runner
+            .services
+            .skill_registry
+            .catalog(session_ctx.workspace_root.as_deref())
+            .await
+        {
+            Ok(skills) => Some(skills),
+            Err(error) => {
+                error!(%error, "failed to load skill catalog");
+                runner
+                    .emit_run_error(
+                        &self.run_id,
+                        format!("failed to load skill catalog: {error}"),
+                    )
+                    .await;
+                runner.clear_active_run().await;
+                None
+            }
+        }
+    }
+
     /// Loads the session view and builds the runtime context for tool calls.
     /// Returns `None` after emitting a run error and clearing the active run.
     async fn load_session_context(&self, runner: &Arc<SessionRunner>) -> Option<SessionContext> {
         match runner.services.store.load_session(&self.session_id).await {
             Ok(view) => Some(SessionContext {
+                session_id: Some(self.session_id.clone()),
                 workspace_root: view.workspace.map(PathBuf::from),
             }),
             Err(error) => {
@@ -679,7 +737,11 @@ mod tests {
     use byte_models::{EchoProvider, ModelProvider, ProviderError, ProviderEvent, ProviderStream};
     use byte_protocol::{MessageRole, RunMessage, RunStatus, RuntimeEventKind, SendMessageParams};
     use byte_session::SessionStore;
-    use byte_tools::{AllowAllPolicy, MvpToolRegistry, ReadFileTool, ToolRegistry};
+    use byte_skills::MvpSkillRegistry;
+    use byte_tools::{
+        AllowAllPolicy, ApplyPatchTool, FindFilesTool, GrepTool, ListDirectoryTool,
+        MvpToolRegistry, ReadFileTool, RunCommandTool, ToolRegistry, WriteFileTool,
+    };
     use tempfile::tempdir;
     use tokio::sync::Mutex;
 
@@ -705,6 +767,7 @@ mod tests {
             store,
             bus,
             Arc::new(registry),
+            Arc::new(MvpSkillRegistry::new()),
         );
         SessionRunner::new(services)
     }
@@ -714,7 +777,13 @@ mod tests {
         store: Arc<SessionStore>,
         bus: Arc<RecordingEventBus>,
     ) -> SessionRunner {
-        let services = RuntimeServices::new(provider, store, bus, Arc::new(MvpToolRegistry::new()));
+        let services = RuntimeServices::new(
+            provider,
+            store,
+            bus,
+            Arc::new(MvpToolRegistry::new()),
+            Arc::new(MvpSkillRegistry::new()),
+        );
         SessionRunner::new(services)
     }
 
@@ -829,8 +898,13 @@ mod tests {
             Arc::new(ReadFileTool),
             Arc::new(AllowAllPolicy),
         );
-        let services =
-            RuntimeServices::new(provider, temp_store(), bus.clone(), Arc::new(registry));
+        let services = RuntimeServices::new(
+            provider,
+            temp_store(),
+            bus.clone(),
+            Arc::new(registry),
+            Arc::new(MvpSkillRegistry::new()),
+        );
         let runner = SessionRunner::new(services);
         let params = SendMessageParams {
             session_id: "s1".into(),
@@ -883,6 +957,7 @@ mod tests {
             store.clone(),
             bus.clone(),
             Arc::new(registry),
+            Arc::new(MvpSkillRegistry::new()),
         );
         let runner = SessionRunner::new(services);
         let params = SendMessageParams {
@@ -1054,7 +1129,13 @@ mod tests {
             Arc::new(ReadFileTool),
             Arc::new(AllowAllPolicy),
         );
-        let services = RuntimeServices::new(provider, store, bus.clone(), Arc::new(registry));
+        let services = RuntimeServices::new(
+            provider,
+            store,
+            bus.clone(),
+            Arc::new(registry),
+            Arc::new(MvpSkillRegistry::new()),
+        );
         let runner = SessionRunner::new(services);
         let params = SendMessageParams {
             session_id: "s1".into(),
@@ -1291,8 +1372,13 @@ mod tests {
             Arc::new(ReadFileTool),
             Arc::new(AllowAllPolicy),
         );
-        let services =
-            RuntimeServices::new(provider, store.clone(), bus.clone(), Arc::new(registry));
+        let services = RuntimeServices::new(
+            provider,
+            store.clone(),
+            bus.clone(),
+            Arc::new(registry),
+            Arc::new(MvpSkillRegistry::new()),
+        );
         let runner = SessionRunner::new(services);
 
         let run_id = runner.send_message(params).await.expect("send accepted");
@@ -1326,5 +1412,567 @@ mod tests {
 
         assert_eq!(calls[1][3].role, MessageRole::Tool);
         assert_eq!(calls[1][3].tool_call_id, Some("call-1".into()));
+    }
+    #[tokio::test]
+    async fn write_file_tool_loop_end_to_end() {
+        let params = SendMessageParams {
+            session_id: "write-s1".into(),
+            message: "创建 hello.txt".into(),
+        };
+        let bus = Arc::new(RecordingEventBus::new());
+        let store_dir = tempdir().expect("temp dir");
+        let store =
+            Arc::new(SessionStore::new(store_dir.path().to_path_buf()).expect("store creates"));
+        let temp = tempdir().expect("temp dir");
+        let workspace = temp.path().to_path_buf();
+        store
+            .new_session(&params.session_id, Some(workspace.to_str().unwrap()))
+            .await
+            .expect("create session with workspace");
+
+        let mut registry = MvpToolRegistry::new();
+        registry.register(
+            "write_file".to_string(),
+            Arc::new(WriteFileTool),
+            Arc::new(AllowAllPolicy),
+        );
+        let services = RuntimeServices::new(
+            Arc::new(EchoProvider::default()),
+            store.clone(),
+            bus.clone(),
+            Arc::new(registry),
+            Arc::new(MvpSkillRegistry::new()),
+        );
+        let runner = SessionRunner::new(services);
+
+        let run_id = runner.send_message(params).await.expect("send accepted");
+        runner.wait_until_idle().await;
+
+        let events = bus.take_events().await;
+
+        assert!(
+            events.iter().any(|event| matches!(&event.kind,
+                RuntimeEventKind::ToolStarted { name, .. } if name == "write_file"
+            )),
+            "should emit tool_started for write_file"
+        );
+        assert!(
+            events.iter().any(|event| matches!(
+                &event.kind,
+                RuntimeEventKind::ToolFinished { output, is_error: false, .. } if output.contains("wrote")
+            )),
+            "should emit tool_finished with success"
+        );
+        assert!(
+            events.iter().any(|event| matches!(
+                &event.kind,
+                RuntimeEventKind::RunFinished { status: RunStatus::Succeeded, run_id: rid, .. } if rid == &run_id
+            )),
+            "run should finish successfully"
+        );
+
+        let written_path = workspace.join("hello.txt");
+        assert!(written_path.exists());
+        let content = tokio::fs::read_to_string(&written_path).await.unwrap();
+        assert_eq!(content, "Hello, world!");
+
+        let jsonl = tokio::fs::read_to_string(store_dir.path().join("write-s1.jsonl"))
+            .await
+            .expect("read session jsonl");
+        assert!(jsonl.contains("tool_result"));
+        assert!(jsonl.contains("Hello, world!"));
+    }
+
+    #[tokio::test]
+    async fn apply_patch_tool_loop_end_to_end() {
+        let params = SendMessageParams {
+            session_id: "patch-s1".into(),
+            message: "apply_patch src/lib.rs".into(),
+        };
+        let bus = Arc::new(RecordingEventBus::new());
+        let store_dir = tempdir().expect("temp dir");
+        let store =
+            Arc::new(SessionStore::new(store_dir.path().to_path_buf()).expect("store creates"));
+        let temp = tempdir().expect("temp dir");
+        let workspace = temp.path().to_path_buf();
+        store
+            .new_session(&params.session_id, Some(workspace.to_str().unwrap()))
+            .await
+            .expect("create session with workspace");
+
+        tokio::fs::create_dir_all(workspace.join("src"))
+            .await
+            .unwrap();
+        tokio::fs::write(
+            workspace.join("src/lib.rs"),
+            "fn old_one() {}\nfn old_two() {}\n",
+        )
+        .await
+        .unwrap();
+
+        let mut registry = MvpToolRegistry::new();
+        registry.register(
+            "apply_patch".to_string(),
+            Arc::new(ApplyPatchTool),
+            Arc::new(AllowAllPolicy),
+        );
+        let services = RuntimeServices::new(
+            Arc::new(EchoProvider::default()),
+            store.clone(),
+            bus.clone(),
+            Arc::new(registry),
+            Arc::new(MvpSkillRegistry::new()),
+        );
+        let runner = SessionRunner::new(services);
+
+        let run_id = runner.send_message(params).await.expect("send accepted");
+        runner.wait_until_idle().await;
+
+        let events = bus.take_events().await;
+
+        assert!(
+            events.iter().any(|event| matches!(
+                &event.kind,
+                RuntimeEventKind::ToolStarted { name, .. } if name == "apply_patch"
+            )),
+            "should emit tool_started for apply_patch"
+        );
+        assert!(
+            events.iter().any(|event| matches!(
+                &event.kind,
+                RuntimeEventKind::ToolFinished {
+                    is_error: false,
+                    ..
+                }
+            )),
+            "should emit tool_finished with success"
+        );
+        assert!(
+            events.iter().any(|event| matches!(
+                &event.kind,
+                RuntimeEventKind::RunFinished { status: RunStatus::Succeeded, run_id: rid, .. } if rid == &run_id
+            )),
+            "run should finish successfully"
+        );
+
+        let content = tokio::fs::read_to_string(workspace.join("src/lib.rs"))
+            .await
+            .unwrap();
+        assert_eq!(content, "fn new_one() {}\nfn new_two() {}\n");
+
+        let jsonl = tokio::fs::read_to_string(store_dir.path().join("patch-s1.jsonl"))
+            .await
+            .expect("read session jsonl");
+        assert!(jsonl.contains("tool_result"));
+        assert!(jsonl.contains("applied 2 patch(es)"));
+    }
+    /// A provider that deterministically requests a single tool call on turn 0
+    /// and replies with plain text on turn 1.
+    struct ToolCallProvider {
+        tool_call: byte_protocol::ToolCall,
+        turn: Mutex<usize>,
+    }
+
+    #[async_trait]
+    impl ModelProvider for ToolCallProvider {
+        async fn send_message(
+            &self,
+            _messages: Vec<RunMessage>,
+            _tools: Vec<byte_protocol::ToolDefinition>,
+        ) -> Result<ProviderStream, ProviderError> {
+            let mut turn = self.turn.lock().await;
+            let current_turn = *turn;
+            *turn += 1;
+            drop(turn);
+
+            let events: Vec<Result<ProviderEvent, ProviderError>> = if current_turn == 0 {
+                let message_id = "assistant-1".to_string();
+                vec![
+                    Ok(ProviderEvent::MessageStarted {
+                        message_id: message_id.clone(),
+                    }),
+                    Ok(ProviderEvent::MessageCompleted {
+                        message_id,
+                        tool_calls: Some(vec![self.tool_call.clone()]),
+                    }),
+                ]
+            } else {
+                let message_id = "assistant-2".to_string();
+                vec![
+                    Ok(ProviderEvent::MessageStarted {
+                        message_id: message_id.clone(),
+                    }),
+                    Ok(ProviderEvent::TextDelta {
+                        message_id: message_id.clone(),
+                        delta: "done".into(),
+                    }),
+                    Ok(ProviderEvent::MessageCompleted {
+                        message_id,
+                        tool_calls: None,
+                    }),
+                ]
+            };
+            Ok(Box::pin(futures::stream::iter(events)))
+        }
+    }
+
+    async fn run_tool_end_to_end(
+        tool_name: &str,
+        tool_call: byte_protocol::ToolCall,
+        workspace_setup: impl AsyncFnOnce(&std::path::Path),
+        output_assertion: impl Fn(&str),
+    ) {
+        let bus = Arc::new(RecordingEventBus::new());
+        let store_dir = tempdir().expect("temp dir");
+        let store =
+            Arc::new(SessionStore::new(store_dir.path().to_path_buf()).expect("store creates"));
+        let temp = tempdir().expect("temp dir");
+        let workspace = temp.path().to_path_buf();
+        store
+            .new_session("tool-session", Some(workspace.to_str().unwrap()))
+            .await
+            .expect("create session with workspace");
+
+        workspace_setup(temp.path()).await;
+
+        let mut registry = MvpToolRegistry::new();
+        match tool_name {
+            "list_directory" => registry.register(
+                "list_directory".to_string(),
+                Arc::new(ListDirectoryTool),
+                Arc::new(AllowAllPolicy),
+            ),
+            "grep" => registry.register(
+                "grep".to_string(),
+                Arc::new(GrepTool),
+                Arc::new(AllowAllPolicy),
+            ),
+            "find_files" => registry.register(
+                "find_files".to_string(),
+                Arc::new(FindFilesTool),
+                Arc::new(AllowAllPolicy),
+            ),
+            "run_command" => registry.register(
+                "run_command".to_string(),
+                Arc::new(RunCommandTool),
+                Arc::new(AllowAllPolicy),
+            ),
+            _ => panic!("unknown tool: {tool_name}"),
+        }
+
+        let services = RuntimeServices::new(
+            Arc::new(ToolCallProvider {
+                tool_call,
+                turn: Mutex::new(0),
+            }),
+            store.clone(),
+            bus.clone(),
+            Arc::new(registry),
+            Arc::new(MvpSkillRegistry::new()),
+        );
+        let runner = SessionRunner::new(services);
+
+        let run_id = runner
+            .send_message(SendMessageParams {
+                session_id: "tool-session".into(),
+                message: format!("use {tool_name}"),
+            })
+            .await
+            .expect("send accepted");
+        runner.wait_until_idle().await;
+
+        let events = bus.take_events().await;
+        assert!(
+            events.iter().any(|event| matches!(
+                &event.kind,
+                RuntimeEventKind::ToolStarted { name, .. } if name == tool_name
+            )),
+            "should emit tool_started for {tool_name}"
+        );
+
+        let tool_finished = events.iter().find_map(|event| match &event.kind {
+            RuntimeEventKind::ToolFinished {
+                output,
+                is_error: false,
+                ..
+            } => Some(output.clone()),
+            _ => None,
+        });
+        let output = tool_finished.expect("tool should finish successfully");
+        output_assertion(&output);
+
+        assert!(
+            events.iter().any(|event| matches!(
+                &event.kind,
+                RuntimeEventKind::RunFinished { status: RunStatus::Succeeded, run_id: rid, .. } if rid == &run_id
+            )),
+            "run should finish successfully"
+        );
+
+        let jsonl = tokio::fs::read_to_string(store_dir.path().join("tool-session.jsonl"))
+            .await
+            .expect("read session jsonl");
+        assert!(
+            jsonl.contains("tool_result"),
+            "session jsonl should contain tool_result"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_directory_tool_loop_end_to_end() {
+        run_tool_end_to_end(
+            "list_directory",
+            byte_protocol::ToolCall {
+                id: "call-1".into(),
+                name: "list_directory".into(),
+                arguments: serde_json::json!({"path": "."}),
+            },
+            async |path| {
+                tokio::fs::create_dir(path.join("src")).await.unwrap();
+                tokio::fs::write(path.join("README.md"), "# hi")
+                    .await
+                    .unwrap();
+            },
+            |output| {
+                assert!(output.contains("README.md"), "output should list README.md");
+                assert!(
+                    output.contains("\"type\": \"file\""),
+                    "README.md should be a file"
+                );
+                assert!(output.contains("src"), "output should list src");
+                assert!(
+                    output.contains("\"type\": \"directory\""),
+                    "src should be a directory"
+                );
+            },
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn grep_tool_loop_end_to_end() {
+        run_tool_end_to_end(
+            "grep",
+            byte_protocol::ToolCall {
+                id: "call-1".into(),
+                name: "grep".into(),
+                arguments: serde_json::json!({"pattern": "fn main", "path": "."}),
+            },
+            async |path| {
+                tokio::fs::write(path.join("main.rs"), "fn main() {}\n")
+                    .await
+                    .unwrap();
+            },
+            |output| {
+                assert!(output.contains("main.rs"), "output should contain main.rs");
+                assert!(output.contains("\"line\": 1"), "match should be on line 1");
+                assert!(
+                    output.contains("fn main() {}"),
+                    "output should contain matched line"
+                );
+            },
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn find_files_tool_loop_end_to_end() {
+        run_tool_end_to_end(
+            "find_files",
+            byte_protocol::ToolCall {
+                id: "call-1".into(),
+                name: "find_files".into(),
+                arguments: serde_json::json!({"pattern": "**/*.rs", "path": "."}),
+            },
+            async |path| {
+                tokio::fs::create_dir(path.join("src")).await.unwrap();
+                tokio::fs::write(path.join("src/lib.rs"), "").await.unwrap();
+                tokio::fs::write(path.join("Cargo.toml"), "").await.unwrap();
+            },
+            |output| {
+                assert!(
+                    output.contains("src/lib.rs"),
+                    "output should contain src/lib.rs"
+                );
+                assert!(
+                    !output.contains("Cargo.toml"),
+                    "output should not contain Cargo.toml"
+                );
+            },
+        )
+        .await;
+    }
+    #[tokio::test]
+    async fn run_command_tool_loop_end_to_end() {
+        run_tool_end_to_end(
+            "run_command",
+            byte_protocol::ToolCall {
+                id: "call-1".into(),
+                name: "run_command".into(),
+                arguments: serde_json::json!({"command": "cat file.txt"}),
+            },
+            async |path| {
+                tokio::fs::write(path.join("file.txt"), "hello command")
+                    .await
+                    .unwrap();
+            },
+            |output| {
+                assert!(
+                    output.contains("hello command"),
+                    "output should contain file contents"
+                );
+            },
+        )
+        .await;
+    }
+
+    /// A provider that requests `activate_skill("review")` on turn 0 and
+    /// returns plain text on turn 1, recording every message slice it receives.
+    struct SkillActivatingProvider {
+        calls: Arc<Mutex<Vec<Vec<RunMessage>>>>,
+    }
+
+    #[async_trait]
+    impl ModelProvider for SkillActivatingProvider {
+        async fn send_message(
+            &self,
+            messages: Vec<RunMessage>,
+            _tools: Vec<byte_protocol::ToolDefinition>,
+        ) -> Result<ProviderStream, ProviderError> {
+            let mut calls = self.calls.lock().await;
+            let turn = calls.len();
+            calls.push(messages);
+            drop(calls);
+
+            let events: Vec<Result<ProviderEvent, ProviderError>> = if turn == 0 {
+                vec![
+                    Ok(ProviderEvent::MessageStarted {
+                        message_id: "assistant-1".into(),
+                    }),
+                    Ok(ProviderEvent::MessageCompleted {
+                        message_id: "assistant-1".into(),
+                        tool_calls: Some(vec![byte_protocol::ToolCall {
+                            id: "skill-call-1".into(),
+                            name: "activate_skill".into(),
+                            arguments: serde_json::json!({"name": "review"}),
+                        }]),
+                    }),
+                ]
+            } else {
+                vec![
+                    Ok(ProviderEvent::MessageStarted {
+                        message_id: "assistant-2".into(),
+                    }),
+                    Ok(ProviderEvent::TextDelta {
+                        message_id: "assistant-2".into(),
+                        delta: "done".into(),
+                    }),
+                    Ok(ProviderEvent::MessageCompleted {
+                        message_id: "assistant-2".into(),
+                        tool_calls: None,
+                    }),
+                ]
+            };
+            Ok(Box::pin(futures::stream::iter(events)))
+        }
+    }
+
+    #[tokio::test]
+    async fn activate_skill_injects_content_into_later_run_system_prompt() {
+        let bus = Arc::new(RecordingEventBus::new());
+        let store_dir = tempdir().expect("temp dir");
+        let store =
+            Arc::new(SessionStore::new(store_dir.path().to_path_buf()).expect("store creates"));
+        let temp = tempdir().expect("temp dir");
+        let workspace = temp.path().to_path_buf();
+
+        let skill_dir = workspace.join(".byte").join("skills").join("review");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("skill.md"),
+            "---\nname: review\ndescription: Review skill\n---\n# Review\n\nAlways review carefully.",
+        )
+        .unwrap();
+
+        store
+            .new_session("skill-session", Some(workspace.to_str().unwrap()))
+            .await
+            .expect("create session with workspace");
+
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let provider = Arc::new(SkillActivatingProvider {
+            calls: calls.clone(),
+        });
+        let services = RuntimeServices::new(
+            provider,
+            store.clone(),
+            bus.clone(),
+            Arc::new(MvpToolRegistry::new()),
+            Arc::new(MvpSkillRegistry::new()),
+        );
+        let runner = SessionRunner::new(services);
+
+        let first_params = SendMessageParams {
+            session_id: "skill-session".into(),
+            message: "activate review".into(),
+        };
+        runner
+            .send_message(first_params)
+            .await
+            .expect("first run accepted");
+        runner.wait_until_idle().await;
+
+        let second_params = SendMessageParams {
+            session_id: "skill-session".into(),
+            message: "now what".into(),
+        };
+        runner
+            .send_message(second_params)
+            .await
+            .expect("second run accepted");
+        runner.wait_until_idle().await;
+
+        let calls = calls.lock().await;
+        assert_eq!(
+            calls.len(),
+            3,
+            "should make three provider calls: two turns for the first run and one for the second"
+        );
+
+        // First run turn 0: system prompt only lists tools.
+        assert_eq!(calls[0][0].role, MessageRole::System);
+        assert!(
+            !calls[0][0].content.contains("Always review carefully."),
+            "first run turn 0 should not yet contain skill content"
+        );
+
+        // First run turn 1 rebuilds the system prompt to include the skill
+        // activated during the previous turn.
+        assert_eq!(calls[1][0].role, MessageRole::System);
+        assert!(
+            calls[1][0].content.contains("Always review carefully."),
+            "first run turn 1 should reflect the newly activated skill"
+        );
+
+        // Second run rebuilds the system prompt with the activated skill.
+        assert_eq!(calls[2][0].role, MessageRole::System);
+        assert!(
+            calls[2][0].content.contains("Always review carefully."),
+            "second run system prompt should contain skill content"
+        );
+
+        drop(calls);
+
+        let jsonl = tokio::fs::read_to_string(store_dir.path().join("skill-session.jsonl"))
+            .await
+            .expect("read session jsonl");
+        assert!(
+            jsonl.contains("activate_skill"),
+            "session jsonl should persist activate_skill tool call"
+        );
+        assert!(
+            jsonl.contains("skill-call-1"),
+            "session jsonl should persist assistant tool_call id"
+        );
     }
 }

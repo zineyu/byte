@@ -9,6 +9,7 @@ async-trait = "0.1.89"
 byte-models.workspace = true
 byte-protocol.workspace = true
 byte-session.workspace = true
+byte-skills.workspace = true
 byte-tools.workspace = true
 futures.workspace = true
 serde_json.workspace = true

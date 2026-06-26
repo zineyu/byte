@@ -3,4 +3,4 @@
 /**
  * Runtime context supplied to tool invocations.
  */
-export type SessionContext = { workspaceRoot: string | null, };
+export type SessionContext = { sessionId: string | null, workspaceRoot: string | null, };

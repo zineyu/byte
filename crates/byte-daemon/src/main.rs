@@ -25,7 +25,12 @@ use byte_protocol::{
 #[cfg(unix)]
 use byte_session::SessionStore;
 #[cfg(unix)]
-use byte_tools::{AllowAllPolicy, MvpToolRegistry, ReadFileTool, ToolRegistry};
+use byte_skills::{MvpSkillRegistry, SkillRegistry};
+#[cfg(unix)]
+use byte_tools::{
+    AllowAllPolicy, ApplyPatchTool, FindFilesTool, GrepTool, ListDirectoryTool, MvpToolRegistry,
+    ReadFileTool, RunCommandTool, ToolRegistry, WriteFileTool,
+};
 #[cfg(unix)]
 use futures::StreamExt;
 #[cfg(unix)]
@@ -83,13 +88,45 @@ async fn run_socket_server(socket_path: &Path) -> anyhow::Result<()> {
         Arc::new(ReadFileTool),
         Arc::new(AllowAllPolicy),
     );
+    registry.register(
+        "write_file".to_string(),
+        Arc::new(WriteFileTool),
+        Arc::new(AllowAllPolicy),
+    );
+    registry.register(
+        "apply_patch".to_string(),
+        Arc::new(ApplyPatchTool),
+        Arc::new(AllowAllPolicy),
+    );
+    registry.register(
+        "list_directory".to_string(),
+        Arc::new(ListDirectoryTool),
+        Arc::new(AllowAllPolicy),
+    );
+    registry.register(
+        "grep".to_string(),
+        Arc::new(GrepTool),
+        Arc::new(AllowAllPolicy),
+    );
+    registry.register(
+        "find_files".to_string(),
+        Arc::new(FindFilesTool),
+        Arc::new(AllowAllPolicy),
+    );
+    registry.register(
+        "run_command".to_string(),
+        Arc::new(RunCommandTool),
+        Arc::new(AllowAllPolicy),
+    );
     let tool_registry: Arc<dyn byte_tools::ToolRegistry> = Arc::new(registry);
+    let skill_registry: Arc<dyn SkillRegistry> = Arc::new(MvpSkillRegistry::new());
 
     let services = RuntimeServices::new(
         Arc::clone(&provider),
         Arc::clone(&session_store),
         Arc::clone(&event_bus),
         tool_registry,
+        skill_registry,
     );
     let session_manager = SessionManager::new(services);
     let rpc_context = RpcContext { session_manager };

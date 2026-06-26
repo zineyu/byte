@@ -1,3 +1,4 @@
+pub mod activate_skill;
 pub mod event_bus;
 pub mod prompt;
 pub mod runner;
