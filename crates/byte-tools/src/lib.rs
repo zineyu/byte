@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -5,11 +6,23 @@ use byte_protocol::{SessionContext, ToolCall};
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
+pub mod apply_patch;
+pub mod find_files;
+pub mod grep;
+pub mod list_directory;
 pub mod read_file;
 pub mod registry;
+pub mod run_command;
+pub mod write_file;
 
+pub use apply_patch::ApplyPatchTool;
+pub use find_files::FindFilesTool;
+pub use grep::GrepTool;
+pub use list_directory::ListDirectoryTool;
 pub use read_file::ReadFileTool;
 pub use registry::MvpToolRegistry;
+pub use run_command::RunCommandTool;
+pub use write_file::WriteFileTool;
 
 /// An error produced while invoking a tool.
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -81,6 +94,37 @@ pub trait ToolRegistry: Send + Sync {
     ) -> Result<String, ToolError>;
 }
 
+/// Resolve a `path` argument from a tool call against the session workspace root.
+///
+/// Absolute paths are returned as-is; relative paths are joined with the
+/// workspace root when one is present.
+// TODO(Slice 2+): The MVP runs in "unrestricted local agent mode" (see AGENTS.md).
+// This helper does not normalize `..` components, so a relative path can escape
+// the workspace root. Add a sandbox policy / allowlist before exposing the
+// daemon to untrusted workspaces or models.
+pub(crate) fn resolve_tool_path(
+    call: &ToolCall,
+    ctx: &SessionContext,
+) -> Result<PathBuf, ToolError> {
+    let raw = call
+        .arguments
+        .get("path")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| ToolError::new("missing `path` argument"))?;
+
+    let path = PathBuf::from(raw);
+    if path.is_absolute() {
+        return Ok(path);
+    }
+
+    match &ctx.workspace_root {
+        Some(root) => Ok(root.join(path)),
+        None => Err(ToolError::new(
+            "relative path requires a workspace root in the session context",
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -103,6 +147,7 @@ mod tests {
                 .check(
                     &call,
                     &SessionContext {
+                        session_id: None,
                         workspace_root: None
                     }
                 )
@@ -131,6 +176,7 @@ mod tests {
             arguments: serde_json::json!({"path": "main.rs"}),
         };
         let ctx = SessionContext {
+            session_id: None,
             workspace_root: Some(temp.path().to_path_buf()),
         };
         let result = registry
@@ -152,6 +198,7 @@ mod tests {
             .invoke(
                 &call,
                 &SessionContext {
+                    session_id: None,
                     workspace_root: None,
                 },
                 &CancellationToken::new(),

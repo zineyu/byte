@@ -1,7 +1,6 @@
-use std::path::PathBuf;
-
 use async_trait::async_trait;
 use byte_protocol::{SessionContext, ToolCall};
+use tokio::io::AsyncReadExt;
 use tokio_util::sync::CancellationToken;
 
 use crate::{Tool, ToolError};
@@ -39,44 +38,64 @@ impl Tool for ReadFileTool {
         ctx: &SessionContext,
         cancel: &CancellationToken,
     ) -> Result<String, ToolError> {
-        // Cancellation is only checked before I/O begins. tokio::fs::read_to_string
-        // is not cancellable mid-read; for very large files this can delay
-        // shutdown. Slice 2+ can switch to a bounded, cancellation-aware reader.
         const MAX_SIZE: u64 = 1024 * 1024; // 1 MiB
-        let path = resolve_path(call, ctx)?;
+        const CHUNK_SIZE: usize = 8192;
+
+        let path = crate::resolve_tool_path(call, ctx)?;
         if cancel.is_cancelled() {
             return Err(ToolError::new("read_file cancelled"));
         }
-        match tokio::fs::metadata(&path).await {
-            Ok(meta) if meta.len() > MAX_SIZE => Err(ToolError::new(format!(
+
+        let mut file = tokio::fs::File::open(&path).await.map_err(|error| {
+            ToolError::new(format!("failed to open {}: {}", path.display(), error))
+        })?;
+
+        let metadata = file.metadata().await.map_err(|error| {
+            ToolError::new(format!(
+                "failed to read metadata for {}: {}",
+                path.display(),
+                error
+            ))
+        })?;
+        if metadata.len() > MAX_SIZE {
+            return Err(ToolError::new(format!(
                 "file {} exceeds size limit of {} bytes",
                 path.display(),
                 MAX_SIZE
-            ))),
-            _ => tokio::fs::read_to_string(&path).await.map_err(|error| {
-                ToolError::new(format!("failed to read {}: {}", path.display(), error))
-            }),
+            )));
         }
-    }
-}
 
-fn resolve_path(call: &ToolCall, ctx: &SessionContext) -> Result<PathBuf, ToolError> {
-    let raw = call
-        .arguments
-        .get("path")
-        .and_then(|value| value.as_str())
-        .ok_or_else(|| ToolError::new("missing `path` argument"))?;
+        let mut buffer = Vec::with_capacity(4096);
+        let mut chunk = [0u8; CHUNK_SIZE];
 
-    let path = PathBuf::from(raw);
-    if path.is_absolute() {
-        return Ok(path);
-    }
+        loop {
+            if cancel.is_cancelled() {
+                return Err(ToolError::new("read_file cancelled"));
+            }
 
-    match &ctx.workspace_root {
-        Some(root) => Ok(root.join(path)),
-        None => Err(ToolError::new(
-            "relative path requires a workspace root in the session context",
-        )),
+            let n = file.read(&mut chunk[..]).await.map_err(|error| {
+                ToolError::new(format!("failed to read {}: {}", path.display(), error))
+            })?;
+            if n == 0 {
+                break;
+            }
+            buffer.extend_from_slice(&chunk[..n]);
+            if buffer.len() as u64 > MAX_SIZE {
+                return Err(ToolError::new(format!(
+                    "file {} exceeds size limit of {} bytes",
+                    path.display(),
+                    MAX_SIZE
+                )));
+            }
+        }
+
+        String::from_utf8(buffer).map_err(|error| {
+            ToolError::new(format!(
+                "file {} is not valid UTF-8: {}",
+                path.display(),
+                error
+            ))
+        })
     }
 }
 
@@ -84,6 +103,7 @@ fn resolve_path(call: &ToolCall, ctx: &SessionContext) -> Result<PathBuf, ToolEr
 mod tests {
     use super::*;
     use byte_protocol::{SessionContext, ToolCall};
+    use std::path::PathBuf;
 
     #[tokio::test]
     async fn reads_file_relative_to_workspace_root() {
@@ -100,6 +120,7 @@ mod tests {
             arguments: serde_json::json!({"path": "src/main.rs"}),
         };
         let ctx = SessionContext {
+            session_id: None,
             workspace_root: Some(temp.path().to_path_buf()),
         };
 
@@ -122,6 +143,7 @@ mod tests {
             arguments: serde_json::json!({"path": path.to_str().unwrap()}),
         };
         let ctx = SessionContext {
+            session_id: None,
             workspace_root: Some(PathBuf::from("/other")),
         };
 
@@ -141,6 +163,7 @@ mod tests {
             arguments: serde_json::json!({"path": "missing.rs"}),
         };
         let ctx = SessionContext {
+            session_id: None,
             workspace_root: Some(temp.path().to_path_buf()),
         };
 
@@ -159,6 +182,7 @@ mod tests {
             arguments: serde_json::json!({"path": "src/main.rs"}),
         };
         let ctx = SessionContext {
+            session_id: None,
             workspace_root: None,
         };
 
@@ -170,6 +194,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn returns_error_when_cancelled() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("file.rs");
+        tokio::fs::write(&path, "fn main() {}").await.unwrap();
+
+        let call = ToolCall {
+            id: "call-1".into(),
+            name: "read_file".into(),
+            arguments: serde_json::json!({"path": path.to_str().unwrap()}),
+        };
+        let ctx = SessionContext {
+            session_id: None,
+            workspace_root: Some(temp.path().to_path_buf()),
+        };
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        let err = ReadFileTool
+            .invoke(&call, &ctx, &cancel)
+            .await
+            .expect_err("should be cancelled");
+        assert!(err.to_string().contains("read_file cancelled"));
+    }
+
+    #[tokio::test]
     async fn returns_error_for_missing_path_argument() {
         let call = ToolCall {
             id: "call-1".into(),
@@ -177,6 +226,7 @@ mod tests {
             arguments: serde_json::json!({}),
         };
         let ctx = SessionContext {
+            session_id: None,
             workspace_root: Some(PathBuf::from("/tmp")),
         };
 
@@ -201,6 +251,7 @@ mod tests {
             arguments: serde_json::json!({"path": path.to_str().unwrap()}),
         };
         let ctx = SessionContext {
+            session_id: None,
             workspace_root: Some(temp.path().to_path_buf()),
         };
 

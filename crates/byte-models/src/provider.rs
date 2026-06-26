@@ -68,29 +68,54 @@ impl ModelProvider for EchoProvider {
         tools: Vec<byte_protocol::ToolDefinition>,
     ) -> Result<ProviderStream, ProviderError> {
         let has_read_file = tools.iter().any(|tool| tool.name == "read_file");
+        let has_write_file = tools.iter().any(|tool| tool.name == "write_file");
+        let has_apply_patch = tools.iter().any(|tool| tool.name == "apply_patch");
         let last_was_tool = messages
             .last()
             .is_some_and(|message| message.role == MessageRole::Tool);
 
-        if has_read_file && !last_was_tool {
-            let message_id = uuid::Uuid::new_v4().to_string();
-            let tool_call = byte_protocol::ToolCall {
-                id: "echo-call-1".into(),
-                name: "read_file".into(),
-                arguments: serde_json::json!({"path": "main.rs"}),
-            };
-            let delay = self.delay;
-            let stream = async_stream::try_stream! {
-                yield ProviderEvent::MessageStarted { message_id: message_id.clone() };
-                if !delay.is_zero() {
-                    tokio::time::sleep(delay).await;
-                }
-                yield ProviderEvent::MessageCompleted {
-                    message_id,
-                    tool_calls: Some(vec![tool_call]),
+        if !last_was_tool {
+            let last_user_message = messages
+                .iter()
+                .rev()
+                .find(|message| message.role == MessageRole::Developer)
+                .map_or("", |message| message.content.as_str());
+
+            if has_write_file && is_write_file_intent(last_user_message) {
+                let tool_call = byte_protocol::ToolCall {
+                    id: "echo-call-1".into(),
+                    name: "write_file".into(),
+                    arguments: serde_json::json!({
+                        "path": "hello.txt",
+                        "content": "Hello, world!"
+                    }),
                 };
-            };
-            return Ok(Box::pin(stream));
+                return Ok(tool_call_stream(tool_call, self.delay));
+            }
+
+            if has_apply_patch && is_apply_patch_intent(last_user_message) {
+                let tool_call = byte_protocol::ToolCall {
+                    id: "echo-call-1".into(),
+                    name: "apply_patch".into(),
+                    arguments: serde_json::json!({
+                        "path": "src/lib.rs",
+                        "patch": [
+                            {"search": "fn old_one() {}", "replace": "fn new_one() {}"},
+                            {"search": "fn old_two() {}", "replace": "fn new_two() {}"}
+                        ]
+                    }),
+                };
+                return Ok(tool_call_stream(tool_call, self.delay));
+            }
+
+            if has_read_file {
+                let tool_call = byte_protocol::ToolCall {
+                    id: "echo-call-1".into(),
+                    name: "read_file".into(),
+                    arguments: serde_json::json!({"path": "main.rs"}),
+                };
+                return Ok(tool_call_stream(tool_call, self.delay));
+            }
         }
 
         let last = messages
@@ -125,6 +150,69 @@ impl ModelProvider for EchoProvider {
     }
 }
 
+fn is_write_file_intent(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    if has_negation(&lower) {
+        return false;
+    }
+    message.contains("创建") || message.contains("写入") || lower.contains("write")
+}
+
+fn is_apply_patch_intent(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    if has_negation(&lower) {
+        return false;
+    }
+    message.contains("替换") || lower.contains("patch") || lower.contains("apply_patch")
+}
+
+fn has_negation(message: &str) -> bool {
+    // Very small guard against obvious negated commands. This is only a test
+    // mock, so exhaustive NLP is out of scope. Match whole English words and
+    // common Chinese negation phrases to avoid false positives like "notify",
+    // "note", or "创建一个不小的文件".
+    has_english_negation(message) || has_chinese_negation(message)
+}
+
+fn has_english_negation(message: &str) -> bool {
+    const NEGATIONS: &[&str] = &["no", "not", "never", "don't", "dont", "cannot", "cant"];
+    message
+        .split(|c: char| !c.is_alphabetic() && c != '\'')
+        .map(str::to_ascii_lowercase)
+        .any(|word| NEGATIONS.contains(&word.as_str()))
+}
+
+fn has_chinese_negation(message: &str) -> bool {
+    const NEGATIONS: &[&str] = &[
+        "不要",
+        "别",
+        "不想",
+        "不用",
+        "不需要",
+        "不能",
+        "不会",
+        "没有",
+        "请勿",
+    ];
+    NEGATIONS.iter().any(|neg| message.contains(neg))
+}
+
+fn tool_call_stream(
+    tool_call: byte_protocol::ToolCall,
+    delay: std::time::Duration,
+) -> ProviderStream {
+    let message_id = uuid::Uuid::new_v4().to_string();
+    Box::pin(async_stream::try_stream! {
+        yield ProviderEvent::MessageStarted { message_id: message_id.clone() };
+        if !delay.is_zero() {
+            tokio::time::sleep(delay).await;
+        }
+        yield ProviderEvent::MessageCompleted {
+            message_id,
+            tool_calls: Some(vec![tool_call]),
+        };
+    })
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -269,5 +357,47 @@ mod tests {
             ),
             "should echo after receiving a tool result"
         );
+    }
+
+    #[test]
+    fn detects_write_file_intent() {
+        assert!(is_write_file_intent("创建一个文件"));
+        assert!(is_write_file_intent("write hello.txt"));
+    }
+
+    #[test]
+    fn rejects_negated_write_file_intent() {
+        assert!(!is_write_file_intent("不要创建文件"));
+        assert!(!is_write_file_intent("don't write the file"));
+        assert!(!is_write_file_intent("do not write the file"));
+    }
+
+    #[test]
+    fn accepts_write_file_intent_with_false_positive_negation_words() {
+        assert!(!has_english_negation("notify me and write a file"));
+        assert!(is_write_file_intent("notify me and write a file"));
+        assert!(is_write_file_intent("note this and write it down"));
+        assert!(is_write_file_intent("now write the file"));
+        assert!(is_write_file_intent("创建一个不小的文件"));
+    }
+
+    #[test]
+    fn detects_apply_patch_intent() {
+        assert!(is_apply_patch_intent("替换这段代码"));
+        assert!(is_apply_patch_intent("apply the patch"));
+    }
+
+    #[test]
+    fn rejects_negated_apply_patch_intent() {
+        assert!(!is_apply_patch_intent("不要替换"));
+        assert!(!is_apply_patch_intent("do not patch"));
+    }
+
+    #[test]
+    fn accepts_apply_patch_intent_with_false_positive_negation_words() {
+        assert!(is_apply_patch_intent("notify me and apply the patch"));
+        assert!(is_apply_patch_intent("note this and patch it"));
+        assert!(is_apply_patch_intent("apply the patch now"));
+        assert!(is_apply_patch_intent("替换不小的这段代码"));
     }
 }
