@@ -61,12 +61,16 @@ Pi also separates tool definition, tool execution, and active-tool selection. By
 /
 ├── Cargo.toml              # Rust workspace root
 ├── crates/
-│   ├── byte-core/          # SessionRunner, prompt/context, event model
-│   ├── byte-protocol/      # JSON-RPC commands, responses, RuntimeEvent, SessionView
+│   ├── byte-core/          # SessionRunner, PromptBuilder, SessionManager, RuntimeServices
+│   ├── byte-protocol/      # JSON-RPC commands, responses, RuntimeEvent, SessionView,
+│   │                       # ToolDefinition, ToolCall, ToolResult, SkillEntry,
+│   │                       # SkillDefinition, ActivatedSkill
 │   ├── byte-daemon/        # Unix socket server, process entrypoint
 │   ├── byte-models/        # OpenAI-compatible provider, ModelProvider trait
-│   ├── byte-tools/         # read/write/edit/ls/grep/find/bash tools
-│   ├── byte-skills/        # Agent Skills discovery and activation
+│   ├── byte-tools/         # Tool trait, ToolRegistry, ToolPolicy, MvpToolRegistry,
+│   │                       # read_file, write_file, apply_patch, list_directory,
+│   │                       # grep, find_files, run_command tools
+│   ├── byte-skills/        # SkillRegistry, MvpSkillRegistry, skill scan/activation
 │   └── byte-session/       # JSONL tree session store
 ├── apps/
 │   └── desktop/            # Tauri v2 + React app
@@ -77,7 +81,32 @@ Pi also separates tool definition, tool execution, and active-tool selection. By
 └── CONTEXT.md
 ```
 
+Dependency direction:
+
+- `byte-daemon` → `byte-core`
+- `byte-core` → `byte-tools`, `byte-skills`, `byte-models`, `byte-session`
+- all crates and `apps/desktop/src-tauri` → `byte-protocol` for shared types
+- `byte-tools` and `byte-skills` do not depend on each other; `byte-core` is the only coordinator
+
+See `docs/adr/0011-split-tools-skills-registries.md` for the rationale behind the crate split and registry seams.
+
 ## 6. Core runtime modules
+
+### RuntimeServices
+
+`byte-core` aggregates runtime dependencies in a single `RuntimeServices` container:
+
+```rust
+struct RuntimeServices {
+    provider: Arc<dyn ModelProvider>,
+    store: Arc<SessionStore>,
+    event_bus: Arc<dyn RuntimeEventBus>,
+    tool_registry: Arc<dyn ToolRegistry>,
+    skill_registry: Arc<dyn SkillRegistry>,
+}
+```
+
+`SessionManager` and `SessionRunner` receive `RuntimeServices` instead of individual constructor arguments. The workspace root for a run is stored per-session in the session header rather than in `RuntimeServices`, so each session resolves tool paths relative to its own workspace.
 
 ### SessionRunner
 
@@ -99,8 +128,9 @@ Constraint: one active run per session. A run can be cancelled. The daemon may l
 Builds context from:
 
 - fixed system prompt;
-- tool definitions;
-- skill catalog;
+- tool definitions from `ToolRegistry`;
+- skill catalog from `SkillRegistry`;
+- activated skills maintained by `SessionRunner`;
 - root workspace instruction files: `AGENTS.md`, `CONTEXT.md`;
 - active session path;
 - visible `CompactionEntry` summaries when old history has been compacted.
@@ -111,32 +141,47 @@ MVP implements only `OpenAiCompatibleProvider`, but keeps a trait boundary:
 
 ```rust
 trait ModelProvider {
-    async fn stream_chat(&self, request: ModelRequest) -> ModelStream;
+    async fn send_message(
+        &self,
+        messages: Vec<RunMessage>,
+        tools: Vec<ToolDefinition>,
+    ) -> Result<ProviderStream, ProviderError>;
 }
 ```
 
-### ToolRegistry
+### ToolRegistry (in `byte-tools`)
 
-MVP tool set follows Pi-style basics:
+The `ToolRegistry` trait and `MvpToolRegistry` implementation live in `byte-tools`. MVP tool set follows Pi-style basics:
 
 - `read_file`
 - `write_file`
-- `apply_patch` / edit
+- `apply_patch`
 - `run_command`
 - `list_directory`
 - `grep`
 - `find_files`
-- `activate_skill`
 
 Tools are invoked by `SessionRunner`, not directly by the UI command surface.
 
-### Policy boundary
+### SkillRegistry (in `byte-skills`)
+
+The `SkillRegistry` trait and `MvpSkillRegistry` implementation live in `byte-skills`. It discovers user and workspace skills and activates them by name. Workspace skills override user skills with the same name. See §10 for scan paths and precedence.
+
+### `activate_skill`
+
+`activate_skill` is implemented in `byte-core` as `ActivateSkillTool` and dynamically registered by each `SessionRunner` via `SessionToolRegistry`. It holds a reference to the shared `SkillRegistry` and appends activated skills to the per-session `active_skills` list, so `PromptBuilder` can inject them into subsequent runs.
+
+Placing `activate_skill` in `byte-core` avoids making `byte-tools` depend on `byte-skills` and keeps the special tool close to the session state it mutates.
+
+### Policy boundary (in `byte-tools`)
+
+`ToolPolicy` lives in `byte-tools` so that concrete tool implementations and `MvpToolRegistry` can reference it without introducing a reverse dependency on `byte-core`.
 
 MVP policy is `AllowAllPolicy` because the product intentionally runs in unrestricted local agent mode. Keep the interface anyway:
 
 ```rust
 trait ToolPolicy {
-    fn check(&self, call: &ToolCall, ctx: &SessionContext) -> PolicyDecision;
+    fn check(&self, call: &ToolCall, ctx: &SessionContext) -> Result<(), ToolError>;
 }
 ```
 
@@ -199,19 +244,22 @@ MVP supports local Agent Skills with progressive disclosure:
 
 - scan user and workspace skill directories;
 - workspace skill overrides user skill with the same name;
-- inject only the skill catalog at session start;
+- inject the skill catalog into the system prompt for each run, listing available skills with their descriptions and the `activate_skill(name)` tool for activation;
 - model may call `activate_skill(name)`;
-- user may explicitly invoke `/skill:name`;
 - activated skill content is structured, deduplicated, and protected from compaction.
 
-Suggested scan paths:
+Skill discovery and activation are implemented in `byte-skills` (`SkillRegistry` trait + `MvpSkillRegistry`). A skill is a directory containing `skill.md`; its display name is taken from the `name` frontmatter field, and its description from the `description` frontmatter field or the first Markdown heading.
+
+Scan order (later paths override earlier ones):
 
 ```text
-<workspace>/.byte/skills/
-<workspace>/.agents/skills/
-~/.byte/skills/
 ~/.agents/skills/
+~/.byte/skills/
+<workspace>/.agents/skills/
+<workspace>/.byte/skills/
 ```
+
+This means project-specific workspace skills take precedence over user-wide skills when both define the same name. The scan result is cached per workspace in `MvpSkillRegistry` to avoid repeated disk reads.
 
 ## 11. Frontend architecture
 
@@ -238,7 +286,7 @@ React state:
 
 - non-interactive commands only;
 - configured `cwd`;
-- stdout/stderr streaming events;
+- merged stdout/stderr returned on completion (streaming `command_output`/`tool_delta` events are not yet implemented);
 - exit code;
 - timeout;
 - cancellation.
