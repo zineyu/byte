@@ -7,11 +7,17 @@ use std::fmt::Write;
 /// Context supplied to `PromptBuilder` for a single run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PromptContext {
+    /// The current user message for this run.
     pub user_message: String,
+    /// Prior messages in the session, in chronological order.
     pub history: Vec<SessionMessage>,
+    /// Summaries of compacted conversation ranges.
     pub compactions: Vec<CompactionSummary>,
+    /// Tool definitions available to the model for this run.
     pub tools: Vec<ToolDefinition>,
+    /// Skills that have been activated for the current session.
     pub active_skills: Vec<ActivatedSkill>,
+    /// Skills that are installed and can be activated by name.
     pub available_skills: Vec<SkillEntry>,
 }
 
@@ -91,6 +97,7 @@ impl PromptBuilder {
         messages
     }
 
+    /// Build the system prompt from tool definitions and active/available skills.
     pub(crate) fn build_system_prompt(
         tools: &[ToolDefinition],
         active_skills: &[ActivatedSkill],

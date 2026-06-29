@@ -5,4 +5,20 @@ import type { SessionMessage } from "./SessionMessage";
 /**
  * A normalized view of a Session for the React UI.
  */
-export type SessionView = { sessionId: string, workspace: string | null, messages: Array<SessionMessage>, compactions: Array<CompactionSummary>, };
+export type SessionView = { 
+/**
+ * Session identifier.
+ */
+sessionId: string, 
+/**
+ * Optional workspace path associated with the session.
+ */
+workspace: string | null, 
+/**
+ * Messages in the session, in UI order.
+ */
+messages: Array<SessionMessage>, 
+/**
+ * Compaction entries in the session.
+ */
+compactions: Array<CompactionSummary>, };

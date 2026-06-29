@@ -3,4 +3,16 @@
 /**
  * The result of executing a tool call.
  */
-export type ToolResult = { toolCallId: string, content: string, isError: boolean, };
+export type ToolResult = { 
+/**
+ * Identifier of the corresponding tool call.
+ */
+toolCallId: string, 
+/**
+ * Serialized tool output.
+ */
+content: string, 
+/**
+ * Whether the tool call failed.
+ */
+isError: boolean, };

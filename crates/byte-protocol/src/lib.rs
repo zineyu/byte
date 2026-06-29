@@ -1,21 +1,32 @@
+//! Byte JSON-RPC protocol and shared runtime types.
+#![deny(rustdoc::broken_intra_doc_links)]
+
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::path::PathBuf;
 
+/// JSON-RPC protocol version.
 pub const JSON_RPC_VERSION: &str = "2.0";
+/// Wire format version supported by this crate.
 pub const PROTOCOL_VERSION: u16 = 1;
+/// JSON-RPC method name used for runtime event notifications.
 pub const RUNTIME_EVENT_METHOD: &str = "runtime_event";
 
+/// Session persistence and view types.
 pub mod session;
+/// Re-exported session request/result and view types.
 pub use session::{
     CompactionSummary, DeleteSessionParams, DeleteSessionResult, ListSessionsResult,
     LoadSessionParams, LoadSessionResult, NewSessionParams, NewSessionResult, SessionEntry,
     SessionMessage, SessionMessageContent, SessionSummary, SessionView,
 };
 
+/// JSON-RPC request identifier, which may be a number or a string.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum RpcId {
+    /// Numeric request identifier.
     Number(u64),
+    /// String request identifier.
     String(String),
 }
 
@@ -31,16 +42,22 @@ impl From<&str> for RpcId {
     }
 }
 
+/// A JSON-RPC request object.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct JsonRpcRequest {
+    /// JSON-RPC version string.
     pub jsonrpc: String,
+    /// Request identifier.
     pub id: RpcId,
+    /// Method name to invoke.
     pub method: String,
+    /// Optional method parameters.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub params: Option<serde_json::Value>,
 }
 
 impl JsonRpcRequest {
+    /// Create a new request with the given id, method and optional params.
     pub fn new(
         id: impl Into<RpcId>,
         method: impl Into<String>,
@@ -55,12 +72,17 @@ impl JsonRpcRequest {
     }
 }
 
+/// A JSON-RPC response object.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct JsonRpcResponse {
+    /// JSON-RPC version string.
     pub jsonrpc: String,
+    /// Identifier of the request this is a response to.
     pub id: RpcId,
+    /// Result value, if the call succeeded.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<serde_json::Value>,
+    /// Error object, if the call failed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<JsonRpcError>,
 }
@@ -78,6 +100,7 @@ impl JsonRpcResponse {
         })
     }
 
+    /// Create a failed response with the given error code and message.
     pub fn failure(id: impl Into<RpcId>, code: i64, message: impl Into<String>) -> Self {
         Self {
             jsonrpc: JSON_RPC_VERSION.to_owned(),
@@ -91,21 +114,27 @@ impl JsonRpcResponse {
         }
     }
 
+    /// Returns true if this response matches the id of `request`.
     #[must_use]
     pub fn is_response_to(&self, request: &JsonRpcRequest) -> bool {
         self.id == request.id
     }
 }
 
+/// A JSON-RPC notification object.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct JsonRpcNotification {
+    /// JSON-RPC version string.
     pub jsonrpc: String,
+    /// Notification method name.
     pub method: String,
+    /// Optional notification parameters.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub params: Option<serde_json::Value>,
 }
 
 impl JsonRpcNotification {
+    /// Create a new notification with the given method and optional params.
     pub fn new(method: impl Into<String>, params: Option<serde_json::Value>) -> Self {
         Self {
             jsonrpc: JSON_RPC_VERSION.to_owned(),
@@ -125,20 +154,28 @@ impl JsonRpcNotification {
     }
 }
 
+/// A JSON-RPC message that may be a request, response, or notification.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum JsonRpcMessage {
+    /// JSON-RPC request.
     Request(JsonRpcRequest),
+    /// JSON-RPC response.
     Response(JsonRpcResponse),
+    /// JSON-RPC notification.
     Notification(JsonRpcNotification),
 }
+
 /// Definition of a tool available to the model.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, rename_all = "camelCase")]
 pub struct ToolDefinition {
+    /// Tool name.
     pub name: String,
+    /// Human-readable description of what the tool does.
     pub description: String,
+    /// JSON Schema for the tool parameters.
     pub parameters: serde_json::Value,
 }
 
@@ -147,8 +184,11 @@ pub struct ToolDefinition {
 #[serde(rename_all = "camelCase")]
 #[ts(export, rename_all = "camelCase")]
 pub struct ToolCall {
+    /// Call identifier used to correlate results.
     pub id: String,
+    /// Name of the tool to invoke.
     pub name: String,
+    /// Arguments supplied for the tool call.
     pub arguments: serde_json::Value,
 }
 
@@ -157,8 +197,11 @@ pub struct ToolCall {
 #[serde(rename_all = "camelCase")]
 #[ts(export, rename_all = "camelCase")]
 pub struct ToolResult {
+    /// Identifier of the corresponding tool call.
     pub tool_call_id: String,
+    /// Serialized tool output.
     pub content: String,
+    /// Whether the tool call failed.
     pub is_error: bool,
 }
 
@@ -167,7 +210,9 @@ pub struct ToolResult {
 #[serde(rename_all = "camelCase")]
 #[ts(export, rename_all = "camelCase")]
 pub struct SkillEntry {
+    /// Skill name.
     pub name: String,
+    /// Short description of the skill.
     pub description: String,
 }
 
@@ -176,8 +221,11 @@ pub struct SkillEntry {
 #[serde(rename_all = "camelCase")]
 #[ts(export, rename_all = "camelCase")]
 pub struct SkillDefinition {
+    /// Skill name.
     pub name: String,
+    /// Human-readable description.
     pub description: String,
+    /// Skill source content / instructions.
     pub content: String,
 }
 
@@ -186,7 +234,9 @@ pub struct SkillDefinition {
 #[serde(rename_all = "camelCase")]
 #[ts(export, rename_all = "camelCase")]
 pub struct ActivatedSkill {
+    /// Skill name.
     pub name: String,
+    /// Activated skill content.
     pub content: String,
 }
 
@@ -195,17 +245,24 @@ pub struct ActivatedSkill {
 #[serde(rename_all = "camelCase")]
 #[ts(export, rename_all = "camelCase")]
 pub struct SessionContext {
+    /// Identifier of the current session, if any.
     pub session_id: Option<String>,
+    /// Root path of the current workspace, if any.
     pub workspace_root: Option<PathBuf>,
 }
 
+/// Role of a message in a conversation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export, rename_all = "snake_case")]
 pub enum MessageRole {
+    /// System prompt message.
     System,
+    /// Developer-facing instruction.
     Developer,
+    /// Assistant-generated message.
     Assistant,
+    /// Tool result message.
     Tool,
 }
 
@@ -219,45 +276,60 @@ impl std::fmt::Display for MessageRole {
         }
     }
 }
+
+/// Action describing how a session changed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export, rename_all = "snake_case")]
 pub enum SessionChangeAction {
+    /// Session was created.
     Created,
+    /// Session was loaded.
     Loaded,
+    /// Session was deleted.
     Deleted,
 }
 
+/// Final status of a run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export, rename_all = "snake_case")]
 pub enum RunStatus {
+    /// Run completed successfully.
     Succeeded,
+    /// Run failed.
     Failed,
+    /// Run was cancelled.
     Cancelled,
 }
 
+/// A runtime event delivered as a JSON-RPC notification.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct RuntimeEvent {
+    /// Monotonically increasing event sequence number.
     pub sequence: u64,
+    /// Specific event kind.
     #[serde(flatten)]
     #[ts(flatten)]
     pub kind: RuntimeEventKind,
 }
 
 impl RuntimeEventKind {
+    /// Daemon started with the given state.
     #[must_use]
     pub const fn daemon_started(state: DaemonState) -> Self {
         Self::DaemonStarted { state }
     }
 
+    /// Daemon state changed.
     #[must_use]
     pub const fn state_changed(state: DaemonState) -> Self {
         Self::StateChanged { state }
     }
 
+    /// Error occurred, optionally tied to a run.
     pub fn error(run_id: Option<String>, message: impl Into<String>) -> Self {
         Self::Error {
             run_id,
@@ -265,6 +337,7 @@ impl RuntimeEventKind {
         }
     }
 
+    /// A run started in the given session.
     pub fn run_started(session_id: impl Into<String>, run_id: impl Into<String>) -> Self {
         Self::RunStarted {
             session_id: session_id.into(),
@@ -272,6 +345,7 @@ impl RuntimeEventKind {
         }
     }
 
+    /// A run finished with the given status and optional error.
     pub fn run_finished(
         run_id: impl Into<String>,
         status: RunStatus,
@@ -284,6 +358,7 @@ impl RuntimeEventKind {
         }
     }
 
+    /// A new message started during a run.
     pub fn message_started(
         run_id: impl Into<String>,
         message_id: impl Into<String>,
@@ -296,6 +371,7 @@ impl RuntimeEventKind {
         }
     }
 
+    /// A content delta was produced for a message.
     pub fn message_delta(
         run_id: impl Into<String>,
         message_id: impl Into<String>,
@@ -308,6 +384,7 @@ impl RuntimeEventKind {
         }
     }
 
+    /// A message completed, optionally with tool calls.
     pub fn message_completed(
         run_id: impl Into<String>,
         message_id: impl Into<String>,
@@ -320,6 +397,7 @@ impl RuntimeEventKind {
         }
     }
 
+    /// A tool call started.
     pub fn tool_started(tool_call_id: impl Into<String>, name: impl Into<String>) -> Self {
         Self::ToolStarted {
             tool_call_id: tool_call_id.into(),
@@ -327,6 +405,7 @@ impl RuntimeEventKind {
         }
     }
 
+    /// A tool call finished with output and error status.
     pub fn tool_finished(
         tool_call_id: impl Into<String>,
         output: impl Into<String>,
@@ -339,12 +418,14 @@ impl RuntimeEventKind {
         }
     }
 
+    /// A run was cancelled.
     pub fn run_cancelled(run_id: impl Into<String>) -> Self {
         Self::RunCancelled {
             run_id: run_id.into(),
         }
     }
 
+    /// A session changed with the given action.
     pub fn session_changed(session_id: impl Into<String>, action: SessionChangeAction) -> Self {
         Self::SessionChanged {
             session_id: session_id.into(),
@@ -353,72 +434,115 @@ impl RuntimeEventKind {
     }
 }
 
+/// Specific kind of a [`RuntimeEvent`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[ts(export, rename_all = "snake_case")]
 pub enum RuntimeEventKind {
+    /// Daemon started.
     DaemonStarted {
+        /// Current daemon state.
         state: DaemonState,
     },
+    /// Daemon state changed.
     StateChanged {
+        /// Updated daemon state.
         state: DaemonState,
     },
+    /// Error occurred.
     Error {
+        /// Error message.
         message: String,
+        /// Optional run identifier associated with the error.
         #[serde(skip_serializing_if = "Option::is_none")]
         run_id: Option<String>,
     },
+    /// Run started.
     RunStarted {
+        /// Session identifier.
         session_id: String,
+        /// Run identifier.
         run_id: String,
     },
+    /// Run finished.
     RunFinished {
+        /// Run identifier.
         run_id: String,
+        /// Final run status.
         status: RunStatus,
+        /// Optional error message if the run failed.
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
+    /// Message generation started.
     MessageStarted {
+        /// Run identifier.
         run_id: String,
+        /// Message identifier.
         message_id: String,
+        /// Role of the message being generated.
         role: MessageRole,
     },
+    /// Message content delta.
     MessageDelta {
+        /// Run identifier.
         run_id: String,
+        /// Message identifier.
         message_id: String,
+        /// Incremental text content.
         delta: String,
     },
+    /// Message generation completed.
     MessageCompleted {
+        /// Run identifier.
         run_id: String,
+        /// Message identifier.
         message_id: String,
+        /// Tool calls emitted in this message, if any.
         #[serde(skip_serializing_if = "Option::is_none")]
         tool_calls: Option<Vec<ToolCall>>,
     },
+    /// Tool call started.
     ToolStarted {
+        /// Tool call identifier.
         tool_call_id: String,
+        /// Tool name.
         name: String,
     },
+    /// Tool call finished.
     ToolFinished {
+        /// Tool call identifier.
         tool_call_id: String,
+        /// Tool output.
         output: String,
+        /// Whether the tool call failed.
         is_error: bool,
     },
+    /// Run was cancelled.
     RunCancelled {
+        /// Run identifier.
         run_id: String,
     },
+    /// Session changed.
     SessionChanged {
+        /// Session identifier.
         session_id: String,
+        /// Change action.
         action: SessionChangeAction,
     },
 }
-// JSON-RPC request/result types for session and model-provider operations.
 
+/// A message exchanged during a run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunMessage {
+    /// Role of the message sender.
     pub role: MessageRole,
+    /// Text content of the message.
     pub content: String,
+    /// Identifier of the tool call this message answers, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// Tool calls requested in this message, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,
 }
@@ -454,42 +578,60 @@ impl RunMessage {
         }
     }
 }
+
+/// Parameters for sending a message to a session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SendMessageParams {
+    /// Target session identifier.
     pub session_id: String,
+    /// Message text to send.
     pub message: String,
 }
 
+/// Result returned after sending a message.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SendMessageResult {
+    /// Identifier of the run that was started.
     pub run_id: String,
 }
 
+/// Parameters for cancelling a run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CancelRunParams {
+    /// Session containing the run to cancel.
     pub session_id: String,
 }
 
+/// Result returned after cancelling a run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CancelRunResult {}
 
+/// JSON-RPC error object.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct JsonRpcError {
+    /// Error code.
     pub code: i64,
+    /// Short error message.
     pub message: String,
+    /// Additional error data, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<serde_json::Value>,
 }
 
+/// Snapshot of daemon state exposed to clients.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[ts(export)]
 pub struct DaemonState {
+    /// Current daemon status.
     pub status: DaemonStatus,
+    /// Daemon version string.
     pub daemon_version: String,
+    /// Protocol version supported by the daemon.
     pub protocol_version: u16,
 }
 
 impl DaemonState {
+    /// Create a ready state for the given daemon version.
     pub fn ready(daemon_version: impl Into<String>) -> Self {
         Self {
             status: DaemonStatus::Ready,
@@ -499,10 +641,12 @@ impl DaemonState {
     }
 }
 
+/// Daemon lifecycle status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export, rename_all = "snake_case")]
 pub enum DaemonStatus {
+    /// Daemon is ready to accept requests.
     Ready,
 }
 
@@ -511,11 +655,16 @@ pub enum DaemonStatus {
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct DaemonConnectionView {
+    /// Whether the shell is currently connected to the daemon.
     pub connected: bool,
+    /// Latest daemon state, if connected.
     pub state: Option<DaemonState>,
+    /// Last connection error, if disconnected.
     pub error: Option<String>,
 }
+
 impl DaemonConnectionView {
+    /// Connected view with the given daemon state.
     #[must_use]
     pub const fn connected(state: DaemonState) -> Self {
         Self {
@@ -525,6 +674,7 @@ impl DaemonConnectionView {
         }
     }
 
+    /// Disconnected view with the given error message.
     #[must_use]
     pub const fn disconnected(error: String) -> Self {
         Self {
@@ -535,8 +685,10 @@ impl DaemonConnectionView {
     }
 }
 
+/// Errors that can occur when encoding or decoding protocol frames.
 #[derive(Debug, thiserror::Error)]
 pub enum ProtocolError {
+    /// Failed to serialize a JSON-RPC frame.
     #[error("failed to serialize JSON-RPC frame: {0}")]
     Serialize(#[from] serde_json::Error),
 }

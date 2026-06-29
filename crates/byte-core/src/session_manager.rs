@@ -20,7 +20,9 @@ use crate::runtime_services::RuntimeServices;
 /// session lifecycles.
 #[derive(Clone)]
 pub struct SessionManager {
+    /// Aggregated runtime services.
     services: RuntimeServices,
+    /// Map from session id to active runner.
     runners: Arc<Mutex<HashMap<String, Arc<SessionRunner>>>>,
 }
 
@@ -189,6 +191,7 @@ impl SessionManager {
             .clone()
     }
 
+    /// Emit a session-changed runtime event.
     async fn emit_session_changed(&self, session_id: String, action: SessionChangeAction) {
         self.services
             .event_bus

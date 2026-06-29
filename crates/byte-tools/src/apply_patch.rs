@@ -18,6 +18,7 @@ pub struct ApplyPatchTool;
 
 #[async_trait]
 impl Tool for ApplyPatchTool {
+    /// Return the protocol definition for this tool.
     fn definition(&self) -> byte_protocol::ToolDefinition {
         byte_protocol::ToolDefinition {
             name: "apply_patch".into(),
@@ -53,6 +54,7 @@ impl Tool for ApplyPatchTool {
         }
     }
 
+    /// Invoke the tool with the given call and context.
     async fn invoke(
         &self,
         call: &ToolCall,
@@ -165,12 +167,16 @@ impl Tool for ApplyPatchTool {
     }
 }
 
+/// A single search/replace patch.
 #[derive(Debug)]
 struct Patch {
+    /// Text to search for in the file.
     search: String,
+    /// Text to replace the search text with.
     replace: String,
 }
 
+/// Read `reader` into a string, aborting if the contents exceed `max_size`.
 async fn read_bounded<R>(
     reader: &mut R,
     max_size: u64,
@@ -213,6 +219,7 @@ where
     })
 }
 
+/// Apply `patches` to `content` in order, enforcing `max_size` and cancellation.
 fn apply_patches(
     mut content: String,
     patches: &[Patch],
@@ -250,6 +257,7 @@ fn apply_patches(
     Ok(content)
 }
 
+/// Parse the `patch` argument from `call` into a list of [`Patch`]es.
 fn parse_patches(call: &ToolCall) -> Result<Vec<Patch>, ToolError> {
     let patches_value = call
         .arguments

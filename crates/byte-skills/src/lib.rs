@@ -1,3 +1,9 @@
+//! Agent skill discovery and activation.
+//!
+//! This crate scans user- and workspace-level skill directories and exposes a
+//! registry that activates matching skills on demand.
+#![deny(rustdoc::broken_intra_doc_links)]
+
 use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -12,14 +18,19 @@ use tracing::{debug, warn};
 /// An error produced while scanning or activating skills.
 #[derive(Debug, Error)]
 pub enum SkillError {
+    /// The requested skill was not found.
     #[error("skill not found: {0}")]
     NotFound(String),
+    /// Failed to read a skill directory.
     #[error("failed to read skill directory: {0}")]
     ReadDir(#[source] std::io::Error),
+    /// Failed to read a skill file.
     #[error("failed to read skill file {0}: {1}")]
     ReadFile(PathBuf, #[source] std::io::Error),
+    /// A skill file is missing the required `name` frontmatter key.
     #[error("skill file missing required `name` frontmatter: {0}")]
     MissingName(PathBuf),
+    /// A skill file contains invalid frontmatter.
     #[error("invalid frontmatter in skill file {0}: {1}")]
     InvalidFrontmatter(PathBuf, String),
 }
@@ -44,6 +55,7 @@ type SkillScanCache = HashMap<Option<PathBuf>, HashMap<String, SkillDefinition>>
 /// An in-memory skill registry used in the MVP.
 #[derive(Debug, Clone)]
 pub struct MvpSkillRegistry {
+    /// Optional user home directory used to locate user-level skills.
     home_dir: Option<PathBuf>,
     /// Cache of scanned skills keyed by workspace root. Scanning is done once
     /// per workspace and reused across `catalog` and `activate` calls to avoid
@@ -69,6 +81,7 @@ impl MvpSkillRegistry {
         }
     }
 
+    /// Return the skill directories to scan for the given workspace.
     fn skill_dirs(&self, workspace: Option<&Path>) -> Vec<PathBuf> {
         let mut dirs = Vec::new();
         // User-level skills are scanned first so that workspace-specific skills
@@ -87,6 +100,7 @@ impl MvpSkillRegistry {
 }
 
 impl Default for MvpSkillRegistry {
+    /// Creates a registry using the default home directory.
     fn default() -> Self {
         Self::new()
     }
@@ -94,6 +108,7 @@ impl Default for MvpSkillRegistry {
 
 #[async_trait]
 impl SkillRegistry for MvpSkillRegistry {
+    /// Return the list of available skills for the given workspace.
     async fn catalog(&self, workspace: Option<&Path>) -> Result<Vec<SkillEntry>, SkillError> {
         let skills = self.scan(workspace).await?;
         let mut entries: Vec<SkillEntry> = skills
@@ -107,6 +122,7 @@ impl SkillRegistry for MvpSkillRegistry {
         Ok(entries)
     }
 
+    /// Activate a skill by name, returning its full definition.
     async fn activate(
         &self,
         workspace: Option<&Path>,
@@ -142,6 +158,7 @@ impl MvpSkillRegistry {
     }
 }
 
+/// Scan the given directories for skill definitions.
 async fn scan_skills(dirs: Vec<PathBuf>) -> Result<HashMap<String, SkillDefinition>, SkillError> {
     let mut skills: HashMap<String, SkillDefinition> = HashMap::new();
 
@@ -212,6 +229,7 @@ async fn scan_skills(dirs: Vec<PathBuf>) -> Result<HashMap<String, SkillDefiniti
     Ok(skills)
 }
 
+/// Parse a `skill.md` file into a `SkillDefinition`.
 async fn parse_skill_file(path: &Path) -> Result<SkillDefinition, SkillError> {
     let content = tokio::fs::read_to_string(path)
         .await
@@ -234,6 +252,7 @@ async fn parse_skill_file(path: &Path) -> Result<SkillDefinition, SkillError> {
     })
 }
 
+/// Split markdown content into frontmatter key-value pairs and the remaining body.
 fn split_frontmatter(content: &str) -> (HashMap<String, String>, &str) {
     let trimmed = content.trim_start();
     let Some(first_line) = trimmed.lines().next() else {
@@ -264,6 +283,7 @@ fn split_frontmatter(content: &str) -> (HashMap<String, String>, &str) {
     (HashMap::new(), content)
 }
 
+/// Parse simple `key: value` frontmatter lines into a map.
 fn parse_simple_frontmatter(text: &str) -> HashMap<String, String> {
     let mut map = HashMap::new();
     for line in text.lines() {
@@ -282,6 +302,7 @@ fn parse_simple_frontmatter(text: &str) -> HashMap<String, String> {
     map
 }
 
+/// Extract the first Markdown heading from content.
 fn first_markdown_heading(content: &str) -> Option<String> {
     for line in content.lines() {
         let trimmed = line.trim();
@@ -295,6 +316,7 @@ fn first_markdown_heading(content: &str) -> Option<String> {
     None
 }
 
+/// Return the user's home directory from the `HOME` environment variable.
 fn home_dir() -> Option<PathBuf> {
     std::env::var("HOME")
         .ok()

@@ -1,3 +1,8 @@
+//! Byte Agent Tauri desktop application.
+//!
+//! Manages the local daemon process and exposes JSON-RPC backed commands to the
+//! frontend through Tauri's invoke handler.
+#![deny(rustdoc::broken_intra_doc_links)]
 #![allow(clippy::unreachable)]
 
 use std::collections::HashMap;
@@ -23,16 +28,22 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::task::JoinHandle;
 use tokio::time::sleep;
 
+/// Shared application state managed by Tauri.
 struct AppState {
+    /// Supervisor that owns the daemon process and reconnects on demand.
     daemon: Mutex<DaemonSupervisor>,
 }
 
+/// Lifecycle manager for the local daemon process.
 struct DaemonSupervisor {
+    /// Active daemon client, if the daemon is currently running.
     client: Option<DaemonClient>,
+    /// Most recent error encountered when starting or talking to the daemon.
     last_error: Option<String>,
 }
 
 impl DaemonSupervisor {
+    /// Creates a new supervisor with no running daemon.
     const fn new() -> Self {
         Self {
             client: None,
@@ -40,6 +51,7 @@ impl DaemonSupervisor {
         }
     }
 
+    /// Ensures a daemon client is running, returning a mutable reference to it.
     async fn ensure_client(&mut self, app_handle: AppHandle) -> Result<&mut DaemonClient, String> {
         if self.client.is_none() {
             match DaemonClient::spawn(app_handle).await {
@@ -61,6 +73,7 @@ impl DaemonSupervisor {
         })
     }
 
+    /// Returns the current daemon connection state, starting it if necessary.
     async fn get_state(&mut self, app_handle: AppHandle) -> DaemonConnectionView {
         match self.ensure_client(app_handle).await {
             Ok(client) => match client.get_state().await {
@@ -79,21 +92,31 @@ impl DaemonSupervisor {
     }
 }
 
+/// Connection to a running daemon process over a local socket.
 struct DaemonClient {
+    /// Child process handle for the daemon executable.
     child: Child,
+    /// Temporary directory holding the daemon's RPC socket.
     socket_dir: PathBuf,
+    /// Channel for sending JSON-RPC request lines to the daemon writer task.
     writer: mpsc::UnboundedSender<String>,
+    /// Outstanding RPC requests awaiting responses.
     pending: Arc<Mutex<HashMap<RpcId, oneshot::Sender<JsonRpcResponse>>>>,
+    /// Background task that reads lines from the daemon socket.
     reader_task: JoinHandle<()>,
+    /// Background task that writes lines to the daemon socket.
     writer_task: JoinHandle<()>,
+    /// Monotonically increasing counter for JSON-RPC request ids.
     next_request_id: u64,
 }
 
 impl DaemonClient {
+    /// Starts a new daemon process and returns a client connected to it.
     async fn spawn(app_handle: AppHandle) -> Result<Self, String> {
         spawn_daemon_client(app_handle).await
     }
 
+    /// Fetches the daemon's current runtime state.
     async fn get_state(&mut self) -> Result<DaemonState, String> {
         let response = self.request("get_state", None).await?;
         let result = response
@@ -103,6 +126,7 @@ impl DaemonClient {
             .map_err(|error| format!("failed to decode daemon state: {error}"))
     }
 
+    /// Creates a new session and returns its generated session id.
     async fn new_session(&mut self, workspace: Option<String>) -> Result<String, String> {
         let params = serde_json::to_value(NewSessionParams { workspace })
             .map_err(|error| format!("failed to encode new_session params: {error}"))?;
@@ -115,6 +139,7 @@ impl DaemonClient {
             .map_err(|error| format!("failed to decode new_session result: {error}"))
     }
 
+    /// Lists all sessions known to the daemon.
     async fn list_sessions(&mut self) -> Result<Vec<SessionSummary>, String> {
         let response = self.request("list_sessions", None).await?;
         let result = response
@@ -125,6 +150,7 @@ impl DaemonClient {
             .map_err(|error| format!("failed to decode session list: {error}"))
     }
 
+    /// Deletes the session with the given id.
     async fn delete_session(&mut self, session_id: String) -> Result<String, String> {
         let params = serde_json::to_value(DeleteSessionParams { session_id })
             .map_err(|error| format!("failed to encode delete_session params: {error}"))?;
@@ -137,6 +163,7 @@ impl DaemonClient {
             .map_err(|error| format!("failed to decode delete_session result: {error}"))
     }
 
+    /// Loads the full view for the session with the given id.
     async fn load_session(&mut self, session_id: String) -> Result<SessionView, String> {
         let params = serde_json::to_value(byte_protocol::LoadSessionParams { session_id })
             .map_err(|error| format!("failed to encode load_session params: {error}"))?;
@@ -149,6 +176,7 @@ impl DaemonClient {
             .map_err(|error| format!("failed to decode session view: {error}"))
     }
 
+    /// Sends a JSON-RPC request to the daemon and waits for its response.
     async fn request(
         &mut self,
         method: impl Into<String>,
@@ -195,6 +223,7 @@ impl DaemonClient {
         Ok(response)
     }
 
+    /// Generates the next JSON-RPC request id.
     const fn next_id(&mut self) -> RpcId {
         let id = self.next_request_id;
         self.next_request_id += 1;
@@ -212,6 +241,7 @@ impl Drop for DaemonClient {
 }
 
 #[cfg(unix)]
+/// Spawns the daemon executable and returns a client connected to its socket.
 async fn spawn_daemon_client(app_handle: AppHandle) -> Result<DaemonClient, String> {
     let daemon_path = resolve_daemon_path();
     let (socket_dir, socket_path) = create_rpc_socket_path()?;
@@ -294,6 +324,7 @@ async fn spawn_daemon_client(app_handle: AppHandle) -> Result<DaemonClient, Stri
     })
 }
 
+/// Decodes a line from the daemon and routes it to pending requests or frontend events.
 async fn handle_daemon_message(
     app_handle: &AppHandle,
     pending: &Arc<Mutex<HashMap<RpcId, oneshot::Sender<JsonRpcResponse>>>>,
@@ -345,6 +376,7 @@ async fn handle_daemon_message(
 }
 
 #[cfg(unix)]
+/// Repeatedly tries to connect to the daemon RPC socket until it succeeds or times out.
 async fn connect_daemon_socket(socket_path: &Path) -> Result<UnixStream, String> {
     let mut last_error = None;
 
@@ -366,6 +398,7 @@ async fn connect_daemon_socket(socket_path: &Path) -> Result<UnixStream, String>
 }
 
 #[cfg(unix)]
+/// Creates a private temporary directory and RPC socket path for the daemon.
 fn create_rpc_socket_path() -> Result<(PathBuf, PathBuf), String> {
     let suffix = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -394,6 +427,7 @@ fn create_rpc_socket_path() -> Result<(PathBuf, PathBuf), String> {
     Ok((socket_dir, socket_path))
 }
 
+/// Returns the current daemon connection state, starting it if necessary.
 #[tauri::command]
 async fn get_daemon_state(
     app_handle: AppHandle,
@@ -402,6 +436,7 @@ async fn get_daemon_state(
     Ok(state.daemon.lock().await.get_state(app_handle).await)
 }
 
+/// Sends a message to the daemon for the given session.
 #[tauri::command]
 async fn send_message(
     session_id: String,
@@ -420,6 +455,7 @@ async fn send_message(
     Ok(())
 }
 
+/// Creates a new session and returns its generated session id.
 #[tauri::command]
 async fn new_session(
     workspace: Option<String>,
@@ -431,6 +467,7 @@ async fn new_session(
     client.new_session(workspace).await
 }
 
+/// Lists all sessions known to the daemon.
 #[tauri::command]
 async fn list_sessions(
     app_handle: AppHandle,
@@ -441,6 +478,7 @@ async fn list_sessions(
     client.list_sessions().await
 }
 
+/// Deletes the session with the given id.
 #[tauri::command]
 async fn delete_session(
     session_id: String,
@@ -452,6 +490,7 @@ async fn delete_session(
     client.delete_session(session_id).await
 }
 
+/// Loads the full view for the session with the given id.
 #[tauri::command]
 async fn load_session(
     session_id: String,
@@ -463,9 +502,11 @@ async fn load_session(
     client.load_session(session_id).await
 }
 
+/// Starts the Tauri desktop application.
+///
 /// # Panics
 ///
-/// panic when tauri start failed
+/// Panics if the Tauri runtime fails to start.
 #[allow(clippy::expect_used)]
 pub fn run() {
     tauri::Builder::default()
@@ -487,6 +528,7 @@ pub fn run() {
         .expect("error while running Byte Agent desktop app");
 }
 
+/// Locates the daemon executable using environment overrides and common paths.
 fn resolve_daemon_path() -> PathBuf {
     if let Ok(path) = std::env::var("BYTE_DAEMON_PATH") {
         return PathBuf::from(path);

@@ -16,6 +16,7 @@ pub struct ReadFileTool;
 
 #[async_trait]
 impl Tool for ReadFileTool {
+    /// Return the protocol definition for this tool.
     fn definition(&self) -> byte_protocol::ToolDefinition {
         byte_protocol::ToolDefinition {
             name: "read_file".into(),
@@ -33,6 +34,7 @@ impl Tool for ReadFileTool {
         }
     }
 
+    /// Invoke the tool with the given call and context.
     async fn invoke(
         &self,
         call: &ToolCall,

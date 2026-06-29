@@ -14,7 +14,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{Tool, ToolError};
 
+/// Default command timeout in seconds.
 const DEFAULT_TIMEOUT_SECONDS: u64 = 30;
+/// Maximum number of bytes of combined stdout/stderr to capture.
 const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
 
 /// A tool that runs a non-interactive shell command and returns its output.
@@ -27,6 +29,7 @@ pub struct RunCommandTool;
 
 #[async_trait]
 impl Tool for RunCommandTool {
+    /// Return the protocol definition for this tool.
     fn definition(&self) -> byte_protocol::ToolDefinition {
         byte_protocol::ToolDefinition {
             name: "run_command".into(),
@@ -55,6 +58,7 @@ impl Tool for RunCommandTool {
         }
     }
 
+    /// Invoke the tool with the given call and context.
     async fn invoke(
         &self,
         call: &ToolCall,
@@ -179,6 +183,7 @@ impl Tool for RunCommandTool {
     }
 }
 
+/// Send `SIGKILL` to the process group identified by `pgid`, if any.
 fn kill_process_group(pgid: Option<i32>) {
     if let Some(pgid) = pgid {
         #[cfg(unix)]
@@ -188,12 +193,14 @@ fn kill_process_group(pgid: Option<i32>) {
     }
 }
 
+/// Kill the child process and its process group, then reap the child.
 async fn kill_and_reap(child: &mut tokio::process::Child, pgid: Option<i32>) {
     kill_process_group(pgid);
     let _ = child.kill().await;
     let _ = child.wait().await;
 }
 
+/// Read up to `limit` bytes from `stdout` into a string.
 async fn read_limited_output(
     mut stdout: tokio::process::ChildStdout,
     limit: usize,
@@ -218,6 +225,7 @@ async fn read_limited_output(
     Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
+/// Resolve the working directory for a `run_command` call.
 fn resolve_cwd(call: &ToolCall, ctx: &SessionContext) -> Result<Option<PathBuf>, ToolError> {
     let raw = call.arguments.get("cwd").and_then(|value| value.as_str());
     let path = match raw {
@@ -239,6 +247,7 @@ fn resolve_cwd(call: &ToolCall, ctx: &SessionContext) -> Result<Option<PathBuf>,
     }
 }
 
+/// Resolve the timeout, in seconds, for a `run_command` call.
 fn resolve_timeout(call: &ToolCall) -> Result<u64, ToolError> {
     let seconds = call
         .arguments

@@ -9,6 +9,7 @@ use tracing::{debug, instrument, warn};
 /// Context shared by all JSON-RPC handlers.
 #[derive(Clone)]
 pub struct RpcContext {
+    /// Session manager used to create, load, delete, and interact with sessions.
     pub session_manager: SessionManager,
 }
 
@@ -34,6 +35,7 @@ pub async fn handle_request(context: &RpcContext, request: JsonRpcRequest) -> Js
     }
 }
 
+/// Handle `get_state` and report the daemon's readiness/version.
 fn handle_get_state(request: &JsonRpcRequest) -> JsonRpcResponse {
     let state = daemon_state();
     JsonRpcResponse::success(request.id.clone(), state).unwrap_or_else(|error| {
@@ -41,6 +43,7 @@ fn handle_get_state(request: &JsonRpcRequest) -> JsonRpcResponse {
     })
 }
 
+/// Handle `new_session` by creating a fresh session in the given workspace.
 async fn handle_new_session(context: &RpcContext, request: &JsonRpcRequest) -> JsonRpcResponse {
     let params: NewSessionParams = match parse_params(request) {
         Ok(params) => params,
@@ -63,6 +66,7 @@ async fn handle_new_session(context: &RpcContext, request: &JsonRpcRequest) -> J
     }
 }
 
+/// Handle `load_session` by loading an existing session from the store.
 async fn handle_load_session(context: &RpcContext, request: &JsonRpcRequest) -> JsonRpcResponse {
     let params: LoadSessionParams = match parse_params(request) {
         Ok(params) => params,
@@ -80,6 +84,7 @@ async fn handle_load_session(context: &RpcContext, request: &JsonRpcRequest) -> 
     }
 }
 
+/// Handle `list_sessions` by returning all sessions known to the manager.
 async fn handle_list_sessions(context: &RpcContext, request: &JsonRpcRequest) -> JsonRpcResponse {
     match context.session_manager.list_sessions().await {
         Ok(result) => {
@@ -91,6 +96,7 @@ async fn handle_list_sessions(context: &RpcContext, request: &JsonRpcRequest) ->
     }
 }
 
+/// Handle `delete_session` by removing the requested session.
 async fn handle_delete_session(context: &RpcContext, request: &JsonRpcRequest) -> JsonRpcResponse {
     let params: DeleteSessionParams = match parse_params(request) {
         Ok(params) => params,
@@ -108,6 +114,7 @@ async fn handle_delete_session(context: &RpcContext, request: &JsonRpcRequest) -
     }
 }
 
+/// Handle `send_message` by starting a new run for the given session.
 async fn handle_send_message(context: &RpcContext, request: &JsonRpcRequest) -> JsonRpcResponse {
     let params: SendMessageParams = match parse_params(request) {
         Ok(params) => params,
@@ -128,6 +135,7 @@ async fn handle_send_message(context: &RpcContext, request: &JsonRpcRequest) -> 
     }
 }
 
+/// Handle `cancel_run` by cancelling the current run of the given session.
 async fn handle_cancel_run(context: &RpcContext, request: &JsonRpcRequest) -> JsonRpcResponse {
     let params: CancelRunParams = match parse_params(request) {
         Ok(params) => params,
@@ -145,6 +153,7 @@ async fn handle_cancel_run(context: &RpcContext, request: &JsonRpcRequest) -> Js
     }
 }
 
+/// Convert a `RunnerError` into a JSON-RPC error response.
 fn runner_error_response(
     request: &JsonRpcRequest,
     session_id: Option<&str>,
@@ -169,11 +178,13 @@ fn runner_error_response(
     }
 }
 
+/// Return the daemon's public state, including the current crate version.
 pub(crate) fn daemon_state() -> DaemonState {
     DaemonState::ready(env!("CARGO_PKG_VERSION"))
 }
 
 #[allow(clippy::result_large_err)] // JsonRpcResponse is large; this helper is internal and short-lived.
+/// Parse the JSON-RPC `params` field for a method into its expected type.
 fn parse_params<T: serde::de::DeserializeOwned>(
     request: &JsonRpcRequest,
 ) -> Result<T, JsonRpcResponse> {

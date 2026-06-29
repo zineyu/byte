@@ -5,4 +5,28 @@ import type { ToolCall } from "./ToolCall";
 /**
  * A message inside a `SessionView`.
  */
-export type SessionMessage = { id: string, parentId: string | null, role: MessageRole, content: string, toolCallId: string | null, toolCalls: Array<ToolCall> | null, };
+export type SessionMessage = { 
+/**
+ * Message identifier.
+ */
+id: string, 
+/**
+ * Parent message identifier, if any.
+ */
+parentId: string | null, 
+/**
+ * Role of the message sender.
+ */
+role: MessageRole, 
+/**
+ * Rendered text content.
+ */
+content: string, 
+/**
+ * Identifier of the answered tool call, if this is a tool result.
+ */
+toolCallId: string | null, 
+/**
+ * Tool calls requested by the assistant, if any.
+ */
+toolCalls: Array<ToolCall> | null, };

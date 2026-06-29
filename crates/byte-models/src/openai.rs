@@ -16,6 +16,7 @@ use byte_protocol::{MessageRole, RunMessage, ToolCall};
 use crate::config::ModelProviderConfig;
 use crate::provider::{ModelProvider, ProviderError, ProviderEvent, ProviderStream};
 
+/// Remove any trailing slash from a base URL.
 fn normalize_base_url(url: &str) -> String {
     url.trim_end_matches('/').to_owned()
 }
@@ -23,11 +24,14 @@ fn normalize_base_url(url: &str) -> String {
 /// An OpenAI-compatible provider using `async-openai` under the hood.
 #[derive(Debug)]
 pub struct OpenAiCompatibleProvider {
+    /// Underlying async-openai HTTP client.
     client: Client<OpenAIConfig>,
+    /// Model name sent with each chat completion request.
     model: String,
 }
 
 impl OpenAiCompatibleProvider {
+    /// Create a new provider from the supplied configuration.
     #[must_use]
     pub fn new(config: ModelProviderConfig) -> Self {
         let openai_config = OpenAIConfig::new()
@@ -195,6 +199,7 @@ fn build_provider_stream(
     Box::pin(stream)
 }
 
+/// Merge streamed tool-call fragments into complete `ToolCall` values.
 fn combine_tool_call_chunks(chunks: Vec<ChatCompletionMessageToolCallChunk>) -> Vec<ToolCall> {
     let mut by_index: std::collections::BTreeMap<u32, (Option<String>, Option<String>, String)> =
         std::collections::BTreeMap::new();
@@ -230,6 +235,7 @@ fn combine_tool_call_chunks(chunks: Vec<ChatCompletionMessageToolCallChunk>) -> 
         .collect()
 }
 
+/// Redact sensitive authentication details from an error message.
 fn sanitize_error(error: &impl std::fmt::Display) -> String {
     // Do not expose API keys, authorization headers, or raw request bodies.
     let text = error.to_string();

@@ -1,3 +1,7 @@
+//! Byte daemon — a Unix-socket JSON-RPC server that hosts sessions, tools,
+//! skills, and a model provider for the byte runtime.
+#![deny(rustdoc::broken_intra_doc_links)]
+
 #[cfg(unix)]
 use std::path::{Path, PathBuf};
 #[cfg(unix)]
@@ -39,6 +43,7 @@ use tokio::sync::{Mutex, mpsc};
 #[cfg(unix)]
 use tracing::{debug, error, info, trace, warn};
 
+/// JSON-RPC request handlers shared by the socket server.
 #[cfg(unix)]
 mod rpc;
 #[cfg(unix)]
@@ -57,6 +62,7 @@ async fn main() -> anyhow::Result<()> {
 }
 
 #[cfg(unix)]
+/// Parse the `--rpc-socket <path>` argument from the command line.
 fn parse_rpc_socket_arg(args: impl IntoIterator<Item = String>) -> anyhow::Result<PathBuf> {
     let mut args = args.into_iter();
     let _program = args.next();
@@ -68,6 +74,7 @@ fn parse_rpc_socket_arg(args: impl IntoIterator<Item = String>) -> anyhow::Resul
 }
 
 #[cfg(unix)]
+/// Bind the Unix socket and accept JSON-RPC connections until shutdown.
 async fn run_socket_server(socket_path: &Path) -> anyhow::Result<()> {
     remove_stale_socket(socket_path)?;
     let _socket_file = SocketFile::new(socket_path.to_path_buf());
@@ -147,6 +154,7 @@ async fn run_socket_server(socket_path: &Path) -> anyhow::Result<()> {
 }
 
 #[cfg(unix)]
+/// Handle a single client connection on the RPC socket.
 async fn handle_connection(
     stream: UnixStream,
     event_bus: Arc<dyn RuntimeEventBus>,
@@ -236,11 +244,13 @@ async fn handle_connection(
 /// runtime event stream as a failed run.
 #[cfg(unix)]
 struct LazyConfigProvider {
+    /// Lazily-initialized model provider, populated on the first `send_message`.
     inner: Mutex<Option<Arc<dyn ModelProvider>>>,
 }
 
 #[cfg(unix)]
 impl LazyConfigProvider {
+    /// Create a new, uninitialized lazy provider.
     fn new() -> Self {
         Self {
             inner: Mutex::new(None),
@@ -274,6 +284,7 @@ impl ModelProvider for LazyConfigProvider {
 }
 
 #[cfg(unix)]
+/// Build a concrete model provider from the on-disk configuration.
 async fn build_provider() -> anyhow::Result<Arc<dyn ModelProvider>> {
     let config = load_config().await?;
     debug!(provider = %config.provider, model = %config.model, "loaded provider config");
@@ -281,6 +292,7 @@ async fn build_provider() -> anyhow::Result<Arc<dyn ModelProvider>> {
 }
 
 #[cfg(unix)]
+/// Remove a leftover socket file from a previous daemon run, if present.
 fn remove_stale_socket(socket_path: &Path) -> anyhow::Result<()> {
     if socket_path.exists() {
         std::fs::remove_file(socket_path).with_context(|| {
@@ -294,12 +306,15 @@ fn remove_stale_socket(socket_path: &Path) -> anyhow::Result<()> {
 }
 
 #[cfg(unix)]
+/// RAII guard that deletes the Unix socket file when dropped.
 struct SocketFile {
+    /// Path to the bound Unix domain socket.
     path: PathBuf,
 }
 
 #[cfg(unix)]
 impl SocketFile {
+    /// Create a guard for the socket at `path`.
     const fn new(path: PathBuf) -> Self {
         Self { path }
     }

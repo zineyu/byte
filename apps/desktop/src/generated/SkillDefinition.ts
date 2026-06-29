@@ -3,4 +3,16 @@
 /**
  * The full definition of a skill, including its content.
  */
-export type SkillDefinition = { name: string, description: string, content: string, };
+export type SkillDefinition = { 
+/**
+ * Skill name.
+ */
+name: string, 
+/**
+ * Human-readable description.
+ */
+description: string, 
+/**
+ * Skill source content / instructions.
+ */
+content: string, };

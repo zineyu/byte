@@ -3,4 +3,12 @@
 /**
  * A skill that has been activated for the current session.
  */
-export type ActivatedSkill = { name: string, content: string, };
+export type ActivatedSkill = { 
+/**
+ * Skill name.
+ */
+name: string, 
+/**
+ * Activated skill content.
+ */
+content: string, };

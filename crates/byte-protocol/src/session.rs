@@ -7,8 +7,11 @@ use crate::MessageRole;
 #[serde(rename_all = "camelCase")]
 #[ts(export, rename_all = "camelCase")]
 pub struct SessionSummary {
+    /// Session identifier.
     pub session_id: String,
+    /// Optional workspace path associated with the session.
     pub workspace: Option<String>,
+    /// ISO 8601 timestamp of when the session was created.
     pub created_at: String,
 }
 
@@ -17,8 +20,11 @@ pub struct SessionSummary {
 #[serde(rename_all = "camelCase")]
 #[ts(export, rename_all = "camelCase")]
 pub struct CompactionSummary {
+    /// Compaction entry identifier.
     pub id: String,
+    /// Identifier of the parent message this compaction replaces.
     pub parent_id: String,
+    /// Human-readable summary text.
     pub summary: String,
 }
 
@@ -27,9 +33,13 @@ pub struct CompactionSummary {
 #[serde(rename_all = "camelCase")]
 #[ts(export, rename_all = "camelCase")]
 pub struct SessionView {
+    /// Session identifier.
     pub session_id: String,
+    /// Optional workspace path associated with the session.
     pub workspace: Option<String>,
+    /// Messages in the session, in UI order.
     pub messages: Vec<SessionMessage>,
+    /// Compaction entries in the session.
     pub compactions: Vec<CompactionSummary>,
 }
 
@@ -38,22 +48,32 @@ pub struct SessionView {
 #[serde(rename_all = "camelCase")]
 #[ts(export, rename_all = "camelCase")]
 pub struct SessionMessage {
+    /// Message identifier.
     pub id: String,
+    /// Parent message identifier, if any.
     pub parent_id: Option<String>,
+    /// Role of the message sender.
     pub role: MessageRole,
+    /// Rendered text content.
     pub content: String,
+    /// Identifier of the answered tool call, if this is a tool result.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// Tool calls requested by the assistant, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<crate::ToolCall>>,
 }
 
+/// Persisted content of a session message.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionMessageContent {
+    /// Role of the message sender.
     pub role: MessageRole,
+    /// Plain text content, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+    /// Tool calls requested by the assistant, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<crate::ToolCall>>,
 }
@@ -86,62 +106,94 @@ impl SessionMessageContent {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SessionEntry {
+    /// Session header record.
     Session {
+        /// File format version.
         version: u16,
+        /// Session identifier.
         id: String,
+        /// Optional workspace path.
         workspace: Option<String>,
+        /// ISO 8601 creation timestamp.
         created_at: String,
     },
+    /// Message record.
     Message {
+        /// Message identifier.
         id: String,
+        /// Parent message identifier, if any.
         parent_id: Option<String>,
+        /// Message content.
         message: SessionMessageContent,
     },
+    /// Tool result record.
     ToolResult {
+        /// Result record identifier.
         id: String,
+        /// Parent message identifier.
         parent_id: String,
+        /// Identifier of the tool call that produced this result.
         tool_call_id: String,
+        /// Serialized tool output.
         content: String,
     },
+    /// Compaction record.
     Compaction {
+        /// Compaction entry identifier.
         id: String,
+        /// Parent message identifier.
         parent_id: String,
+        /// Human-readable summary text.
         summary: String,
     },
 }
 
+/// Parameters for creating a new session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NewSessionParams {
+    /// Optional workspace path for the new session.
     pub workspace: Option<String>,
 }
 
+/// Result returned after creating a new session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NewSessionResult {
+    /// Identifier of the newly created session.
     pub session_id: String,
 }
 
+/// Result returned when listing sessions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ListSessionsResult {
+    /// Summaries of the available sessions.
     pub sessions: Vec<SessionSummary>,
 }
 
+/// Parameters for loading a session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LoadSessionParams {
+    /// Session identifier to load.
     pub session_id: String,
 }
 
+/// Result returned after loading a session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LoadSessionResult {
+    /// Full view of the loaded session.
     pub session: SessionView,
 }
 
+/// Parameters for deleting a session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeleteSessionParams {
+    /// Session identifier to delete.
     pub session_id: String,
 }
 
+/// Result returned after deleting a session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeleteSessionResult {
+    /// Identifier of the deleted session.
     pub session_id: String,
 }
 

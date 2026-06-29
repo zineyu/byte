@@ -1,3 +1,5 @@
+//! Integration tests for the byte daemon over a Unix domain socket.
+
 #![cfg(unix)]
 #![allow(clippy::expect_used, clippy::unwrap_used, unused_results)]
 

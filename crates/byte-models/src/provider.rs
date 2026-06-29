@@ -4,19 +4,30 @@ use async_trait::async_trait;
 use byte_protocol::{MessageRole, RunMessage};
 use futures::Stream;
 
+/// A pinned, sendable stream of provider events or errors.
 pub type ProviderStream = Pin<Box<dyn Stream<Item = Result<ProviderEvent, ProviderError>> + Send>>;
 
 /// An event emitted by a model provider during a streaming generation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProviderEvent {
     /// A new assistant message has begun.
-    MessageStarted { message_id: String },
+    MessageStarted {
+        /// Identifier shared by all events belonging to this message.
+        message_id: String,
+    },
     /// Additional text content for the active assistant message.
-    TextDelta { message_id: String, delta: String },
+    TextDelta {
+        /// Identifier shared by all events belonging to this message.
+        message_id: String,
+        /// Incremental text content for this message.
+        delta: String,
+    },
     /// The active assistant message is complete.
     /// When the model requested tool calls, they are included here.
     MessageCompleted {
+        /// Identifier shared by all events belonging to this message.
         message_id: String,
+        /// Tool calls requested by the model, if any.
         tool_calls: Option<Vec<byte_protocol::ToolCall>>,
     },
 }
@@ -24,14 +35,18 @@ pub enum ProviderEvent {
 /// Errors that can occur when invoking a model provider.
 #[derive(Debug, thiserror::Error)]
 pub enum ProviderError {
+    /// The provider is misconfigured.
     #[error("provider is not configured: {0}")]
     Configuration(String),
+    /// The provider request failed.
     #[error("provider request failed: {0}")]
     Request(String),
+    /// The provider response could not be parsed.
     #[error("provider response is invalid: {0}")]
     InvalidResponse(String),
 }
 
+/// Abstraction over a model provider that can send conversation turns.
 #[async_trait]
 pub trait ModelProvider: Send + Sync {
     /// Send a single conversation turn to the model and receive incremental
@@ -48,7 +63,9 @@ pub trait ModelProvider: Send + Sync {
 /// A mock provider that echoes the final developer message back in chunks.
 #[derive(Debug, Clone, Copy)]
 pub struct EchoProvider {
+    /// Number of characters to emit per `TextDelta` event.
     pub chunk_size: usize,
+    /// Delay to wait between consecutive events.
     pub delay: std::time::Duration,
 }
 
@@ -151,6 +168,7 @@ impl ModelProvider for EchoProvider {
     }
 }
 
+/// Check whether `message` looks like a request to create or write a file.
 fn is_write_file_intent(message: &str) -> bool {
     let lower = message.to_ascii_lowercase();
     if has_negation(&lower) {
@@ -159,6 +177,7 @@ fn is_write_file_intent(message: &str) -> bool {
     message.contains("创建") || message.contains("写入") || lower.contains("write")
 }
 
+/// Check whether `message` looks like a request to apply a patch or replace content.
 fn is_apply_patch_intent(message: &str) -> bool {
     let lower = message.to_ascii_lowercase();
     if has_negation(&lower) {
@@ -167,6 +186,7 @@ fn is_apply_patch_intent(message: &str) -> bool {
     message.contains("替换") || lower.contains("patch") || lower.contains("apply_patch")
 }
 
+/// Detect obvious English or Chinese negation in `message`.
 fn has_negation(message: &str) -> bool {
     // Very small guard against obvious negated commands. This is only a test
     // mock, so exhaustive NLP is out of scope. Match whole English words and
@@ -175,6 +195,7 @@ fn has_negation(message: &str) -> bool {
     has_english_negation(message) || has_chinese_negation(message)
 }
 
+/// Detect common English negation words in `message`.
 fn has_english_negation(message: &str) -> bool {
     const NEGATIONS: &[&str] = &["no", "not", "never", "don't", "dont", "cannot", "cant"];
     message
@@ -183,6 +204,7 @@ fn has_english_negation(message: &str) -> bool {
         .any(|word| NEGATIONS.contains(&word.as_str()))
 }
 
+/// Detect common Chinese negation phrases in `message`.
 fn has_chinese_negation(message: &str) -> bool {
     const NEGATIONS: &[&str] = &[
         "不要",
@@ -198,6 +220,7 @@ fn has_chinese_negation(message: &str) -> bool {
     NEGATIONS.iter().any(|neg| message.contains(neg))
 }
 
+/// Build a single-item provider stream that emits `tool_call` as a completed message.
 fn tool_call_stream(
     tool_call: byte_protocol::ToolCall,
     delay: std::time::Duration,

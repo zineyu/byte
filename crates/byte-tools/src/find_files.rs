@@ -10,6 +10,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{Tool, ToolError, resolve_tool_path};
 
+/// Maximum number of file paths returned by `find_files`.
 const MAX_RESULTS: usize = 10_000;
 
 /// A tool that finds files matching a glob pattern.
@@ -18,6 +19,7 @@ pub struct FindFilesTool;
 
 #[async_trait]
 impl Tool for FindFilesTool {
+    /// Return the protocol definition for this tool.
     fn definition(&self) -> byte_protocol::ToolDefinition {
         byte_protocol::ToolDefinition {
             name: "find_files".into(),
@@ -39,6 +41,7 @@ impl Tool for FindFilesTool {
         }
     }
 
+    /// Invoke the tool with the given call and context.
     async fn invoke(
         &self,
         call: &ToolCall,
@@ -140,6 +143,7 @@ impl Tool for FindFilesTool {
     }
 }
 
+/// Build a glob pattern string from a base directory and a user pattern.
 fn build_glob_pattern(base: &Path, pattern: &str) -> Result<String, ToolError> {
     let base_str = base
         .to_str()
@@ -155,6 +159,7 @@ fn build_glob_pattern(base: &Path, pattern: &str) -> Result<String, ToolError> {
     Ok(format!("{escaped_base}/{normalized}"))
 }
 
+/// Return `path` with `base` stripped, or `path` itself if it is not under `base`.
 fn strip_base(base: &Path, path: &Path) -> PathBuf {
     path.strip_prefix(base).unwrap_or(path).to_path_buf()
 }

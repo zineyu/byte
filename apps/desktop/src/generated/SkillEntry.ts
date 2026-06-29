@@ -3,4 +3,12 @@
 /**
  * A skill available for activation by name.
  */
-export type SkillEntry = { name: string, description: string, };
+export type SkillEntry = { 
+/**
+ * Skill name.
+ */
+name: string, 
+/**
+ * Short description of the skill.
+ */
+description: string, };

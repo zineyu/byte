@@ -4,4 +4,16 @@ import type { JsonValue } from "./serde_json/JsonValue";
 /**
  * Definition of a tool available to the model.
  */
-export type ToolDefinition = { name: string, description: string, parameters: JsonValue, };
+export type ToolDefinition = { 
+/**
+ * Tool name.
+ */
+name: string, 
+/**
+ * Human-readable description of what the tool does.
+ */
+description: string, 
+/**
+ * JSON Schema for the tool parameters.
+ */
+parameters: JsonValue, };

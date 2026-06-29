@@ -1,3 +1,10 @@
+//! Tool implementations and registries for the byte runtime.
+//!
+//! This crate provides concrete tools for filesystem access, search, and
+//! command execution, plus a registry trait and a simple in-memory
+//! implementation used in the MVP.
+#![deny(rustdoc::broken_intra_doc_links)]
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -6,28 +13,59 @@ use byte_protocol::{SessionContext, ToolCall};
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
+/// Apply search/replace patches to files.
 pub mod apply_patch;
+
+/// Find files matching glob patterns.
 pub mod find_files;
+
+/// Recursively search file contents with regular expressions.
 pub mod grep;
+
+/// List directory entries.
 pub mod list_directory;
+
+/// Read file contents.
 pub mod read_file;
+
+/// Tool registries and the MVP implementation.
 pub mod registry;
+
+/// Run non-interactive shell commands.
 pub mod run_command;
+
+/// Create or overwrite files.
 pub mod write_file;
 
+/// Re-export of [`ApplyPatchTool`].
 pub use apply_patch::ApplyPatchTool;
+
+/// Re-export of [`FindFilesTool`].
 pub use find_files::FindFilesTool;
+
+/// Re-export of [`GrepTool`].
 pub use grep::GrepTool;
+
+/// Re-export of [`ListDirectoryTool`].
 pub use list_directory::ListDirectoryTool;
+
+/// Re-export of [`ReadFileTool`].
 pub use read_file::ReadFileTool;
+
+/// Re-export of [`MvpToolRegistry`].
 pub use registry::MvpToolRegistry;
+
+/// Re-export of [`RunCommandTool`].
 pub use run_command::RunCommandTool;
+
+/// Re-export of [`WriteFileTool`].
 pub use write_file::WriteFileTool;
 
 /// An error produced while invoking a tool.
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 #[error("{message}")]
 pub struct ToolError {
+    /// User-readable error message.
     message: String,
 }
 
@@ -70,6 +108,7 @@ pub trait ToolPolicy: Send + Sync {
 pub struct AllowAllPolicy;
 
 impl ToolPolicy for AllowAllPolicy {
+    /// Allow every tool call.
     fn check(&self, _call: &ToolCall, _ctx: &SessionContext) -> Result<(), ToolError> {
         Ok(())
     }

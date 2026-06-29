@@ -21,7 +21,9 @@ use crate::runtime_services::RuntimeServices;
 /// before emitting `run_cancelled`.
 #[derive(Debug)]
 pub struct DeltaBuffer {
+    /// Character threshold that triggers a buffer flush.
     threshold: usize,
+    /// Accumulated delta content waiting to be flushed.
     buffer: String,
 }
 
@@ -61,15 +63,19 @@ impl DeltaBuffer {
     }
 }
 
+/// Identifier for an in-progress run within a session.
 pub type RunId = String;
 
 /// Errors that can occur when starting or executing a run.
 #[derive(Debug, thiserror::Error)]
 pub enum RunnerError {
+    /// The session already has an active run.
     #[error("session is busy with another run")]
     Busy,
+    /// An error originating from the session store.
     #[error(transparent)]
     SessionStore(#[from] SessionError),
+    /// An error originating from the model provider.
     #[error(transparent)]
     Provider(#[from] ProviderError),
 }
@@ -80,8 +86,11 @@ pub enum RunnerError {
 /// emits lifecycle runtime events during the run.
 #[derive(Clone, Debug)]
 pub struct SessionRunner {
+    /// Aggregated runtime services used by the runner.
     services: RuntimeServices,
+    /// Skills currently activated for this session.
     active_skills: Arc<Mutex<Vec<ActivatedSkill>>>,
+    /// Optional in-progress run id and its cancellation token.
     active_run: Arc<Mutex<Option<(RunId, CancellationToken)>>>,
 }
 
@@ -247,14 +256,17 @@ impl SessionRunner {
         }
     }
 
+    /// Emit a runtime event.
     async fn emit(&self, kind: RuntimeEventKind) {
         self.services.event_bus.emit(kind).await;
     }
 
+    /// Mark the runner as having no active run.
     async fn clear_active_run(&self) {
         *self.active_run.lock().await = None;
     }
 
+    /// Emit error and finished events for a failed run.
     #[instrument(skip_all, fields(run_id))]
     async fn emit_run_error(&self, run_id: &RunId, message: String) {
         error!(%run_id, %message, "run failed");
@@ -272,26 +284,40 @@ impl SessionRunner {
     }
 }
 
+/// One-shot executor for a single provider run.
 struct RunExecutor {
+    /// Identifier for this run.
     run_id: RunId,
+    /// Identifier for the session being run.
     session_id: String,
+    /// User message for this run.
     message: String,
+    /// Stable id assigned to the user/developer message.
     developer_message_id: String,
+    /// Prior session messages.
     history: Vec<SessionMessage>,
+    /// Summaries of compacted conversation ranges.
     compactions: Vec<CompactionSummary>,
+    /// Token used to cancel this run.
     cancel_token: CancellationToken,
 }
 
 /// Mutable state carried through a single provider response stream.
 struct StreamState<'a> {
+    /// Optional id for the assistant message being built.
     message_id: &'a mut Option<String>,
+    /// Accumulated assistant message content.
     assistant_content: &'a mut String,
+    /// Tool calls extracted from the stream.
     tool_calls: &'a mut Option<Vec<ToolCall>>,
+    /// Whether the stream has produced a complete response.
     completed: &'a mut bool,
+    /// Buffer for small provider deltas.
     delta_buffer: &'a mut DeltaBuffer,
 }
 
 impl RunExecutor {
+    /// Execute the run loop.
     #[instrument(skip_all, fields(run_id, session_id))]
     async fn run(self, runner: Arc<SessionRunner>) {
         let _ = tracing::Span::current().record("run_id", &self.run_id);

@@ -4,4 +4,16 @@ import type { JsonValue } from "./serde_json/JsonValue";
 /**
  * A tool call requested by the model.
  */
-export type ToolCall = { id: string, name: string, arguments: JsonValue, };
+export type ToolCall = { 
+/**
+ * Call identifier used to correlate results.
+ */
+id: string, 
+/**
+ * Name of the tool to invoke.
+ */
+name: string, 
+/**
+ * Arguments supplied for the tool call.
+ */
+arguments: JsonValue, };

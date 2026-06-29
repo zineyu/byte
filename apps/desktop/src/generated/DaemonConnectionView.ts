@@ -4,4 +4,16 @@ import type { DaemonState } from "./DaemonState";
 /**
  * A view of the daemon connection exposed by the desktop shell.
  */
-export type DaemonConnectionView = { connected: boolean, state: DaemonState | null, error: string | null, };
+export type DaemonConnectionView = { 
+/**
+ * Whether the shell is currently connected to the daemon.
+ */
+connected: boolean, 
+/**
+ * Latest daemon state, if connected.
+ */
+state: DaemonState | null, 
+/**
+ * Last connection error, if disconnected.
+ */
+error: string | null, };

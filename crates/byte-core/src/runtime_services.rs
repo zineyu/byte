@@ -15,10 +15,15 @@ use crate::event_bus::RuntimeEventBus;
 /// tool paths relative to its own workspace.
 #[derive(Clone)]
 pub struct RuntimeServices {
+    /// The model provider used to execute runs.
     pub provider: Arc<dyn ModelProvider>,
+    /// Persistent session storage.
     pub store: Arc<SessionStore>,
+    /// Bus used to publish runtime events to subscribers.
     pub event_bus: Arc<dyn RuntimeEventBus>,
+    /// Registry of tools available during runs.
     pub tool_registry: Arc<dyn ToolRegistry>,
+    /// Registry of skills that can be activated at runtime.
     pub skill_registry: Arc<dyn SkillRegistry>,
 }
 

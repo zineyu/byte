@@ -3,4 +3,16 @@
 /**
  * A lightweight summary of a compaction entry for the UI.
  */
-export type CompactionSummary = { id: string, parentId: string, summary: string, };
+export type CompactionSummary = { 
+/**
+ * Compaction entry identifier.
+ */
+id: string, 
+/**
+ * Identifier of the parent message this compaction replaces.
+ */
+parentId: string, 
+/**
+ * Human-readable summary text.
+ */
+summary: string, };

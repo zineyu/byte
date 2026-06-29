@@ -16,6 +16,7 @@ pub struct WriteFileTool;
 
 #[async_trait]
 impl Tool for WriteFileTool {
+    /// Return the protocol definition for this tool.
     fn definition(&self) -> byte_protocol::ToolDefinition {
         byte_protocol::ToolDefinition {
             name: "write_file".into(),
@@ -38,6 +39,7 @@ impl Tool for WriteFileTool {
         }
     }
 
+    /// Invoke the tool with the given call and context.
     async fn invoke(
         &self,
         call: &ToolCall,

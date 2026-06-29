@@ -3,4 +3,16 @@
 /**
  * A lightweight summary of a Session for listing in the UI.
  */
-export type SessionSummary = { sessionId: string, workspace: string | null, createdAt: string, };
+export type SessionSummary = { 
+/**
+ * Session identifier.
+ */
+sessionId: string, 
+/**
+ * Optional workspace path associated with the session.
+ */
+workspace: string | null, 
+/**
+ * ISO 8601 timestamp of when the session was created.
+ */
+createdAt: string, };

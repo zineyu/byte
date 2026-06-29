@@ -2,69 +2,112 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+/// Default configuration file name.
 const DEFAULT_FILE_NAME: &str = "config.toml";
+/// Environment variable that overrides the configuration file path.
 const OVERRIDE_ENV_VAR: &str = "BYTE_CONFIG_PATH";
+/// Environment variable for the XDG configuration home directory.
 const XDG_CONFIG_HOME_VAR: &str = "XDG_CONFIG_HOME";
+/// Environment variable for the user's home directory.
 const HOME_VAR: &str = "HOME";
 
+/// Configuration for a model provider.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelProviderConfig {
+    /// Provider identifier, e.g. `openai`, `openai-compatible`, or `echo`.
     pub provider: String,
+    /// Base URL for the provider's API endpoint.
     pub base_url: String,
+    /// API key used to authenticate with the provider.
     pub api_key: String,
+    /// Model name to use for completions.
     pub model: String,
+    /// Optional chunk size for the `echo` provider's text splitting.
     pub echo_chunk_size: Option<usize>,
+    /// Optional delay in milliseconds between `echo` provider chunks.
     pub echo_delay_ms: Option<u64>,
 }
 
 impl ModelProviderConfig {
+    /// Returns the configured echo chunk size or a sensible default.
     #[must_use]
     pub fn echo_chunk_size_or_default(&self) -> usize {
         self.echo_chunk_size.unwrap_or(5)
     }
 
+    /// Returns the configured echo delay or zero if unset.
     #[must_use]
     pub fn echo_delay_or_default(&self) -> std::time::Duration {
         std::time::Duration::from_millis(self.echo_delay_ms.unwrap_or(0))
     }
 }
 
+/// Raw configuration deserialized from TOML before validation and defaults are applied.
 #[derive(Debug, Default, Deserialize)]
 struct RawConfig {
+    /// Provider identifier, e.g. `openai`, `openai-compatible`, or `echo`.
     provider: Option<String>,
+    /// Base URL for the provider's API endpoint.
     base_url: Option<String>,
+    /// API key used to authenticate with the provider.
     api_key: Option<String>,
+    /// Model name to use for completions.
     model: Option<String>,
+    /// Optional chunk size for the `echo` provider's text splitting.
     echo_chunk_size: Option<usize>,
+    /// Optional delay in milliseconds between `echo` provider chunks.
     echo_delay_ms: Option<u64>,
+    /// OpenAI-specific overrides for `openai-compatible` providers.
     openai: Option<OpenAiSection>,
 }
 
+/// OpenAI-specific section used to override `base_url`, `api_key`, and `model`.
 #[derive(Debug, Default, Deserialize)]
 struct OpenAiSection {
+    /// Base URL for the OpenAI-compatible API endpoint.
     base_url: Option<String>,
+    /// API key used to authenticate with the OpenAI-compatible provider.
     api_key: Option<String>,
+    /// Model name to use for completions.
     model: Option<String>,
 }
 
+/// Errors that can occur while loading or parsing provider configuration.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
+    /// The configuration file was not found at the expected path.
     #[error("provider config not found at {0}")]
     NotFound(PathBuf),
+    /// The configuration file could not be read.
     #[error("failed to read provider config at {path}: {source}")]
     Read {
+        /// Path to the file that could not be read.
         path: PathBuf,
+        /// Underlying I/O error.
         #[source]
         source: std::io::Error,
     },
+    /// The configuration file contains invalid TOML.
     #[error("provider config is invalid TOML: {0}")]
     Parse(#[from] toml::de::Error),
+    /// The configured provider is not supported.
     #[error("unsupported provider '{provider}' in config")]
-    UnsupportedProvider { provider: String },
+    UnsupportedProvider {
+        /// The provider name read from configuration.
+        provider: String,
+    },
+    /// A required field is missing from the configuration.
     #[error("missing required field '{field}' in provider config")]
-    MissingField { field: String },
+    MissingField {
+        /// Name of the missing field.
+        field: String,
+    },
 }
 
+/// Resolve the configuration file path from the given environment values.
+///
+/// Prefers `override_path` if present, otherwise falls back to
+/// `$XDG_CONFIG_HOME/byte/config.toml` or `$HOME/.config/byte/config.toml`.
 fn resolve_config_path_with_env(
     override_path: Option<String>,
     xdg_config_home: Option<String>,

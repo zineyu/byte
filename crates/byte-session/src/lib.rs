@@ -1,3 +1,11 @@
+//! Persistent session storage for the byte agent.
+//!
+//! Sessions are stored as line-delimited JSON records where each entry has a
+//! stable id and an optional parent id, forming a tree inside a single file.
+//! The store supports creating sessions, appending messages and tool results,
+//! listing summaries, loading reconstructed views, and deleting sessions.
+#![deny(rustdoc::broken_intra_doc_links)]
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -7,29 +15,40 @@ use byte_protocol::{
 };
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
+/// Errors that can occur when interacting with the session store.
 #[derive(Debug, thiserror::Error)]
 pub enum SessionError {
+    /// The session id contains invalid characters.
     #[error("session id contains invalid characters: {0}")]
     InvalidSessionId(String),
+    /// The session directory is invalid.
     #[error("session directory is invalid: {0}")]
     InvalidDirectory(String),
+    /// A session with the requested id already exists.
     #[error("session already exists: {0}")]
     AlreadyExists(String),
+    /// The requested session could not be found.
     #[error("session not found: {0}")]
     NotFound(String),
+    /// The session file is missing its header entry.
     #[error("session {0} has no header")]
     MissingHeader(String),
+    /// The session entries form a broken parent chain.
     #[error("session {0} has a broken parent chain")]
     BrokenChain(String),
+    /// The session is currently busy and cannot be modified.
     #[error("session {0} is busy")]
     Busy(String),
+    /// An I/O error occurred while reading or writing a session file.
     #[error("failed to read session file: {0}")]
     Read(#[from] std::io::Error),
+    /// A session entry could not be serialized or deserialized.
     #[error("failed to serialize session entry: {0}")]
     Serialize(#[from] serde_json::Error),
 }
 
 impl From<byte_protocol::ProtocolError> for SessionError {
+    /// Convert a protocol error into the session error it represents.
     fn from(error: byte_protocol::ProtocolError) -> Self {
         match error {
             byte_protocol::ProtocolError::Serialize(source) => Self::Serialize(source),
@@ -41,6 +60,7 @@ impl From<byte_protocol::ProtocolError> for SessionError {
 /// parent IDs forming a tree inside a single session file.
 #[derive(Debug)]
 pub struct SessionStore {
+    /// Absolute directory containing the JSONL session files.
     base_dir: PathBuf,
 }
 
@@ -262,6 +282,7 @@ impl SessionStore {
         }
     }
 
+    /// Returns the file path for `session_id` inside `base_dir`, validating the id.
     fn session_path(&self, session_id: &str) -> Result<PathBuf, SessionError> {
         if session_id.is_empty() {
             return Err(SessionError::InvalidSessionId(
@@ -289,6 +310,7 @@ impl SessionStore {
         Ok(self.base_dir.join(format!("{session_id}.jsonl")))
     }
 
+    /// Appends `entry` as a JSON line to `path`.
     async fn write_line(&self, path: &Path, entry: &SessionEntry) -> Result<(), SessionError> {
         let line = encode_json_line(entry)?;
         tokio::fs::OpenOptions::new()
@@ -316,6 +338,7 @@ impl SessionStore {
     }
 }
 
+/// Returns the default base directory for session storage, honoring `XDG_DATA_HOME`.
 fn default_base_dir() -> PathBuf {
     let data_dir = std::env::var("XDG_DATA_HOME").map_or_else(
         |_| {
@@ -327,6 +350,7 @@ fn default_base_dir() -> PathBuf {
     data_dir.join("byte").join("sessions")
 }
 
+/// Returns the current time formatted as seconds.milliseconds UTC.
 fn now_epoch_millis() -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -334,6 +358,7 @@ fn now_epoch_millis() -> String {
     format!("{}.{:03}Z", now.as_secs(), now.subsec_millis())
 }
 
+/// Reads and parses the first line of the session file at `path`.
 async fn read_session_header(path: &Path) -> Result<SessionEntry, SessionError> {
     let file = tokio::fs::File::open(path).await?;
     let reader = tokio::io::BufReader::new(file);
@@ -348,6 +373,8 @@ async fn read_session_header(path: &Path) -> Result<SessionEntry, SessionError> 
         .map_err(SessionError::Serialize)
 }
 
+/// Reconstructs a [`SessionView`] from raw session entries by walking from the
+/// latest message back to the root.
 fn reconstruct_view(
     session_id: &str,
     entries: Vec<SessionEntry>,

@@ -34,11 +34,14 @@ pub trait RuntimeEventBus: Send + Sync {
 /// copy, and slow/lagged subscribers are dropped by the channel itself.
 #[derive(Clone, Debug)]
 pub struct BroadcastEventBus {
+    /// Broadcast sender for runtime events.
     tx: broadcast::Sender<RuntimeEvent>,
+    /// Monotonically increasing event sequence generator.
     sequence: Arc<AtomicU64>,
 }
 
 impl BroadcastEventBus {
+    /// Default broadcast channel capacity.
     const DEFAULT_CAPACITY: usize = 64;
 
     /// Create a new bus with the default channel capacity.
@@ -120,7 +123,9 @@ impl RuntimeEventBus for BroadcastEventBus {
 /// to drain and inspect the recorded sequence.
 #[derive(Default, Debug)]
 pub struct RecordingEventBus {
+    /// Recorded runtime events.
     events: Mutex<Vec<RuntimeEvent>>,
+    /// Monotonically increasing event sequence counter.
     sequence: AtomicU64,
 }
 

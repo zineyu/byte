@@ -13,7 +13,9 @@ use tokio_util::sync::CancellationToken;
 /// the result to the per-session `active_skills` list maintained by the
 /// [`SessionRunner`](crate::runner::SessionRunner).
 pub struct ActivateSkillTool {
+    /// Registry used to resolve and load skill definitions by name.
     skill_registry: Arc<dyn SkillRegistry>,
+    /// Per-session list of skills that have been activated.
     active_skills: Arc<Mutex<Vec<ActivatedSkill>>>,
 }
 
@@ -105,8 +107,11 @@ impl Tool for ActivateSkillTool {
 /// [`SessionRunner`](crate::runner::SessionRunner) inject its own session-scoped
 /// `activate_skill` implementation without mutating the shared base registry.
 pub struct SessionToolRegistry {
+    /// Underlying registry shared across sessions.
     base: Arc<dyn ToolRegistry>,
+    /// Session-scoped `activate_skill` tool instance.
     activate_skill: Arc<dyn Tool>,
+    /// Policy applied to the `activate_skill` tool.
     activate_policy: Arc<dyn ToolPolicy>,
 }
 

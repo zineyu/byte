@@ -5,4 +5,111 @@ import type { RunStatus } from "./RunStatus";
 import type { SessionChangeAction } from "./SessionChangeAction";
 import type { ToolCall } from "./ToolCall";
 
-export type RuntimeEventKind = { "daemon_started": { state: DaemonState, } } | { "state_changed": { state: DaemonState, } } | { "error": { message: string, run_id: string | null, } } | { "run_started": { session_id: string, run_id: string, } } | { "run_finished": { run_id: string, status: RunStatus, error: string | null, } } | { "message_started": { run_id: string, message_id: string, role: MessageRole, } } | { "message_delta": { run_id: string, message_id: string, delta: string, } } | { "message_completed": { run_id: string, message_id: string, tool_calls: Array<ToolCall> | null, } } | { "tool_started": { tool_call_id: string, name: string, } } | { "tool_finished": { tool_call_id: string, output: string, is_error: boolean, } } | { "run_cancelled": { run_id: string, } } | { "session_changed": { session_id: string, action: SessionChangeAction, } };
+/**
+ * Specific kind of a [`RuntimeEvent`].
+ */
+export type RuntimeEventKind = { "daemon_started": { 
+/**
+ * Current daemon state.
+ */
+state: DaemonState, } } | { "state_changed": { 
+/**
+ * Updated daemon state.
+ */
+state: DaemonState, } } | { "error": { 
+/**
+ * Error message.
+ */
+message: string, 
+/**
+ * Optional run identifier associated with the error.
+ */
+run_id: string | null, } } | { "run_started": { 
+/**
+ * Session identifier.
+ */
+session_id: string, 
+/**
+ * Run identifier.
+ */
+run_id: string, } } | { "run_finished": { 
+/**
+ * Run identifier.
+ */
+run_id: string, 
+/**
+ * Final run status.
+ */
+status: RunStatus, 
+/**
+ * Optional error message if the run failed.
+ */
+error: string | null, } } | { "message_started": { 
+/**
+ * Run identifier.
+ */
+run_id: string, 
+/**
+ * Message identifier.
+ */
+message_id: string, 
+/**
+ * Role of the message being generated.
+ */
+role: MessageRole, } } | { "message_delta": { 
+/**
+ * Run identifier.
+ */
+run_id: string, 
+/**
+ * Message identifier.
+ */
+message_id: string, 
+/**
+ * Incremental text content.
+ */
+delta: string, } } | { "message_completed": { 
+/**
+ * Run identifier.
+ */
+run_id: string, 
+/**
+ * Message identifier.
+ */
+message_id: string, 
+/**
+ * Tool calls emitted in this message, if any.
+ */
+tool_calls: Array<ToolCall> | null, } } | { "tool_started": { 
+/**
+ * Tool call identifier.
+ */
+tool_call_id: string, 
+/**
+ * Tool name.
+ */
+name: string, } } | { "tool_finished": { 
+/**
+ * Tool call identifier.
+ */
+tool_call_id: string, 
+/**
+ * Tool output.
+ */
+output: string, 
+/**
+ * Whether the tool call failed.
+ */
+is_error: boolean, } } | { "run_cancelled": { 
+/**
+ * Run identifier.
+ */
+run_id: string, } } | { "session_changed": { 
+/**
+ * Session identifier.
+ */
+session_id: string, 
+/**
+ * Change action.
+ */
+action: SessionChangeAction, } };

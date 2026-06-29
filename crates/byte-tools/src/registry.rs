@@ -9,7 +9,9 @@ use crate::{Tool, ToolError, ToolPolicy, ToolRegistry};
 
 /// A simple in-memory tool registry used in the MVP.
 pub struct MvpToolRegistry {
+    /// Registered tools indexed by name.
     tools: HashMap<String, Arc<dyn Tool>>,
+    /// Registered policies indexed by tool name.
     policies: HashMap<String, Arc<dyn ToolPolicy>>,
 }
 
@@ -34,6 +36,7 @@ impl MvpToolRegistry {
 }
 
 impl Default for MvpToolRegistry {
+    /// Create an empty registry.
     fn default() -> Self {
         Self::new()
     }
@@ -41,25 +44,35 @@ impl Default for MvpToolRegistry {
 
 #[async_trait]
 impl ToolRegistry for MvpToolRegistry {
+    /// Register a tool with the given name and policy.
     fn register(&mut self, name: String, tool: Arc<dyn Tool>, policy: Arc<dyn ToolPolicy>) {
         let _ = self.tools.insert(name.clone(), tool);
         let _ = self.policies.insert(name, policy);
     }
 
+    /// Return the protocol definitions for all registered tools.
     fn definitions(&self) -> Vec<byte_protocol::ToolDefinition> {
         self.tools.values().map(|tool| tool.definition()).collect()
     }
 
+    /// Return the names of all registered tools.
     fn names(&self) -> Vec<String> {
         self.tools.keys().cloned().collect()
     }
 
+    /// Get a tool and its policy by name, if registered.
     fn get(&self, name: &str) -> Option<(Arc<dyn Tool>, Arc<dyn ToolPolicy>)> {
         let tool = self.tools.get(name)?.clone();
         let policy = self.policies.get(name)?.clone();
         Some((tool, policy))
     }
 
+    /// Invoke a registered tool after checking its policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the tool is unknown, the policy rejects the call,
+    /// or the tool invocation fails.
     async fn invoke(
         &self,
         call: &ToolCall,
