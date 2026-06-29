@@ -118,7 +118,7 @@ fn parse_config(contents: &str) -> Result<ModelProviderConfig, ConfigError> {
     let raw: RawConfig = toml::from_str(contents)?;
 
     let provider = raw.provider.unwrap_or_else(|| "openai".to_owned());
-    if provider != "openai" && provider != "echo" {
+    if provider != "openai" && provider != "openai-compatible" && provider != "echo" {
         return Err(ConfigError::UnsupportedProvider { provider });
     }
     let section = raw.openai.unwrap_or_default();
@@ -143,10 +143,6 @@ fn require_field(name: &str, value: Option<&str>) -> Result<String, ConfigError>
         .ok_or_else(|| ConfigError::MissingField {
             field: name.to_owned(),
         })
-}
-
-pub fn normalize_base_url(url: &str) -> String {
-    url.trim_end_matches('/').to_owned()
 }
 
 #[cfg(test)]
@@ -251,6 +247,18 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn openai_compatible_alias_loads() {
+        let path = temp_config_file(
+            "provider = 'openai-compatible'\nbase_url = 'https://api.example.com/v1/'\napi_key = 'sk-test'\nmodel = 'gpt-test'",
+        );
+
+        let config = load_config_at_path(&path)
+            .await
+            .expect("openai-compatible alias should load");
+        assert_eq!(config.provider, "openai-compatible");
+    }
+
+    #[tokio::test]
     async fn unsupported_provider_fails() {
         let path = temp_config_file(
             "provider = 'anthropic'\nbase_url = 'https://api.anthropic.com/'\napi_key = 'sk-test'\nmodel = 'claude'",
@@ -277,18 +285,6 @@ mod tests {
         assert!(
             matches!(err, ConfigError::MissingField { ref field } if field == "model"),
             "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn normalize_base_url_removes_trailing_slash() {
-        assert_eq!(
-            normalize_base_url("https://api.openai.com/v1/"),
-            "https://api.openai.com/v1"
-        );
-        assert_eq!(
-            normalize_base_url("https://api.openai.com/v1"),
-            "https://api.openai.com/v1"
         );
     }
 }

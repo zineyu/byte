@@ -13,10 +13,7 @@ use byte_core::runtime_services::RuntimeServices;
 #[cfg(unix)]
 use byte_core::session_manager::SessionManager;
 #[cfg(unix)]
-use byte_models::{
-    EchoProvider, ModelProvider, OpenAiCompatibleProvider, ProviderError, ProviderStream,
-    load_config, normalize_base_url,
-};
+use byte_models::{ModelProvider, ProviderError, ProviderStream, create_provider, load_config};
 #[cfg(unix)]
 use byte_protocol::{
     JsonRpcRequest, JsonRpcResponse, RunMessage, RuntimeEventKind, decode_json_line,
@@ -261,18 +258,18 @@ impl ModelProvider for LazyConfigProvider {
     ) -> Result<ProviderStream, ProviderError> {
         let provider = {
             let mut guard = self.inner.lock().await;
-            if guard.is_none() {
+            if let Some(provider) = guard.as_ref() {
+                provider.clone()
+            } else {
                 let initialized = build_provider()
                     .await
-                    .map_err(|error| ProviderError::Configuration(error.to_string()))?;
+                    .map_err(|error| ProviderError::Configuration(format!("{error:#}")))?;
+                let provider = initialized.clone();
                 guard.replace(initialized);
+                provider
             }
-            guard.clone()
         };
-        provider
-            .expect("provider initialized above")
-            .send_message(messages, tools)
-            .await
+        provider.send_message(messages, tools).await
     }
 }
 
@@ -280,26 +277,7 @@ impl ModelProvider for LazyConfigProvider {
 async fn build_provider() -> anyhow::Result<Arc<dyn ModelProvider>> {
     let config = load_config().await?;
     debug!(provider = %config.provider, model = %config.model, "loaded provider config");
-    match config.provider.as_str() {
-        "openai" | "openai-compatible" => Ok(Arc::new(OpenAiCompatibleProvider::new(
-            byte_models::ModelProviderConfig {
-                provider: config.provider,
-                base_url: normalize_base_url(&config.base_url),
-                api_key: config.api_key,
-                model: config.model,
-                echo_chunk_size: config.echo_chunk_size,
-                echo_delay_ms: config.echo_delay_ms,
-            },
-        ))),
-        "echo" => {
-            debug!("using echo provider");
-            Ok(Arc::new(EchoProvider {
-                chunk_size: config.echo_chunk_size_or_default(),
-                delay: config.echo_delay_or_default(),
-            }))
-        }
-        other => bail!("unknown provider: {other}"),
-    }
+    create_provider(config).map_err(anyhow::Error::from)
 }
 
 #[cfg(unix)]

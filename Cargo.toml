@@ -39,13 +39,36 @@ tokio = { version = "1.52", features = [
     "sync",
 ] }
 
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "deny"
+missing_copy_implementations = "deny"
+trivial_casts = "deny"
+trivial_numeric_casts = "deny"
+unused_extern_crates = "deny"
+unused_import_braces = "deny"
+unused_qualifications = "deny"
+unused_results = "deny"
+variant_size_differences = "deny"
 
 [workspace.lints.clippy]
+pedantic = "warn"
+
+missing_const_for_fn = "deny"
+missing_errors_doc = "deny"
+missing_panics_doc = "deny"
+must_use_candidate = "deny"
+needless_pass_by_value = "deny"
+redundant_else = "deny"
+unnecessary_wraps = "deny"
+unused_self = "deny"
+use_self = "deny"
+
+unwrap_used = "warn"
+expect_used = "warn"
+todo = "deny"
+unreachable = "deny"
 
 all = { level = "warn", priority = -1 }
-pedantic = { level = "warn", priority = -1 }
 style = { level = "warn", priority = -1 }
 perf = { level = "warn", priority = -1 }
-
-must_use_candidate = "allow"
-missing_errors_doc = "allow"

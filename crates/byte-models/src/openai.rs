@@ -15,6 +15,11 @@ use byte_protocol::{MessageRole, RunMessage, ToolCall};
 
 use crate::config::ModelProviderConfig;
 use crate::provider::{ModelProvider, ProviderError, ProviderEvent, ProviderStream};
+
+fn normalize_base_url(url: &str) -> String {
+    url.trim_end_matches('/').to_owned()
+}
+
 /// An OpenAI-compatible provider using `async-openai` under the hood.
 pub struct OpenAiCompatibleProvider {
     client: Client<OpenAIConfig>,
@@ -25,7 +30,7 @@ impl OpenAiCompatibleProvider {
     pub fn new(config: ModelProviderConfig) -> Self {
         let openai_config = OpenAIConfig::new()
             .with_api_key(config.api_key)
-            .with_api_base(config.base_url);
+            .with_api_base(normalize_base_url(&config.base_url));
 
         Self {
             client: Client::with_config(openai_config),
@@ -247,6 +252,18 @@ mod tests {
         assert_eq!(
             sanitize_error(&"Invalid API key provided"),
             "provider authentication failed"
+        );
+    }
+
+    #[test]
+    fn normalize_base_url_removes_trailing_slash() {
+        assert_eq!(
+            normalize_base_url("https://api.openai.com/v1/"),
+            "https://api.openai.com/v1"
+        );
+        assert_eq!(
+            normalize_base_url("https://api.openai.com/v1"),
+            "https://api.openai.com/v1"
         );
     }
 
