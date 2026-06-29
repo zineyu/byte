@@ -24,8 +24,15 @@ pub struct SessionManager {
     runners: Arc<Mutex<HashMap<String, Arc<SessionRunner>>>>,
 }
 
+impl std::fmt::Debug for SessionManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionManager").finish_non_exhaustive()
+    }
+}
+
 impl SessionManager {
     /// Create a new session manager with the given shared runtime services.
+    #[must_use]
     pub fn new(services: RuntimeServices) -> Self {
         Self {
             services,
@@ -36,6 +43,10 @@ impl SessionManager {
     /// Create a new session file with an optional workspace path.
     ///
     /// Emits `session_changed(Created)` on success.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the session cannot be created.
     #[instrument(skip(self))]
     pub async fn new_session(
         &self,
@@ -57,6 +68,10 @@ impl SessionManager {
     /// Load a session view by id.
     ///
     /// Emits `session_changed(Loaded)` on success.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the session cannot be loaded.
     #[instrument(skip(self))]
     pub async fn load_session(&self, session_id: &str) -> Result<LoadSessionResult, RunnerError> {
         let session = self.services.store.load_session(session_id).await?;
@@ -67,6 +82,10 @@ impl SessionManager {
     }
 
     /// List all sessions ordered by created time descending.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the session list cannot be read.
     pub async fn list_sessions(&self) -> Result<ListSessionsResult, RunnerError> {
         let sessions = self.services.store.list_sessions().await?;
         Ok(ListSessionsResult { sessions })
@@ -81,6 +100,10 @@ impl SessionManager {
     /// The runners map lock is held across the active-run check, file deletion
     /// and runner removal so that no other task can observe a deleted file
     /// while the old runner is still reachable from the map.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the session is busy or cannot be deleted.
     #[instrument(skip(self))]
     pub async fn delete_session(
         &self,
@@ -94,7 +117,7 @@ impl SessionManager {
                 return Err(RunnerError::Busy);
             }
             self.services.store.delete_session(session_id).await?;
-            runners.remove(session_id);
+            let _ = runners.remove(session_id);
         } else {
             drop(runners);
             self.services.store.delete_session(session_id).await?;
@@ -112,6 +135,11 @@ impl SessionManager {
     ///
     /// Concurrent runs on the same session return `RunnerError::Busy` from the
     /// underlying runner.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the runner cannot be created or the run cannot be
+    /// started.
     #[instrument(skip(self, params))]
     pub async fn send_message(
         &self,
@@ -125,6 +153,10 @@ impl SessionManager {
     ///
     /// Returns success immediately when the session has no runner or no active
     /// run.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the active run cannot be cancelled.
     #[instrument(skip(self))]
     pub async fn cancel_run(
         &self,
@@ -133,7 +165,7 @@ impl SessionManager {
         let runners = self.runners.lock().await;
         if let Some(runner) = runners.get(&params.session_id).cloned() {
             drop(runners);
-            runner.cancel_run().await?;
+            let _ = runner.cancel_run().await?;
         }
         Ok(CancelRunResult {})
     }
@@ -167,6 +199,8 @@ impl SessionManager {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used, unused_results)]
+
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -233,7 +267,7 @@ mod tests {
         let provider: Arc<dyn ModelProvider> = Arc::new(EchoProvider::default());
         let store = temp_store();
         let recording_bus = Arc::new(RecordingEventBus::new());
-        let bus: Arc<dyn RuntimeEventBus> = Arc::clone(&recording_bus) as Arc<dyn RuntimeEventBus>;
+        let bus: Arc<dyn RuntimeEventBus> = recording_bus.clone();
         let manager = SessionManager::new(services(provider, Arc::clone(&store), bus));
         (manager, recording_bus, store)
     }
@@ -241,7 +275,7 @@ mod tests {
         let provider: Arc<dyn ModelProvider> = Arc::new(EchoProvider::default());
         let store = temp_store();
         let recording_bus = Arc::new(RecordingEventBus::new());
-        let bus: Arc<dyn RuntimeEventBus> = Arc::clone(&recording_bus) as Arc<dyn RuntimeEventBus>;
+        let bus: Arc<dyn RuntimeEventBus> = recording_bus.clone();
         let manager =
             SessionManager::new(services_without_tools(provider, Arc::clone(&store), bus));
         (manager, recording_bus, store)
@@ -298,7 +332,7 @@ mod tests {
         });
         let store = temp_store();
         let recording_bus = Arc::new(RecordingEventBus::new());
-        let bus: Arc<dyn RuntimeEventBus> = Arc::clone(&recording_bus) as Arc<dyn RuntimeEventBus>;
+        let bus: Arc<dyn RuntimeEventBus> = recording_bus.clone();
         let manager = SessionManager::new(services(provider, Arc::clone(&store), bus));
         manager.new_session("s1", None).await.unwrap();
         recording_bus.take_events().await;
@@ -425,7 +459,7 @@ mod tests {
         });
         let store = temp_store();
         let recording_bus = Arc::new(RecordingEventBus::new());
-        let bus: Arc<dyn RuntimeEventBus> = Arc::clone(&recording_bus) as Arc<dyn RuntimeEventBus>;
+        let bus: Arc<dyn RuntimeEventBus> = recording_bus.clone();
         let manager =
             SessionManager::new(services_without_tools(provider, Arc::clone(&store), bus));
         manager.new_session("s1", None).await.unwrap();

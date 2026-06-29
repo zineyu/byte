@@ -7,6 +7,7 @@ use crate::{Tool, ToolError, resolve_tool_path};
 use std::path::Path;
 
 /// A tool that applies multiple search/replace patches to a file.
+#[derive(Debug, Clone, Copy)]
 pub struct ApplyPatchTool;
 // TODO(Slice 2+): The MVP runs in "unrestricted local agent mode" (see AGENTS.md).
 // apply_patch currently resolves any absolute path without a sandbox policy or
@@ -281,6 +282,8 @@ fn parse_patches(call: &ToolCall) -> Result<Vec<Patch>, ToolError> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used, unused_results)]
+
     use super::*;
     use byte_protocol::{SessionContext, ToolCall};
     use std::path::PathBuf;
@@ -654,7 +657,7 @@ mod tests {
             offset: usize,
         }
 
-        impl tokio::io::AsyncRead for GrowingReader {
+        impl AsyncRead for GrowingReader {
             fn poll_read(
                 mut self: Pin<&mut Self>,
                 _cx: &mut Context<'_>,

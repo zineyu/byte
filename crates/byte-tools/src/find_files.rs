@@ -13,6 +13,7 @@ use crate::{Tool, ToolError, resolve_tool_path};
 const MAX_RESULTS: usize = 10_000;
 
 /// A tool that finds files matching a glob pattern.
+#[derive(Debug, Clone, Copy)]
 pub struct FindFilesTool;
 
 #[async_trait]
@@ -160,6 +161,8 @@ fn strip_base(base: &Path, path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used, unused_results)]
+
     use super::*;
     use byte_protocol::{SessionContext, ToolCall};
     use std::path::PathBuf;

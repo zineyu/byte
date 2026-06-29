@@ -32,19 +32,24 @@ pub enum SessionError {
 impl From<byte_protocol::ProtocolError> for SessionError {
     fn from(error: byte_protocol::ProtocolError) -> Self {
         match error {
-            byte_protocol::ProtocolError::Serialize(source) => SessionError::Serialize(source),
+            byte_protocol::ProtocolError::Serialize(source) => Self::Serialize(source),
         }
     }
 }
 
 /// Persists Sessions as LF-delimited JSON records with stable entry IDs and
 /// parent IDs forming a tree inside a single session file.
+#[derive(Debug)]
 pub struct SessionStore {
     base_dir: PathBuf,
 }
 
 impl SessionStore {
     /// Create a store rooted at the given directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `base_dir` is not an absolute path.
     pub fn new(base_dir: impl Into<PathBuf>) -> Result<Self, SessionError> {
         let base_dir = base_dir.into();
         if !base_dir.is_absolute() {
@@ -57,12 +62,21 @@ impl SessionStore {
 
     /// Create a store using the default XDG data directory
     /// (`$XDG_DATA_HOME/byte/sessions`, falling back to `$HOME/.local/share/byte/sessions`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the default base directory is not absolute.
     pub fn with_default_dir() -> Result<Self, SessionError> {
         Self::new(default_base_dir())
     }
 
     /// Ensure a session file exists with a valid header. The write is atomic
     /// via `create_new`; if the file already exists the call is idempotent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the session id is invalid or the session file cannot
+    /// be created.
     pub async fn new_session(
         &self,
         session_id: &str,
@@ -74,7 +88,7 @@ impl SessionStore {
         let header = SessionEntry::Session {
             version: byte_protocol::PROTOCOL_VERSION,
             id: session_id.to_owned(),
-            workspace: workspace.map(std::borrow::ToOwned::to_owned),
+            workspace: workspace.map(ToOwned::to_owned),
             created_at: now_epoch_millis(),
         };
 
@@ -89,6 +103,11 @@ impl SessionStore {
 
     /// Append a message entry to the session file and return its stable id.
     /// If `id` is `None`, a UUID is generated.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the session id is invalid or the entry cannot be
+    /// written.
     pub async fn append_message(
         &self,
         session_id: &str,
@@ -100,13 +119,10 @@ impl SessionStore {
     ) -> Result<String, SessionError> {
         let _ = content;
         let path = self.session_path(session_id)?;
-        let id = id.map_or_else(
-            || uuid::Uuid::new_v4().to_string(),
-            std::borrow::ToOwned::to_owned,
-        );
+        let id = id.map_or_else(|| uuid::Uuid::new_v4().to_string(), ToOwned::to_owned);
         let entry = SessionEntry::Message {
             id: id.clone(),
-            parent_id: parent_id.map(std::borrow::ToOwned::to_owned),
+            parent_id: parent_id.map(ToOwned::to_owned),
             message: SessionMessageContent {
                 role,
                 text: Some(content.into()),
@@ -119,6 +135,11 @@ impl SessionStore {
 
     /// Append a tool result entry to the session file and return its stable id.
     /// If `id` is `None`, a UUID is generated.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the session id is invalid or the entry cannot be
+    /// written.
     pub async fn append_tool_result(
         &self,
         session_id: &str,
@@ -128,10 +149,7 @@ impl SessionStore {
         content: impl Into<String>,
     ) -> Result<String, SessionError> {
         let path = self.session_path(session_id)?;
-        let id = id.map_or_else(
-            || uuid::Uuid::new_v4().to_string(),
-            std::borrow::ToOwned::to_owned,
-        );
+        let id = id.map_or_else(|| uuid::Uuid::new_v4().to_string(), ToOwned::to_owned);
         let entry = SessionEntry::ToolResult {
             id: id.clone(),
             parent_id: parent_id.to_owned(),
@@ -147,6 +165,11 @@ impl SessionStore {
 
     /// Load a normalized `SessionView` by following the active path from the
     /// most recent message back to the root.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the session is not found, the file is too large, or
+    /// the entries cannot be parsed or reconstructed.
     pub async fn load_session(&self, session_id: &str) -> Result<SessionView, SessionError> {
         let path = self.session_path(session_id)?;
         if !path.exists() {
@@ -173,6 +196,10 @@ impl SessionStore {
     }
 
     /// List all sessions as lightweight summaries, ordered by `created_at` descending.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the session directory cannot be read.
     pub async fn list_sessions(&self) -> Result<Vec<SessionSummary>, SessionError> {
         tokio::fs::create_dir_all(&self.base_dir).await?;
 
@@ -221,6 +248,11 @@ impl SessionStore {
 
     /// Delete the session file if it exists. Returns success even if the file
     /// is already gone.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the session id is invalid or the file cannot be
+    /// removed for reasons other than not existing.
     pub async fn delete_session(&self, session_id: &str) -> Result<(), SessionError> {
         let path = self.session_path(session_id)?;
         match tokio::fs::remove_file(&path).await {
@@ -298,7 +330,7 @@ fn default_base_dir() -> PathBuf {
 fn now_epoch_millis() -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .expect("system time before Unix epoch");
+        .unwrap_or_default();
     format!("{}.{:03}Z", now.as_secs(), now.subsec_millis())
 }
 
@@ -338,7 +370,7 @@ fn reconstruct_view(
                 message,
             } => {
                 message_order.push(id.clone());
-                messages_by_id.insert(
+                let _ = messages_by_id.insert(
                     id.clone(),
                     SessionMessage {
                         id,
@@ -357,7 +389,7 @@ fn reconstruct_view(
                 content,
             } => {
                 message_order.push(id.clone());
-                messages_by_id.insert(
+                let _ = messages_by_id.insert(
                     id.clone(),
                     SessionMessage {
                         id,
@@ -374,7 +406,7 @@ fn reconstruct_view(
                 parent_id,
                 summary,
             } => {
-                compactions_by_parent.insert(
+                let _ = compactions_by_parent.insert(
                     parent_id.clone(),
                     CompactionSummary {
                         id,
@@ -416,6 +448,8 @@ fn reconstruct_view(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used)]
+
     use super::*;
 
     fn temp_store() -> SessionStore {
@@ -568,7 +602,7 @@ mod tests {
             )
             .await
             .unwrap();
-        store
+        let _ = store
             .append_tool_result("session-1", None, &assistant_id, "call-1", "fn main() {}")
             .await
             .unwrap();

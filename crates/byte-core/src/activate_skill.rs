@@ -17,9 +17,16 @@ pub struct ActivateSkillTool {
     active_skills: Arc<Mutex<Vec<ActivatedSkill>>>,
 }
 
+impl std::fmt::Debug for ActivateSkillTool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ActivateSkillTool").finish_non_exhaustive()
+    }
+}
+
 impl ActivateSkillTool {
     /// Create a new activate-skill tool bound to the given registry and active
     /// skills list.
+    #[must_use]
     pub fn new(
         skill_registry: Arc<dyn SkillRegistry>,
         active_skills: Arc<Mutex<Vec<ActivatedSkill>>>,
@@ -103,8 +110,18 @@ pub struct SessionToolRegistry {
     activate_policy: Arc<dyn ToolPolicy>,
 }
 
+impl std::fmt::Debug for SessionToolRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionToolRegistry")
+            .field("base", &self.base.names())
+            .field("activate_skill", &"activate_skill")
+            .finish_non_exhaustive()
+    }
+}
+
 impl SessionToolRegistry {
     /// Create a wrapper around `base` that also exposes `activate_skill`.
+    #[must_use]
     pub fn new(
         base: Arc<dyn ToolRegistry>,
         activate_skill: Arc<dyn Tool>,
@@ -171,6 +188,8 @@ impl ToolRegistry for SessionToolRegistry {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used, unused_results)]
+
     use std::collections::HashMap;
     use std::path::Path;
 

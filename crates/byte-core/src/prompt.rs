@@ -30,16 +30,18 @@ impl PromptContext {
 }
 
 /// Builds the prompt messages for a model run.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct PromptBuilder;
 
 impl PromptBuilder {
     /// Create a new prompt builder.
-    pub fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self
     }
 
     /// Build the full list of `RunMessage`s for the provider.
+    #[must_use]
     pub fn build(&self, context: PromptContext) -> Vec<RunMessage> {
         let mut messages = Vec::new();
 
@@ -71,7 +73,7 @@ impl PromptBuilder {
         // Add persisted history.
         for message in &context.history {
             messages.push(RunMessage {
-                role: message.role.clone(),
+                role: message.role,
                 content: message.content.clone(),
                 tool_call_id: message.tool_call_id.clone(),
                 tool_calls: message.tool_calls.clone(),
@@ -138,6 +140,8 @@ impl PromptBuilder {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used, unused_results)]
+
     use super::*;
     use byte_protocol::SessionMessage;
 

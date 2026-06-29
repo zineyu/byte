@@ -1,4 +1,5 @@
 #![cfg(unix)]
+#![allow(clippy::expect_used, clippy::unwrap_used, unused_results)]
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;

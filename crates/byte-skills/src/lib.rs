@@ -53,6 +53,7 @@ pub struct MvpSkillRegistry {
 
 impl MvpSkillRegistry {
     /// Create a new skill registry that discovers user skills under `$HOME`.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             home_dir: home_dir(),
@@ -136,7 +137,7 @@ impl MvpSkillRegistry {
 
         let skills = scan_skills(self.skill_dirs(workspace)).await?;
         let mut cache = self.scan_cache.lock().await;
-        cache.insert(key, skills.clone());
+        let _ = cache.insert(key, skills.clone());
         Ok(skills)
     }
 }
@@ -197,7 +198,7 @@ async fn scan_skills(dirs: Vec<PathBuf>) -> Result<HashMap<String, SkillDefiniti
                         path = %skill_md.display(),
                         "discovered skill"
                     );
-                    skills.insert(definition.name.clone(), definition);
+                    let _ = skills.insert(definition.name.clone(), definition);
                 }
                 Err(error) => {
                     warn!(path = %skill_md.display(), %error, "failed to parse skill file");
@@ -274,7 +275,7 @@ fn parse_simple_frontmatter(text: &str) -> HashMap<String, String> {
             let key = key.trim().to_owned();
             let value = value.trim().to_owned();
             if !key.is_empty() {
-                map.insert(key, value);
+                let _ = map.insert(key, value);
             }
         }
     }
@@ -303,6 +304,8 @@ fn home_dir() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used)]
+
     use super::*;
 
     #[tokio::test]

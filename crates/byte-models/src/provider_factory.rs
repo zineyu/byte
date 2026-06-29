@@ -21,6 +21,10 @@ pub enum ProviderFactoryError {
 ///
 /// The caller is responsible for loading and validating configuration;
 /// this function only maps the provider name to its implementation.
+///
+/// # Errors
+///
+/// Returns an error if the configured provider name is not supported.
 pub fn create_provider(
     config: ModelProviderConfig,
 ) -> Result<Arc<dyn ModelProvider>, ProviderFactoryError> {
@@ -38,6 +42,8 @@ pub fn create_provider(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used)]
+
     use super::*;
     use byte_protocol::{MessageRole, RunMessage};
     use futures::StreamExt;

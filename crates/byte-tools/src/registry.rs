@@ -13,8 +13,18 @@ pub struct MvpToolRegistry {
     policies: HashMap<String, Arc<dyn ToolPolicy>>,
 }
 
+impl std::fmt::Debug for MvpToolRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MvpToolRegistry")
+            .field("tools", &self.tools.keys().collect::<Vec<_>>())
+            .field("policies", &self.policies.keys().collect::<Vec<_>>())
+            .finish()
+    }
+}
+
 impl MvpToolRegistry {
     /// Create an empty registry.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             tools: HashMap::new(),
@@ -32,8 +42,8 @@ impl Default for MvpToolRegistry {
 #[async_trait]
 impl ToolRegistry for MvpToolRegistry {
     fn register(&mut self, name: String, tool: Arc<dyn Tool>, policy: Arc<dyn ToolPolicy>) {
-        self.tools.insert(name.clone(), tool);
-        self.policies.insert(name, policy);
+        let _ = self.tools.insert(name.clone(), tool);
+        let _ = self.policies.insert(name, policy);
     }
 
     fn definitions(&self) -> Vec<byte_protocol::ToolDefinition> {

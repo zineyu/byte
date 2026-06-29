@@ -5,6 +5,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{Tool, ToolError, resolve_tool_path};
 
 /// A tool that lists the entries in a directory.
+#[derive(Debug, Clone, Copy)]
 pub struct ListDirectoryTool;
 
 #[async_trait]
@@ -99,6 +100,8 @@ impl Tool for ListDirectoryTool {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used, unused_results)]
+
     use super::*;
     use byte_protocol::{SessionContext, ToolCall};
     use std::path::PathBuf;

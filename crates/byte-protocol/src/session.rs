@@ -147,6 +147,8 @@ pub struct DeleteSessionResult {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used)]
+
     use super::*;
     use crate::decode_json_line;
 
@@ -232,8 +234,7 @@ mod tests {
         );
 
         let line = serde_json::to_string(&content).expect("content encodes");
-        let decoded: SessionMessageContent =
-            crate::decode_json_line(&line).expect("content decodes");
+        let decoded: SessionMessageContent = decode_json_line(&line).expect("content decodes");
 
         assert_eq!(decoded, content);
     }
@@ -248,7 +249,7 @@ mod tests {
         };
 
         let line = serde_json::to_string(&entry).expect("entry encodes");
-        let decoded: SessionEntry = crate::decode_json_line(&line).expect("entry decodes");
+        let decoded: SessionEntry = decode_json_line(&line).expect("entry decodes");
 
         assert_eq!(decoded, entry);
     }

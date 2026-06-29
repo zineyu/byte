@@ -58,10 +58,15 @@ pub trait Tool: Send + Sync {
 /// A policy that decides whether a tool call is allowed.
 pub trait ToolPolicy: Send + Sync {
     /// Check whether the tool call is allowed in the given context.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the tool call is not allowed.
     fn check(&self, call: &ToolCall, ctx: &SessionContext) -> Result<(), ToolError>;
 }
 
 /// A policy that allows all tool calls.
+#[derive(Debug, Clone, Copy)]
 pub struct AllowAllPolicy;
 
 impl ToolPolicy for AllowAllPolicy {
@@ -127,6 +132,8 @@ pub(crate) fn resolve_tool_path(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used, unused_results)]
+
     use super::*;
     #[test]
     fn tool_error_preserves_message() {

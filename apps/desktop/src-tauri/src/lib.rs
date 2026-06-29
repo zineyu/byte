@@ -1,3 +1,5 @@
+#![allow(clippy::unreachable)]
+
 use std::collections::HashMap;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -31,7 +33,7 @@ struct DaemonSupervisor {
 }
 
 impl DaemonSupervisor {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             client: None,
             last_error: None,
@@ -157,13 +159,14 @@ impl DaemonClient {
         let request_line = encode_json_line(&request).map_err(|error| error.to_string())?;
         let (response_tx, response_rx) = oneshot::channel();
 
-        self.pending
+        let _ = self
+            .pending
             .lock()
             .await
             .insert(request_id.clone(), response_tx);
 
         if self.writer.send(request_line).is_err() {
-            self.pending.lock().await.remove(&request_id);
+            let _ = self.pending.lock().await.remove(&request_id);
             return Err("daemon RPC writer is not running".to_owned());
         }
 
@@ -175,7 +178,7 @@ impl DaemonClient {
                 ));
             }
             Err(_) => {
-                self.pending.lock().await.remove(&request_id);
+                let _ = self.pending.lock().await.remove(&request_id);
                 return Err(format!(
                     "daemon did not respond to request {request_id:?} before timeout"
                 ));
@@ -192,7 +195,7 @@ impl DaemonClient {
         Ok(response)
     }
 
-    fn next_id(&mut self) -> RpcId {
+    const fn next_id(&mut self) -> RpcId {
         let id = self.next_request_id;
         self.next_request_id += 1;
         RpcId::Number(id)
@@ -214,7 +217,7 @@ async fn spawn_daemon_client(app_handle: AppHandle) -> Result<DaemonClient, Stri
     let (socket_dir, socket_path) = create_rpc_socket_path()?;
 
     let mut command = Command::new(&daemon_path);
-    command
+    let _ = command
         .arg("--rpc-socket")
         .arg(&socket_path)
         .stdin(Stdio::null())
@@ -413,7 +416,7 @@ async fn send_message(
         message,
     })
     .map_err(|error| error.to_string())?;
-    client.request("send_message", Some(params)).await?;
+    let _ = client.request("send_message", Some(params)).await?;
     Ok(())
 }
 
@@ -463,10 +466,11 @@ async fn load_session(
 /// # Panics
 ///
 /// panic when tauri start failed
+#[allow(clippy::expect_used)]
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
-            app.manage(AppState {
+            let _ = app.manage(AppState {
                 daemon: Mutex::new(DaemonSupervisor::new()),
             });
             Ok(())

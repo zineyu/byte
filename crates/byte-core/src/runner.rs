@@ -19,6 +19,7 @@ use crate::runtime_services::RuntimeServices;
 /// Buffers small provider deltas so that a run can be cancelled cleanly: the
 /// cancellation can flush any remaining content as a final `message_delta`
 /// before emitting `run_cancelled`.
+#[derive(Debug)]
 pub struct DeltaBuffer {
     threshold: usize,
     buffer: String,
@@ -26,7 +27,8 @@ pub struct DeltaBuffer {
 
 impl DeltaBuffer {
     /// Create a new buffer with the given character threshold.
-    pub fn new(threshold: usize) -> Self {
+    #[must_use]
+    pub const fn new(threshold: usize) -> Self {
         Self {
             threshold,
             buffer: String::new(),
@@ -76,7 +78,7 @@ pub enum RunnerError {
 ///
 /// A runner instance enforces the "one active run per session" constraint and
 /// emits lifecycle runtime events during the run.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SessionRunner {
     services: RuntimeServices,
     active_skills: Arc<Mutex<Vec<ActivatedSkill>>>,
@@ -85,6 +87,7 @@ pub struct SessionRunner {
 
 impl SessionRunner {
     /// Create a new runner with aggregated runtime services.
+    #[must_use]
     pub fn new(services: RuntimeServices) -> Self {
         let active_skills = Arc::new(Mutex::new(Vec::new()));
         let tool_registry = Arc::new(crate::activate_skill::SessionToolRegistry::new(
@@ -108,6 +111,11 @@ impl SessionRunner {
     ///
     /// Returns immediately with the run id; the run itself is executed on a
     /// background task.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a run is already active for this session or the
+    /// session store cannot be accessed.
     pub async fn send_message(&self, params: SendMessageParams) -> Result<RunId, RunnerError> {
         let mut active = self.active_run.lock().await;
         if active.is_some() {
@@ -116,7 +124,7 @@ impl SessionRunner {
 
         let run_id = uuid::Uuid::new_v4().to_string();
         let token = CancellationToken::new();
-        active.replace((run_id.clone(), token.clone()));
+        let _ = active.replace((run_id.clone(), token.clone()));
         drop(active);
 
         if let Err(error) = self
@@ -169,7 +177,7 @@ impl SessionRunner {
             cancel_token: token.child_token(),
         };
 
-        tokio::spawn(async move {
+        let _handle = tokio::spawn(async move {
             executor.run(runner).await;
         });
 
@@ -181,6 +189,10 @@ impl SessionRunner {
     /// This is an idempotent no-op when there is no active run. When a run is
     /// active, the cancellation token is triggered and the caller waits until
     /// the run task has cleaned up `active_run` before returning.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the runner cannot determine whether a run is active.
     pub async fn cancel_run(&self) -> Result<CancelRunResult, RunnerError> {
         let token = {
             let active = self.active_run.lock().await;
@@ -282,8 +294,8 @@ struct StreamState<'a> {
 impl RunExecutor {
     #[instrument(skip_all, fields(run_id, session_id))]
     async fn run(self, runner: Arc<SessionRunner>) {
-        tracing::Span::current().record("run_id", &self.run_id);
-        tracing::Span::current().record("session_id", &self.session_id);
+        let _ = tracing::Span::current().record("run_id", &self.run_id);
+        let _ = tracing::Span::current().record("session_id", &self.session_id);
         info!("starting run");
 
         runner
@@ -730,6 +742,8 @@ impl RunExecutor {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used, unused_results)]
+
     use std::sync::Arc;
     use std::time::Duration;
 

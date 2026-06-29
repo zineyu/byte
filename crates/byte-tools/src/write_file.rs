@@ -6,6 +6,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{Tool, ToolError, resolve_tool_path};
 
 /// A tool that creates or overwrites a file relative to the workspace root.
+#[derive(Debug, Clone, Copy)]
 pub struct WriteFileTool;
 // TODO(Slice 2+): The MVP runs in "unrestricted local agent mode" (see AGENTS.md).
 // write_file currently resolves any absolute path without a sandbox policy or
@@ -139,6 +140,8 @@ impl Tool for WriteFileTool {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used, unused_results)]
+
     use super::*;
     use byte_protocol::{SessionContext, ToolCall};
     use std::path::PathBuf;

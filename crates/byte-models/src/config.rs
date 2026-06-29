@@ -18,10 +18,12 @@ pub struct ModelProviderConfig {
 }
 
 impl ModelProviderConfig {
+    #[must_use]
     pub fn echo_chunk_size_or_default(&self) -> usize {
         self.echo_chunk_size.unwrap_or(5)
     }
 
+    #[must_use]
     pub fn echo_delay_or_default(&self) -> std::time::Duration {
         std::time::Duration::from_millis(self.echo_delay_ms.unwrap_or(0))
     }
@@ -83,6 +85,10 @@ fn resolve_config_path_with_env(
     config_dir.join("byte").join(DEFAULT_FILE_NAME)
 }
 
+/// # Errors
+///
+/// Returns an error if any of the required environment variables are invalid.
+#[must_use]
 pub fn resolve_config_path() -> PathBuf {
     resolve_config_path_with_env(
         std::env::var(OVERRIDE_ENV_VAR).ok(),
@@ -91,10 +97,16 @@ pub fn resolve_config_path() -> PathBuf {
     )
 }
 
+/// # Errors
+///
+/// Returns an error if the config file does not exist or cannot be parsed.
 pub async fn load_config() -> Result<ModelProviderConfig, ConfigError> {
     load_config_at_path(resolve_config_path()).await
 }
 
+/// # Errors
+///
+/// Returns an error if the file does not exist, cannot be read, or is invalid.
 pub async fn load_config_at_path(
     path: impl AsRef<Path>,
 ) -> Result<ModelProviderConfig, ConfigError> {
@@ -114,6 +126,9 @@ pub async fn load_config_at_path(
     parse_config(&contents)
 }
 
+/// # Errors
+///
+/// Returns an error if the TOML is invalid or a required field is missing.
 fn parse_config(contents: &str) -> Result<ModelProviderConfig, ConfigError> {
     let raw: RawConfig = toml::from_str(contents)?;
 
@@ -137,9 +152,12 @@ fn parse_config(contents: &str) -> Result<ModelProviderConfig, ConfigError> {
     })
 }
 
+/// # Errors
+///
+/// Returns an error if `value` is `None`.
 fn require_field(name: &str, value: Option<&str>) -> Result<String, ConfigError> {
     value
-        .map(std::borrow::ToOwned::to_owned)
+        .map(ToOwned::to_owned)
         .ok_or_else(|| ConfigError::MissingField {
             field: name.to_owned(),
         })
@@ -147,6 +165,8 @@ fn require_field(name: &str, value: Option<&str>) -> Result<String, ConfigError>
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used)]
+
     use super::*;
     use std::io::Write;
 

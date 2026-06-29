@@ -32,7 +32,7 @@ pub trait RuntimeEventBus: Send + Sync {
 ///
 /// Events are sent to a `broadcast` channel. All active subscribers receive a
 /// copy, and slow/lagged subscribers are dropped by the channel itself.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct BroadcastEventBus {
     tx: broadcast::Sender<RuntimeEvent>,
     sequence: Arc<AtomicU64>,
@@ -42,6 +42,7 @@ impl BroadcastEventBus {
     const DEFAULT_CAPACITY: usize = 64;
 
     /// Create a new bus with the default channel capacity.
+    #[must_use]
     pub fn new() -> Self {
         let (tx, _) = broadcast::channel(Self::DEFAULT_CAPACITY);
         Self {
@@ -57,6 +58,7 @@ impl BroadcastEventBus {
     /// Panics if `capacity` is zero, since a zero-capacity broadcast channel
     /// cannot store any events.
     #[cfg(test)]
+    #[must_use]
     pub fn with_capacity(capacity: usize) -> Self {
         assert!(capacity > 0, "broadcast capacity must be greater than 0");
         let (tx, _) = broadcast::channel(capacity);
@@ -67,6 +69,7 @@ impl BroadcastEventBus {
     }
 
     /// Subscribe to future runtime events.
+    #[must_use]
     pub fn subscribe(&self) -> broadcast::Receiver<RuntimeEvent> {
         self.tx.subscribe()
     }
@@ -115,7 +118,7 @@ impl RuntimeEventBus for BroadcastEventBus {
 ///
 /// All emitted events are appended to an internal vector. Use [`Self::take_events`]
 /// to drain and inspect the recorded sequence.
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct RecordingEventBus {
     events: Mutex<Vec<RuntimeEvent>>,
     sequence: AtomicU64,
@@ -123,6 +126,7 @@ pub struct RecordingEventBus {
 
 impl RecordingEventBus {
     /// Create a new empty recording bus.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -174,6 +178,8 @@ impl RuntimeEventBus for Arc<BroadcastEventBus> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used, unused_results)]
+
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -199,7 +205,7 @@ mod tests {
     #[tokio::test]
     async fn arc_recording_bus_records_events() {
         let inner = Arc::new(RecordingEventBus::new());
-        let bus: Arc<dyn RuntimeEventBus> = Arc::clone(&inner) as Arc<dyn RuntimeEventBus>;
+        let bus: Arc<dyn RuntimeEventBus> = inner.clone();
         let kind = RuntimeEventKind::daemon_started(DaemonState::ready("test"));
 
         bus.emit(kind.clone()).await;

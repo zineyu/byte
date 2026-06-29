@@ -21,12 +21,14 @@ fn normalize_base_url(url: &str) -> String {
 }
 
 /// An OpenAI-compatible provider using `async-openai` under the hood.
+#[derive(Debug)]
 pub struct OpenAiCompatibleProvider {
     client: Client<OpenAIConfig>,
     model: String,
 }
 
 impl OpenAiCompatibleProvider {
+    #[must_use]
     pub fn new(config: ModelProviderConfig) -> Self {
         let openai_config = OpenAIConfig::new()
             .with_api_key(config.api_key)

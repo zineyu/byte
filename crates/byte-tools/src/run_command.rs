@@ -1,3 +1,5 @@
+#![allow(unsafe_code)]
+
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
@@ -20,6 +22,7 @@ const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
 /// `stdout` and `stderr` are merged into a single string. The command is run
 /// through `/bin/sh -c`. A default timeout of 30 seconds is enforced; on
 /// timeout the child process and its process group are killed and reaped.
+#[derive(Debug, Clone, Copy)]
 pub struct RunCommandTool;
 
 #[async_trait]
@@ -75,19 +78,19 @@ impl Tool for RunCommandTool {
         let mut std_cmd = std::process::Command::new("/bin/sh");
         // Run the command in a subshell and redirect stderr to stdout so the
         // returned string contains both streams merged together.
-        std_cmd.arg("-c").arg(format!("({command}) 2>&1"));
+        let _ = std_cmd.arg("-c").arg(format!("({command}) 2>&1"));
         if let Some(cwd) = &cwd {
-            std_cmd.current_dir(cwd);
+            let _ = std_cmd.current_dir(cwd);
         }
-        std_cmd.stdin(Stdio::null());
-        std_cmd.stdout(Stdio::piped());
+        let _ = std_cmd.stdin(Stdio::null());
+        let _ = std_cmd.stdout(Stdio::piped());
 
         // Place the child in its own process group so that timeouts and
         // cancellations can kill any grandchildren (e.g. `sleep` spawned by
         // the shell) without leaving zombies behind.
         #[cfg(unix)]
         unsafe {
-            std_cmd.pre_exec(|| {
+            let _ = std_cmd.pre_exec(|| {
                 if libc::setpgid(0, 0) == -1 {
                     return Err(std::io::Error::last_os_error());
                 }
@@ -101,7 +104,10 @@ impl Tool for RunCommandTool {
 
         let pgid = child.id().map(u32::cast_signed);
 
-        let stdout = child.stdout.take().unwrap();
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| ToolError::new("failed to capture command stdout"))?;
         let mut stdout_handle = tokio::spawn(read_limited_output(stdout, MAX_OUTPUT_BYTES));
 
         let reason = tokio::select! {
@@ -247,6 +253,8 @@ fn resolve_timeout(call: &ToolCall) -> Result<u64, ToolError> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used, unused_results)]
+
     use super::*;
     use byte_protocol::{SessionContext, ToolCall};
     use std::time::Instant;

@@ -46,6 +46,7 @@ pub trait ModelProvider: Send + Sync {
     ) -> Result<ProviderStream, ProviderError>;
 }
 /// A mock provider that echoes the final developer message back in chunks.
+#[derive(Debug, Clone, Copy)]
 pub struct EchoProvider {
     pub chunk_size: usize,
     pub delay: std::time::Duration,
@@ -215,6 +216,8 @@ fn tool_call_stream(
 }
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used)]
+
     use super::*;
     use futures::StreamExt;
 

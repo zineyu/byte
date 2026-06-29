@@ -7,6 +7,7 @@ use tracing::warn;
 use crate::{Tool, ToolError, resolve_tool_path};
 
 /// A tool that recursively searches file contents for a regular expression.
+#[derive(Debug, Clone, Copy)]
 pub struct GrepTool;
 
 const MAX_SIZE: u64 = 1024 * 1024; // 1 MiB
@@ -181,6 +182,8 @@ fn strip_base(base: &std::path::Path, path: &std::path::Path) -> std::path::Path
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used, unused_results)]
+
     use super::*;
     use byte_protocol::{SessionContext, ToolCall};
     use std::path::PathBuf;

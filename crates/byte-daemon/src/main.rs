@@ -115,7 +115,7 @@ async fn run_socket_server(socket_path: &Path) -> anyhow::Result<()> {
         Arc::new(RunCommandTool),
         Arc::new(AllowAllPolicy),
     );
-    let tool_registry: Arc<dyn byte_tools::ToolRegistry> = Arc::new(registry);
+    let tool_registry: Arc<dyn ToolRegistry> = Arc::new(registry);
     let skill_registry: Arc<dyn SkillRegistry> = Arc::new(MvpSkillRegistry::new());
 
     let services = RuntimeServices::new(
@@ -138,7 +138,7 @@ async fn run_socket_server(socket_path: &Path) -> anyhow::Result<()> {
         info!("accepted new RPC connection");
         let event_bus = Arc::clone(&event_bus);
         let rpc_context = rpc_context.clone();
-        tokio::spawn(async move {
+        let _handle = tokio::spawn(async move {
             if let Err(error) = handle_connection(stream, event_bus, rpc_context).await {
                 error!(%error, "RPC socket connection failed");
             }
@@ -265,7 +265,7 @@ impl ModelProvider for LazyConfigProvider {
                     .await
                     .map_err(|error| ProviderError::Configuration(format!("{error:#}")))?;
                 let provider = initialized.clone();
-                guard.replace(initialized);
+                let _ = guard.replace(initialized);
                 provider
             }
         };
@@ -300,7 +300,7 @@ struct SocketFile {
 
 #[cfg(unix)]
 impl SocketFile {
-    fn new(path: PathBuf) -> Self {
+    const fn new(path: PathBuf) -> Self {
         Self { path }
     }
 }
@@ -314,6 +314,8 @@ impl Drop for SocketFile {
 
 #[cfg(all(test, unix))]
 mod tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used, unused_results)]
+
     use super::*;
 
     #[test]

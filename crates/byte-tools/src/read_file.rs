@@ -6,6 +6,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{Tool, ToolError};
 
 /// A tool that reads the contents of a file relative to the workspace root.
+#[derive(Debug, Clone, Copy)]
 pub struct ReadFileTool;
 // TODO(Slice 2+): The MVP runs in "unrestricted local agent mode" (see AGENTS.md).
 // read_file currently resolves any absolute path without a sandbox policy or
@@ -101,6 +102,8 @@ impl Tool for ReadFileTool {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used, unused_results)]
+
     use super::*;
     use byte_protocol::{SessionContext, ToolCall};
     use std::path::PathBuf;

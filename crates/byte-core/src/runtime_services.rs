@@ -22,8 +22,17 @@ pub struct RuntimeServices {
     pub skill_registry: Arc<dyn SkillRegistry>,
 }
 
+impl std::fmt::Debug for RuntimeServices {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RuntimeServices")
+            .field("store", &self.store)
+            .finish_non_exhaustive()
+    }
+}
+
 impl RuntimeServices {
     /// Create a new runtime services container.
+    #[must_use]
     pub fn new(
         provider: Arc<dyn ModelProvider>,
         store: Arc<SessionStore>,

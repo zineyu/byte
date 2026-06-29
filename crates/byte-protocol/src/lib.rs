@@ -66,6 +66,9 @@ pub struct JsonRpcResponse {
 }
 
 impl JsonRpcResponse {
+    /// # Errors
+    ///
+    /// Returns an error if the result value cannot be serialized to JSON.
     pub fn success(id: impl Into<RpcId>, result: impl Serialize) -> Result<Self, ProtocolError> {
         Ok(Self {
             jsonrpc: JSON_RPC_VERSION.to_owned(),
@@ -88,6 +91,7 @@ impl JsonRpcResponse {
         }
     }
 
+    #[must_use]
     pub fn is_response_to(&self, request: &JsonRpcRequest) -> bool {
         self.id == request.id
     }
@@ -110,6 +114,9 @@ impl JsonRpcNotification {
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the event value cannot be serialized to JSON.
     pub fn runtime_event(event: RuntimeEvent) -> Result<Self, ProtocolError> {
         Ok(Self::new(
             RUNTIME_EVENT_METHOD,
@@ -192,7 +199,7 @@ pub struct SessionContext {
     pub workspace_root: Option<PathBuf>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export, rename_all = "snake_case")]
 pub enum MessageRole {
@@ -204,15 +211,15 @@ pub enum MessageRole {
 
 impl std::fmt::Display for MessageRole {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            MessageRole::System => write!(f, "system"),
-            MessageRole::Developer => write!(f, "developer"),
-            MessageRole::Assistant => write!(f, "assistant"),
-            MessageRole::Tool => write!(f, "tool"),
+        match *self {
+            Self::System => write!(f, "system"),
+            Self::Developer => write!(f, "developer"),
+            Self::Assistant => write!(f, "assistant"),
+            Self::Tool => write!(f, "tool"),
         }
     }
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export, rename_all = "snake_case")]
 pub enum SessionChangeAction {
@@ -221,7 +228,7 @@ pub enum SessionChangeAction {
     Deleted,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export, rename_all = "snake_case")]
 pub enum RunStatus {
@@ -241,11 +248,13 @@ pub struct RuntimeEvent {
 }
 
 impl RuntimeEventKind {
-    pub fn daemon_started(state: DaemonState) -> Self {
+    #[must_use]
+    pub const fn daemon_started(state: DaemonState) -> Self {
         Self::DaemonStarted { state }
     }
 
-    pub fn state_changed(state: DaemonState) -> Self {
+    #[must_use]
+    pub const fn state_changed(state: DaemonState) -> Self {
         Self::StateChanged { state }
     }
 
@@ -461,7 +470,7 @@ pub struct CancelRunParams {
     pub session_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CancelRunResult {}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -490,7 +499,7 @@ impl DaemonState {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export, rename_all = "snake_case")]
 pub enum DaemonStatus {
@@ -507,7 +516,8 @@ pub struct DaemonConnectionView {
     pub error: Option<String>,
 }
 impl DaemonConnectionView {
-    pub fn connected(state: DaemonState) -> Self {
+    #[must_use]
+    pub const fn connected(state: DaemonState) -> Self {
         Self {
             connected: true,
             state: Some(state),
@@ -515,7 +525,8 @@ impl DaemonConnectionView {
         }
     }
 
-    pub fn disconnected(error: String) -> Self {
+    #[must_use]
+    pub const fn disconnected(error: String) -> Self {
         Self {
             connected: false,
             state: None,
@@ -530,16 +541,25 @@ pub enum ProtocolError {
     Serialize(#[from] serde_json::Error),
 }
 
+/// # Errors
+///
+/// Returns an error if `message` cannot be serialized to JSON.
 pub fn encode_json_line<T: Serialize>(message: &T) -> Result<String, ProtocolError> {
     let mut line = serde_json::to_string(message)?;
     line.push('\n');
     Ok(line)
 }
 
+/// # Errors
+///
+/// Returns an error if `line` is not valid JSON or cannot be deserialized as `T`.
 pub fn decode_json_line<T: DeserializeOwned>(line: &str) -> Result<T, serde_json::Error> {
     serde_json::from_str(line.trim_end_matches(['\r', '\n']))
 }
 
+/// # Errors
+///
+/// Returns an error if any non-empty line cannot be deserialized as `T`.
 pub fn decode_json_lines<T: DeserializeOwned>(input: &str) -> Result<Vec<T>, serde_json::Error> {
     input
         .lines()
@@ -550,6 +570,8 @@ pub fn decode_json_lines<T: DeserializeOwned>(input: &str) -> Result<Vec<T>, ser
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used)]
+
     use super::*;
 
     #[test]
@@ -874,7 +896,7 @@ mod tests {
         assert!(matches!(
             decoded.kind,
             RuntimeEventKind::MessageCompleted { run_id, message_id, tool_calls }
-            if run_id == "run-1" && message_id == "msg-1" && tool_calls.as_ref().map(std::vec::Vec::len) == Some(1)
+            if run_id == "run-1" && message_id == "msg-1" && tool_calls.as_ref().map(Vec::len) == Some(1)
         ));
     }
 }
