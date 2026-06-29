@@ -54,7 +54,11 @@ A development-mode operating assumption where the Desktop Coding Agent may read,
 _Avoid_: Safe default, sandboxed mode, permissioned mode
 
 **Workspace Instruction Files**:
-The root-level AGENTS.md and CONTEXT.md files in a Code Workspace that are shown to the Developer and included in prompt context for a Session.
+The root-level AGENTS.md file in a Code Workspace that contributes Workspace Instructions to a Session.
+_Avoid_: Hidden prompt injection, global instructions
+
+**Workspace Instructions**:
+The content contributed by Workspace Instruction Files to the system prompt for a Session.
 _Avoid_: Hidden prompt injection, global instructions
 
 **Compaction Entry**:

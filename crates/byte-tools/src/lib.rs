@@ -161,12 +161,7 @@ pub(crate) fn resolve_tool_path(
         return Ok(path);
     }
 
-    match &ctx.workspace_root {
-        Some(root) => Ok(root.join(path)),
-        None => Err(ToolError::new(
-            "relative path requires a workspace root in the session context",
-        )),
-    }
+    Ok(ctx.workspace_root.join(path))
 }
 
 #[cfg(test)]
@@ -194,7 +189,7 @@ mod tests {
                     &call,
                     &SessionContext {
                         session_id: None,
-                        workspace_root: None
+                        workspace_root: tempfile::tempdir().unwrap().path().to_path_buf()
                     }
                 )
                 .is_ok()
@@ -223,7 +218,7 @@ mod tests {
         };
         let ctx = SessionContext {
             session_id: None,
-            workspace_root: Some(temp.path().to_path_buf()),
+            workspace_root: temp.path().to_path_buf(),
         };
         let result = registry
             .invoke(&call, &ctx, &CancellationToken::new())
@@ -245,7 +240,7 @@ mod tests {
                 &call,
                 &SessionContext {
                     session_id: None,
-                    workspace_root: None,
+                    workspace_root: tempfile::tempdir().unwrap().path().to_path_buf(),
                 },
                 &CancellationToken::new(),
             )

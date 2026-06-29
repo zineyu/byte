@@ -19,10 +19,13 @@ pub struct PromptContext {
     pub active_skills: Vec<ActivatedSkill>,
     /// Skills that are installed and can be activated by name.
     pub available_skills: Vec<SkillEntry>,
+    /// Raw content of the workspace's AGENTS.md instruction file, if found.
+    pub workspace_instructions: Option<String>,
 }
 
 impl PromptContext {
-    /// Create a prompt context with no history, compactions, tools, skills, or active skills.
+    /// Create a prompt context with no history, compactions, tools, skills,
+    /// active skills, or workspace instructions.
     pub fn new(user_message: impl Into<String>) -> Self {
         Self {
             user_message: user_message.into(),
@@ -31,6 +34,7 @@ impl PromptContext {
             tools: Vec::new(),
             active_skills: Vec::new(),
             available_skills: Vec::new(),
+            workspace_instructions: None,
         }
     }
 }
@@ -61,6 +65,18 @@ impl PromptBuilder {
             tool_call_id: None,
             tool_calls: None,
         });
+
+        // Inject workspace instructions as a separate system message so they
+        // are visible to the model without being merged into the main system
+        // prompt or persisted history.
+        if let Some(instructions) = &context.workspace_instructions {
+            messages.push(RunMessage {
+                role: MessageRole::System,
+                content: instructions.clone(),
+                tool_call_id: None,
+                tool_calls: None,
+            });
+        }
 
         // Add compaction summaries as system reminders so they remain visible
         // without polluting the persisted message history.
@@ -166,6 +182,7 @@ mod tests {
             }],
             active_skills: vec![],
             available_skills: vec![],
+            workspace_instructions: None,
         };
         let messages = builder.build(context);
 
@@ -197,6 +214,7 @@ mod tests {
             tools: vec![],
             active_skills: vec![],
             available_skills: vec![],
+            workspace_instructions: None,
         };
         let messages = builder.build(context);
 
@@ -229,6 +247,7 @@ mod tests {
                     description: "Testing guidelines.".into(),
                 },
             ],
+            workspace_instructions: None,
         };
         let messages = builder.build(context);
 
@@ -262,6 +281,7 @@ mod tests {
                     description: "Testing guidelines.".into(),
                 },
             ],
+            workspace_instructions: None,
         };
         let messages = builder.build(context);
 
@@ -271,5 +291,28 @@ mod tests {
         assert!(system.contains("## rust"));
         assert!(system.contains("testing: Testing guidelines."));
         assert!(!system.contains("rust: Rust best practices."));
+    }
+
+    #[test]
+    fn builder_injects_workspace_instructions_as_system_message() {
+        let builder = PromptBuilder::new();
+        let context = PromptContext {
+            user_message: "hello".into(),
+            history: vec![],
+            compactions: vec![],
+            tools: vec![],
+            active_skills: vec![],
+            available_skills: vec![],
+            workspace_instructions: Some("Always write tests.".into()),
+        };
+        let messages = builder.build(context);
+
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0].role, MessageRole::System);
+        assert!(messages[0].content.contains("Byte Agent"));
+        assert_eq!(messages[1].role, MessageRole::System);
+        assert_eq!(messages[1].content, "Always write tests.");
+        assert_eq!(messages[2].role, MessageRole::Developer);
+        assert_eq!(messages[2].content, "hello");
     }
 }

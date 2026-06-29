@@ -207,6 +207,8 @@ describe("runtime event reducer", () => {
     const session: SessionView = {
       sessionId: "session-load-1",
       workspace: "/home/dev/project",
+      workspaceInstructions: null,
+      workspaceInstructionsError: null,
       messages: [
         {
           id: "msg-1",
@@ -251,7 +253,9 @@ describe("runtime event reducer", () => {
       type: "load_session",
       session: {
         sessionId: "session-reset",
-        workspace: null,
+        workspace: "/workspace",
+        workspaceInstructions: null,
+        workspaceInstructionsError: null,
         messages: [
           {
             id: "msg-1",

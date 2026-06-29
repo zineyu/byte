@@ -126,8 +126,8 @@ impl DaemonClient {
             .map_err(|error| format!("failed to decode daemon state: {error}"))
     }
 
-    /// Creates a new session and returns its generated session id.
-    async fn new_session(&mut self, workspace: Option<String>) -> Result<String, String> {
+    /// Creates a new session in `workspace` and returns its generated session id.
+    async fn new_session(&mut self, workspace: String) -> Result<String, String> {
         let params = serde_json::to_value(NewSessionParams { workspace })
             .map_err(|error| format!("failed to encode new_session params: {error}"))?;
         let response = self.request("new_session", Some(params)).await?;
@@ -455,10 +455,10 @@ async fn send_message(
     Ok(())
 }
 
-/// Creates a new session and returns its generated session id.
+/// Creates a new session in `workspace` and returns its generated session id.
 #[tauri::command]
 async fn new_session(
-    workspace: Option<String>,
+    workspace: String,
     app_handle: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
@@ -510,6 +510,7 @@ async fn load_session(
 #[allow(clippy::expect_used)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let _ = app.manage(AppState {
                 daemon: Mutex::new(DaemonSupervisor::new()),

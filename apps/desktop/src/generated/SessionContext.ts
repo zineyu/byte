@@ -9,6 +9,6 @@ export type SessionContext = {
  */
 sessionId: string | null, 
 /**
- * Root path of the current workspace, if any.
+ * Root path of the current workspace.
  */
-workspaceRoot: string | null, };
+workspaceRoot: string, };

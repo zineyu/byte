@@ -216,7 +216,7 @@ mod tests {
 
         let ctx = SessionContext {
             session_id: None,
-            workspace_root: Some(root.to_path_buf()),
+            workspace_root: root.to_path_buf(),
         };
 
         let result = GrepTool
@@ -248,7 +248,7 @@ mod tests {
 
         let ctx = SessionContext {
             session_id: None,
-            workspace_root: Some(root.to_path_buf()),
+            workspace_root: root.to_path_buf(),
         };
 
         let result = GrepTool
@@ -270,7 +270,7 @@ mod tests {
     async fn returns_error_for_invalid_regex() {
         let ctx = SessionContext {
             session_id: None,
-            workspace_root: None,
+            workspace_root: tempdir().unwrap().path().to_path_buf(),
         };
         let err = GrepTool
             .invoke(&call("[", "."), &ctx, &CancellationToken::new())
@@ -283,7 +283,7 @@ mod tests {
     async fn returns_error_when_directory_does_not_exist() {
         let ctx = SessionContext {
             session_id: None,
-            workspace_root: Some(PathBuf::from("/nonexistent/workspace")),
+            workspace_root: PathBuf::from("/nonexistent/workspace"),
         };
         let err = GrepTool
             .invoke(&call("foo", "missing"), &ctx, &CancellationToken::new())
@@ -301,7 +301,7 @@ mod tests {
         };
         let ctx = SessionContext {
             session_id: None,
-            workspace_root: None,
+            workspace_root: tempdir().unwrap().path().to_path_buf(),
         };
         let err = GrepTool
             .invoke(&call, &ctx, &CancellationToken::new())
@@ -320,7 +320,7 @@ mod tests {
 
         let ctx = SessionContext {
             session_id: None,
-            workspace_root: Some(root.to_path_buf()),
+            workspace_root: root.to_path_buf(),
         };
         let cancel = CancellationToken::new();
         cancel.cancel();

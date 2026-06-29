@@ -42,19 +42,30 @@ impl SessionManager {
         }
     }
 
-    /// Create a new session file with an optional workspace path.
+    /// Create a new session file bound to `workspace`.
     ///
-    /// Emits `session_changed(Created)` on success.
+    /// The workspace path must exist and be a directory. Emits
+    /// `session_changed(Created)` on success.
     ///
     /// # Errors
     ///
-    /// Returns an error if the session cannot be created.
+    /// Returns an error if the workspace is invalid or the session cannot be
+    /// created.
     #[instrument(skip(self))]
     pub async fn new_session(
         &self,
         session_id: &str,
-        workspace: Option<&str>,
+        workspace: &str,
     ) -> Result<NewSessionResult, RunnerError> {
+        let path = std::path::Path::new(workspace);
+        if !path.is_dir() {
+            return Err(RunnerError::SessionStore(
+                byte_session::SessionError::InvalidDirectory(format!(
+                    "workspace is not a directory: {workspace}"
+                )),
+            ));
+        }
+
         self.services
             .store
             .new_session(session_id, workspace)
@@ -228,6 +239,17 @@ mod tests {
         Arc::new(SessionStore::new(dir.path().to_path_buf()).expect("store creates"))
     }
 
+    fn temp_workspace() -> String {
+        // Use a persistent temp directory so the path still exists after this
+        // helper returns. Tests only need a valid directory for workspace
+        // validation; per-test isolation is provided by the session store.
+        let dir = std::env::temp_dir().join("byte-test-workspace");
+        std::fs::create_dir_all(&dir).expect("create temp workspace");
+        dir.to_str()
+            .expect("workspace path is valid UTF-8")
+            .to_owned()
+    }
+
     fn empty_skill_registry() -> Arc<dyn SkillRegistry> {
         Arc::new(MvpSkillRegistry::new())
     }
@@ -266,36 +288,48 @@ mod tests {
         )
     }
 
-    fn manager() -> (SessionManager, Arc<RecordingEventBus>, Arc<SessionStore>) {
+    fn manager() -> (
+        SessionManager,
+        Arc<RecordingEventBus>,
+        Arc<SessionStore>,
+        String,
+    ) {
         let provider: Arc<dyn ModelProvider> = Arc::new(EchoProvider::default());
         let store = temp_store();
         let recording_bus = Arc::new(RecordingEventBus::new());
         let bus: Arc<dyn RuntimeEventBus> = recording_bus.clone();
         let manager = SessionManager::new(services(provider, Arc::clone(&store), bus));
-        (manager, recording_bus, store)
+        let workspace = temp_workspace();
+        (manager, recording_bus, store, workspace)
     }
-    fn manager_without_tools() -> (SessionManager, Arc<RecordingEventBus>, Arc<SessionStore>) {
+    fn manager_without_tools() -> (
+        SessionManager,
+        Arc<RecordingEventBus>,
+        Arc<SessionStore>,
+        String,
+    ) {
         let provider: Arc<dyn ModelProvider> = Arc::new(EchoProvider::default());
         let store = temp_store();
         let recording_bus = Arc::new(RecordingEventBus::new());
         let bus: Arc<dyn RuntimeEventBus> = recording_bus.clone();
         let manager =
             SessionManager::new(services_without_tools(provider, Arc::clone(&store), bus));
-        (manager, recording_bus, store)
+        let workspace = temp_workspace();
+        (manager, recording_bus, store, workspace)
     }
 
     #[tokio::test]
     async fn new_session_creates_file_and_emits_created_event() {
-        let (manager, bus, store) = manager();
+        let (manager, bus, store, workspace) = manager();
         let result = manager
-            .new_session("s1", Some("/tmp/ws"))
+            .new_session("s1", &workspace)
             .await
             .expect("new session succeeds");
 
         assert_eq!(result.session_id, "s1");
 
         let view = store.load_session("s1").await.expect("session loads");
-        assert_eq!(view.workspace.as_deref(), Some("/tmp/ws"));
+        assert_eq!(view.workspace, workspace);
 
         let events = bus.take_events().await;
         assert_eq!(events.len(), 1);
@@ -307,8 +341,8 @@ mod tests {
 
     #[tokio::test]
     async fn delete_session_removes_file_and_emits_deleted_event() {
-        let (manager, bus, store) = manager();
-        manager.new_session("s1", None).await.unwrap();
+        let (manager, bus, store, workspace) = manager();
+        manager.new_session("s1", &workspace).await.unwrap();
         bus.take_events().await;
 
         let result = manager.delete_session("s1").await.expect("delete succeeds");
@@ -329,6 +363,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_session_with_active_run_returns_busy() {
+        let workspace = temp_workspace();
         let provider: Arc<dyn ModelProvider> = Arc::new(EchoProvider {
             delay: Duration::from_millis(50),
             ..Default::default()
@@ -337,7 +372,7 @@ mod tests {
         let recording_bus = Arc::new(RecordingEventBus::new());
         let bus: Arc<dyn RuntimeEventBus> = recording_bus.clone();
         let manager = SessionManager::new(services(provider, Arc::clone(&store), bus));
-        manager.new_session("s1", None).await.unwrap();
+        manager.new_session("s1", &workspace).await.unwrap();
         recording_bus.take_events().await;
 
         let params = SendMessageParams {
@@ -360,7 +395,8 @@ mod tests {
 
     #[tokio::test]
     async fn send_message_lazily_creates_runner_and_rejects_concurrent_runs() {
-        let (manager, bus, store) = manager_without_tools();
+        let (manager, bus, store, workspace) = manager_without_tools();
+        manager.new_session("s1", &workspace).await.unwrap();
         bus.take_events().await;
 
         let params = SendMessageParams {
@@ -394,9 +430,9 @@ mod tests {
 
     #[tokio::test]
     async fn runs_on_different_sessions_execute_concurrently() {
-        let (manager, _bus, _store) = manager();
-        manager.new_session("s1", None).await.unwrap();
-        manager.new_session("s2", None).await.unwrap();
+        let (manager, _bus, _store, workspace) = manager();
+        manager.new_session("s1", &workspace).await.unwrap();
+        manager.new_session("s2", &workspace).await.unwrap();
 
         let first = manager
             .send_message(SendMessageParams {
@@ -423,8 +459,8 @@ mod tests {
 
     #[tokio::test]
     async fn load_session_emits_loaded_event() {
-        let (manager, bus, _store) = manager();
-        manager.new_session("s1", Some("/workspace")).await.unwrap();
+        let (manager, bus, _store, workspace) = manager();
+        manager.new_session("s1", &workspace).await.unwrap();
         bus.take_events().await;
 
         let result = manager.load_session("s1").await.expect("load succeeds");
@@ -440,9 +476,9 @@ mod tests {
 
     #[tokio::test]
     async fn list_sessions_returns_sessions() {
-        let (manager, _bus, _store) = manager();
-        manager.new_session("s1", Some("/a")).await.unwrap();
-        manager.new_session("s2", Some("/b")).await.unwrap();
+        let (manager, _bus, _store, workspace) = manager();
+        manager.new_session("s1", &workspace).await.unwrap();
+        manager.new_session("s2", &workspace).await.unwrap();
 
         let result = manager.list_sessions().await.expect("list succeeds");
         let ids: Vec<_> = result
@@ -456,6 +492,7 @@ mod tests {
 
     #[tokio::test]
     async fn cancel_run_forwards_to_runner() {
+        let workspace = temp_workspace();
         let provider: Arc<dyn ModelProvider> = Arc::new(EchoProvider {
             chunk_size: 1,
             delay: Duration::from_millis(10),
@@ -465,7 +502,7 @@ mod tests {
         let bus: Arc<dyn RuntimeEventBus> = recording_bus.clone();
         let manager =
             SessionManager::new(services_without_tools(provider, Arc::clone(&store), bus));
-        manager.new_session("s1", None).await.unwrap();
+        manager.new_session("s1", &workspace).await.unwrap();
         recording_bus.take_events().await;
 
         let params = SendMessageParams {
@@ -502,8 +539,8 @@ mod tests {
 
     #[tokio::test]
     async fn cancel_run_without_runner_succeeds() {
-        let (manager, bus, _store) = manager();
-        manager.new_session("s1", None).await.unwrap();
+        let (manager, bus, _store, workspace) = manager();
+        manager.new_session("s1", &workspace).await.unwrap();
         bus.take_events().await;
 
         let result = manager

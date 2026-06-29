@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import {
   ArrowUp,
   Bot,
+  FolderOpen,
   MessageSquare,
   Plus,
   Settings,
@@ -15,6 +16,7 @@ import {
 import type { DaemonConnectionView } from "./generated/DaemonConnectionView";
 import type { SessionSummary } from "./generated/SessionSummary";
 import type { SessionView } from "./generated/SessionView";
+import { open } from "@tauri-apps/plugin-dialog";
 import { useByteStore, type ChatRunState, type RuntimeEvent } from "./store";
 
 function sessionTitle(session: SessionSummary): string {
@@ -58,6 +60,8 @@ export default function App() {
     currentSessionId,
     messages,
     runState,
+    workspaceInstructions,
+    workspaceInstructionsError,
   } = state;
 
   const refreshDaemonState = useCallback(async () => {
@@ -174,15 +178,34 @@ export default function App() {
     }
   }, [input, runState.isSending, currentSessionId, sendMessage, setConnection]);
 
-  const handleNewChat = useCallback(async () => {
-    try {
+  const pickWorkspace = async (): Promise<string | null> => {
+    const selected = await open({
+      directory: true,
+      multiple: false,
+      title: "选择代码工作区",
+    });
+    if (selected === null) return null;
+    return Array.isArray(selected) ? (selected[0] ?? null) : selected;
+  };
+
+  const createSessionInWorkspace = useCallback(
+    async (workspace: string) => {
       const newSessionId = await invoke<string>("new_session", {
-        workspace: null,
+        workspace,
       });
       setCurrentSessionId(newSessionId);
       resetSession();
       setInput("");
       await listSessions();
+    },
+    [listSessions, resetSession, setCurrentSessionId],
+  );
+
+  const handleNewChat = useCallback(async () => {
+    try {
+      const workspace = await pickWorkspace();
+      if (workspace === null) return;
+      await createSessionInWorkspace(workspace);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setConnection(
@@ -194,7 +217,25 @@ export default function App() {
         "error",
       );
     }
-  }, [listSessions, resetSession, setConnection, setCurrentSessionId]);
+  }, [createSessionInWorkspace, setConnection]);
+
+  const handleOpenWorkspace = useCallback(async () => {
+    try {
+      const workspace = await pickWorkspace();
+      if (workspace === null) return;
+      await createSessionInWorkspace(workspace);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setConnection(
+        {
+          connected: false,
+          state: null,
+          error: message,
+        },
+        "error",
+      );
+    }
+  }, [createSessionInWorkspace, setConnection]);
 
   const handleSelectSession = useCallback(
     async (sessionId: string) => {
@@ -252,6 +293,16 @@ export default function App() {
               <Plus size={16} strokeWidth={2} />
             </span>
             新对话
+          </button>
+          <button
+            type="button"
+            className="nav-item open-workspace-item"
+            onClick={() => void handleOpenWorkspace()}
+          >
+            <span className="nav-item-icon" aria-hidden="true">
+              <FolderOpen size={16} strokeWidth={2} />
+            </span>
+            打开工作区
           </button>
         </div>
 
@@ -341,6 +392,12 @@ export default function App() {
             <p className="hero-subtitle">
               本地编码助手，对话即可生成、调试和理解代码。
             </p>
+            {currentSessionId && (
+              <WorkspaceInstructionsCard
+                instructions={workspaceInstructions}
+                error={workspaceInstructionsError}
+              />
+            )}
             <div className="input-card hero-input-card">
               <InputField
                 input={input}
@@ -354,6 +411,12 @@ export default function App() {
           </div>
         ) : (
           <div className="chat-view">
+            {currentSessionId && (
+              <WorkspaceInstructionsCard
+                instructions={workspaceInstructions}
+                error={workspaceInstructionsError}
+              />
+            )}
             <div className="chat-messages">
               {messages.map((message) => (
                 <div
@@ -448,6 +511,32 @@ export default function App() {
         </aside>
       )}
     </main>
+  );
+}
+
+function WorkspaceInstructionsCard({
+  instructions,
+  error,
+}: {
+  instructions: string | null;
+  error: string | null;
+}) {
+  if (!instructions && !error) return null;
+
+  return (
+    <div className="workspace-instructions-card">
+      <div className="workspace-instructions-header">
+        Workspace Instructions
+      </div>
+      {error && (
+        <div className="workspace-instructions-error" role="alert">
+          {error}
+        </div>
+      )}
+      {instructions && (
+        <pre className="workspace-instructions-body">{instructions}</pre>
+      )}
+    </div>
   );
 }
 

@@ -316,7 +316,7 @@ mod tests {
 
         let ctx = SessionContext {
             session_id: None,
-            workspace_root: Some(temp.path().to_path_buf()),
+            workspace_root: temp.path().to_path_buf(),
         };
 
         let result = ApplyPatchTool
@@ -349,7 +349,7 @@ mod tests {
 
         let ctx = SessionContext {
             session_id: None,
-            workspace_root: Some(temp.path().to_path_buf()),
+            workspace_root: temp.path().to_path_buf(),
         };
 
         ApplyPatchTool
@@ -379,7 +379,7 @@ mod tests {
 
         let ctx = SessionContext {
             session_id: None,
-            workspace_root: Some(temp.path().to_path_buf()),
+            workspace_root: temp.path().to_path_buf(),
         };
 
         let result = ApplyPatchTool
@@ -413,7 +413,7 @@ mod tests {
 
         let ctx = SessionContext {
             session_id: None,
-            workspace_root: Some(temp.path().to_path_buf()),
+            workspace_root: temp.path().to_path_buf(),
         };
 
         let result = ApplyPatchTool
@@ -438,7 +438,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let ctx = SessionContext {
             session_id: None,
-            workspace_root: Some(temp.path().to_path_buf()),
+            workspace_root: temp.path().to_path_buf(),
         };
 
         let result = ApplyPatchTool
@@ -465,7 +465,7 @@ mod tests {
         };
         let ctx = SessionContext {
             session_id: None,
-            workspace_root: Some(PathBuf::from("/tmp")),
+            workspace_root: PathBuf::from("/tmp"),
         };
 
         let result = ApplyPatchTool
@@ -484,7 +484,7 @@ mod tests {
 
         let ctx = SessionContext {
             session_id: None,
-            workspace_root: Some(temp.path().to_path_buf()),
+            workspace_root: temp.path().to_path_buf(),
         };
 
         let result = ApplyPatchTool
@@ -524,7 +524,7 @@ mod tests {
 
         let ctx = SessionContext {
             session_id: None,
-            workspace_root: Some(temp.path().to_path_buf()),
+            workspace_root: temp.path().to_path_buf(),
         };
 
         let result = ApplyPatchTool
@@ -557,7 +557,7 @@ mod tests {
 
         let ctx = SessionContext {
             session_id: None,
-            workspace_root: Some(temp.path().to_path_buf()),
+            workspace_root: temp.path().to_path_buf(),
         };
 
         // A small input patched to 1 MiB + 1 byte must be rejected based on the
@@ -602,7 +602,7 @@ mod tests {
 
         let ctx = SessionContext {
             session_id: None,
-            workspace_root: Some(temp.path().to_path_buf()),
+            workspace_root: temp.path().to_path_buf(),
         };
 
         ApplyPatchTool
@@ -635,7 +635,7 @@ mod tests {
 
         let ctx = SessionContext {
             session_id: None,
-            workspace_root: Some(temp.path().to_path_buf()),
+            workspace_root: temp.path().to_path_buf(),
         };
 
         ApplyPatchTool
@@ -721,7 +721,7 @@ mod tests {
 
         let ctx = SessionContext {
             session_id: None,
-            workspace_root: Some(temp.path().to_path_buf()),
+            workspace_root: temp.path().to_path_buf(),
         };
 
         // The first patch inflates the content beyond the 1 MiB limit; the

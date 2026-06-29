@@ -136,16 +136,6 @@ impl SessionRunner {
         let _ = active.replace((run_id.clone(), token.clone()));
         drop(active);
 
-        if let Err(error) = self
-            .services
-            .store
-            .new_session(&params.session_id, None)
-            .await
-        {
-            self.clear_active_run().await;
-            return Err(RunnerError::SessionStore(error));
-        }
-
         let view = match self.services.store.load_session(&params.session_id).await {
             Ok(view) => view,
             Err(error) => {
@@ -183,6 +173,7 @@ impl SessionRunner {
             developer_message_id,
             history: view.messages,
             compactions: view.compactions,
+            workspace_instructions: view.workspace_instructions,
             cancel_token: token.child_token(),
         };
 
@@ -298,6 +289,8 @@ struct RunExecutor {
     history: Vec<SessionMessage>,
     /// Summaries of compacted conversation ranges.
     compactions: Vec<CompactionSummary>,
+    /// Raw content of the workspace's AGENTS.md instruction file, if found.
+    workspace_instructions: Option<String>,
     /// Token used to cancel this run.
     cancel_token: CancellationToken,
 }
@@ -347,6 +340,7 @@ impl RunExecutor {
             tools,
             active_skills,
             available_skills: available_skills.clone(),
+            workspace_instructions: self.workspace_instructions.clone(),
         };
         let mut messages = PromptBuilder::new().build(prompt_context);
         let mut turn_messages: Vec<RunMessage> = Vec::new();
@@ -436,7 +430,7 @@ impl RunExecutor {
         match runner
             .services
             .skill_registry
-            .catalog(session_ctx.workspace_root.as_deref())
+            .catalog(Some(session_ctx.workspace_root.as_path()))
             .await
         {
             Ok(skills) => Some(skills),
@@ -460,7 +454,7 @@ impl RunExecutor {
         match runner.services.store.load_session(&self.session_id).await {
             Ok(view) => Some(SessionContext {
                 session_id: Some(self.session_id.clone()),
-                workspace_root: view.workspace.map(PathBuf::from),
+                workspace_root: PathBuf::from(view.workspace),
             }),
             Err(error) => {
                 error!(%error, "failed to load session view");
@@ -853,6 +847,7 @@ mod tests {
             session_id: "s1".into(),
             message: "hello".into(),
         };
+        store.new_session("s1", "/workspace").await.unwrap();
         let first = runner
             .send_message(params.clone())
             .await
@@ -878,6 +873,7 @@ mod tests {
             session_id: "s1".into(),
             message: "hello".into(),
         };
+        store.new_session("s1", "/workspace").await.unwrap();
 
         let run_id = runner.send_message(params).await.expect("send accepted");
         runner.wait_until_idle().await;
@@ -928,6 +924,7 @@ mod tests {
     #[tokio::test]
     async fn echo_run_with_small_chunk_size_emits_multiple_deltas() {
         let bus = Arc::new(RecordingEventBus::new());
+        let store = temp_store();
         let provider = Arc::new(EchoProvider {
             chunk_size: 3,
             ..Default::default()
@@ -940,7 +937,7 @@ mod tests {
         );
         let services = RuntimeServices::new(
             provider,
-            temp_store(),
+            store.clone(),
             bus.clone(),
             Arc::new(registry),
             Arc::new(MvpSkillRegistry::new()),
@@ -950,6 +947,7 @@ mod tests {
             session_id: "s1".into(),
             message: "hello world".into(),
         };
+        store.new_session("s1", "/workspace").await.unwrap();
 
         let run_id = runner.send_message(params).await.expect("send accepted");
         runner.wait_until_idle().await;
@@ -1004,6 +1002,7 @@ mod tests {
             session_id: "s1".into(),
             message: "hi".into(),
         };
+        store.new_session("s1", "/workspace").await.unwrap();
 
         let run_id = runner.send_message(params).await.expect("send accepted");
         runner.wait_until_idle().await;
@@ -1045,14 +1044,34 @@ mod tests {
             session_id: "s1".into(),
             message: "hello".into(),
         };
+        store.new_session("s1", "/workspace").await.unwrap();
 
         let run_id = runner.send_message(params).await.expect("send accepted");
-        // Give the provider stream time to emit MessageStarted and some deltas.
-        tokio::time::sleep(Duration::from_millis(30)).await;
+        // Wait until at least one message delta has been emitted so the
+        // cancellation is guaranteed to observe an in-flight message and the
+        // final event sequence contains a delta flush before RunCancelled.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+        let mut accumulated = Vec::new();
+        let mut saw_delta = false;
+        while !saw_delta {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            accumulated.append(&mut bus.take_events().await);
+            saw_delta = accumulated.iter().any(|event| {
+                matches!(
+                    &event.kind,
+                    RuntimeEventKind::MessageDelta { run_id: rid, .. } if rid == &run_id
+                )
+            });
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timeout waiting for message_delta"
+            );
+        }
 
         runner.cancel_run().await.expect("cancel succeeds");
 
-        let events = bus.take_events().await;
+        let mut events = accumulated;
+        events.append(&mut bus.take_events().await);
         let run_events: Vec<_> = events
             .iter()
             .filter(|event| {
@@ -1120,6 +1139,7 @@ mod tests {
             session_id: "s1".into(),
             message: "hello".into(),
         };
+        store.new_session("s1", "/workspace").await.unwrap();
 
         let first_id = runner
             .send_message(params.clone())
@@ -1171,7 +1191,7 @@ mod tests {
         );
         let services = RuntimeServices::new(
             provider,
-            store,
+            store.clone(),
             bus.clone(),
             Arc::new(registry),
             Arc::new(MvpSkillRegistry::new()),
@@ -1181,6 +1201,7 @@ mod tests {
             session_id: "s1".into(),
             message: "hello".into(),
         };
+        store.new_session("s1", "/workspace").await.unwrap();
 
         let run_id = runner.send_message(params).await.expect("send accepted");
 
@@ -1241,7 +1262,7 @@ mod tests {
         let temp = tempdir().expect("temp dir");
         let workspace = temp.path().to_path_buf();
         store
-            .new_session(&params.session_id, Some(workspace.to_str().unwrap()))
+            .new_session(&params.session_id, workspace.to_str().unwrap())
             .await
             .expect("create session with workspace");
         tokio::fs::write(workspace.join("main.rs"), "fn main() {}")
@@ -1395,7 +1416,7 @@ mod tests {
         let temp = tempdir().expect("temp dir");
         let workspace = temp.path().to_path_buf();
         store
-            .new_session(&params.session_id, Some(workspace.to_str().unwrap()))
+            .new_session(&params.session_id, workspace.to_str().unwrap())
             .await
             .expect("create session with workspace");
         tokio::fs::write(workspace.join("main.rs"), "fn main() {}")
@@ -1466,7 +1487,7 @@ mod tests {
         let temp = tempdir().expect("temp dir");
         let workspace = temp.path().to_path_buf();
         store
-            .new_session(&params.session_id, Some(workspace.to_str().unwrap()))
+            .new_session(&params.session_id, workspace.to_str().unwrap())
             .await
             .expect("create session with workspace");
 
@@ -1536,7 +1557,7 @@ mod tests {
         let temp = tempdir().expect("temp dir");
         let workspace = temp.path().to_path_buf();
         store
-            .new_session(&params.session_id, Some(workspace.to_str().unwrap()))
+            .new_session(&params.session_id, workspace.to_str().unwrap())
             .await
             .expect("create session with workspace");
 
@@ -1669,7 +1690,7 @@ mod tests {
         let temp = tempdir().expect("temp dir");
         let workspace = temp.path().to_path_buf();
         store
-            .new_session("tool-session", Some(workspace.to_str().unwrap()))
+            .new_session("tool-session", workspace.to_str().unwrap())
             .await
             .expect("create session with workspace");
 
@@ -1935,7 +1956,7 @@ mod tests {
         .unwrap();
 
         store
-            .new_session("skill-session", Some(workspace.to_str().unwrap()))
+            .new_session("skill-session", workspace.to_str().unwrap())
             .await
             .expect("create session with workspace");
 

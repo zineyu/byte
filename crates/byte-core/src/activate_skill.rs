@@ -75,7 +75,7 @@ impl Tool for ActivateSkillTool {
 
         let definition = self
             .skill_registry
-            .activate(ctx.workspace_root.as_deref(), name)
+            .activate(Some(ctx.workspace_root.as_path()), name)
             .await
             .map_err(|error| ToolError::new(error.to_string()))?;
 
@@ -196,7 +196,7 @@ mod tests {
     #![allow(clippy::expect_used, clippy::unwrap_used, unused_results)]
 
     use std::collections::HashMap;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     use super::*;
     use async_trait::async_trait;
@@ -258,7 +258,7 @@ mod tests {
         };
         let ctx = SessionContext {
             session_id: None,
-            workspace_root: None,
+            workspace_root: PathBuf::from("/workspace"),
         };
 
         let result = tool
@@ -313,7 +313,7 @@ mod tests {
         let tool = ActivateSkillTool::new(registry.clone(), Arc::clone(&active_skills));
         let ctx = SessionContext {
             session_id: None,
-            workspace_root: None,
+            workspace_root: PathBuf::from("/workspace"),
         };
 
         let first_call = ToolCall {

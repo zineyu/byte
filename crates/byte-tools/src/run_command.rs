@@ -75,7 +75,7 @@ impl Tool for RunCommandTool {
             .and_then(|value| value.as_str())
             .ok_or_else(|| ToolError::new("missing `command` argument"))?;
 
-        let cwd = resolve_cwd(call, ctx)?;
+        let cwd = resolve_cwd(call, ctx);
         let timeout_seconds = resolve_timeout(call)?;
         let timeout = Duration::from_secs(timeout_seconds);
 
@@ -83,9 +83,7 @@ impl Tool for RunCommandTool {
         // Run the command in a subshell and redirect stderr to stdout so the
         // returned string contains both streams merged together.
         let _ = std_cmd.arg("-c").arg(format!("({command}) 2>&1"));
-        if let Some(cwd) = &cwd {
-            let _ = std_cmd.current_dir(cwd);
-        }
+        let _ = std_cmd.current_dir(&cwd);
         let _ = std_cmd.stdin(Stdio::null());
         let _ = std_cmd.stdout(Stdio::piped());
 
@@ -226,25 +224,20 @@ async fn read_limited_output(
 }
 
 /// Resolve the working directory for a `run_command` call.
-fn resolve_cwd(call: &ToolCall, ctx: &SessionContext) -> Result<Option<PathBuf>, ToolError> {
+fn resolve_cwd(call: &ToolCall, ctx: &SessionContext) -> PathBuf {
     let raw = call.arguments.get("cwd").and_then(|value| value.as_str());
     let path = match raw {
         Some(raw) => PathBuf::from(raw),
         None => {
-            return Ok(ctx.workspace_root.clone());
+            return ctx.workspace_root.clone();
         }
     };
 
     if path.is_absolute() {
-        return Ok(Some(path));
+        return path;
     }
 
-    match &ctx.workspace_root {
-        Some(root) => Ok(Some(root.join(path))),
-        None => Err(ToolError::new(
-            "relative cwd requires a workspace root in the session context",
-        )),
-    }
+    ctx.workspace_root.join(path)
 }
 
 /// Resolve the timeout, in seconds, for a `run_command` call.
@@ -279,7 +272,7 @@ mod tests {
     fn ctx_with_workspace(temp: &tempfile::TempDir) -> SessionContext {
         SessionContext {
             session_id: None,
-            workspace_root: Some(temp.path().to_path_buf()),
+            workspace_root: temp.path().to_path_buf(),
         }
     }
 

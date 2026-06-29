@@ -16,6 +16,9 @@ export function reducer(state: AppState, action: StoreAction): AppState {
       return {
         ...state,
         currentSessionId: action.session.sessionId,
+        workspaceInstructions: action.session.workspaceInstructions ?? null,
+        workspaceInstructionsError:
+          action.session.workspaceInstructionsError ?? null,
         messages: action.session.messages
           .filter(
             (
@@ -56,6 +59,8 @@ export function reducer(state: AppState, action: StoreAction): AppState {
           runId: null,
           isSending: false,
         },
+        workspaceInstructions: null,
+        workspaceInstructionsError: null,
       };
     case "send_message":
       return {

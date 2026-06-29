@@ -9,8 +9,8 @@ use crate::MessageRole;
 pub struct SessionSummary {
     /// Session identifier.
     pub session_id: String,
-    /// Optional workspace path associated with the session.
-    pub workspace: Option<String>,
+    /// Workspace path associated with the session.
+    pub workspace: String,
     /// ISO 8601 timestamp of when the session was created.
     pub created_at: String,
 }
@@ -35,8 +35,12 @@ pub struct CompactionSummary {
 pub struct SessionView {
     /// Session identifier.
     pub session_id: String,
-    /// Optional workspace path associated with the session.
-    pub workspace: Option<String>,
+    /// Workspace path associated with the session.
+    pub workspace: String,
+    /// Raw content of the workspace's AGENTS.md instruction file, if found.
+    pub workspace_instructions: Option<String>,
+    /// Human-readable warning if the workspace's AGENTS.md exists but could not be read.
+    pub workspace_instructions_error: Option<String>,
     /// Messages in the session, in UI order.
     pub messages: Vec<SessionMessage>,
     /// Compaction entries in the session.
@@ -112,8 +116,8 @@ pub enum SessionEntry {
         version: u16,
         /// Session identifier.
         id: String,
-        /// Optional workspace path.
-        workspace: Option<String>,
+        /// Workspace path.
+        workspace: String,
         /// ISO 8601 creation timestamp.
         created_at: String,
     },
@@ -151,8 +155,8 @@ pub enum SessionEntry {
 /// Parameters for creating a new session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NewSessionParams {
-    /// Optional workspace path for the new session.
-    pub workspace: Option<String>,
+    /// Workspace path for the new session.
+    pub workspace: String,
 }
 
 /// Result returned after creating a new session.
@@ -209,7 +213,7 @@ mod tests {
         let entry = SessionEntry::Session {
             version: 1,
             id: "session-1".into(),
-            workspace: Some("/home/dev/project".into()),
+            workspace: "/home/dev/project".into(),
             created_at: "2026-06-24T12:00:00Z".into(),
         };
 
@@ -237,7 +241,9 @@ mod tests {
     fn session_view_roundtrips() {
         let view = SessionView {
             session_id: "session-1".into(),
-            workspace: Some("/home/dev/project".into()),
+            workspace: "/home/dev/project".into(),
+            workspace_instructions: Some("follow these instructions".into()),
+            workspace_instructions_error: None,
             messages: vec![SessionMessage {
                 id: "msg-1".into(),
                 parent_id: None,
@@ -263,7 +269,7 @@ mod tests {
     fn session_summary_roundtrips() {
         let summary = SessionSummary {
             session_id: "session-1".into(),
-            workspace: Some("/home/dev/project".into()),
+            workspace: "/home/dev/project".into(),
             created_at: "2026-06-24T12:00:00Z".into(),
         };
 

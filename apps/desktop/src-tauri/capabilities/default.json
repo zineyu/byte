@@ -2,5 +2,5 @@
   "identifier": "default",
   "description": "Default permissions for the Byte Agent desktop window.",
   "windows": ["main"],
-  "permissions": ["core:default", "core:event:default"]
+  "permissions": ["core:default", "core:event:default", "dialog:allow-open"]
 }

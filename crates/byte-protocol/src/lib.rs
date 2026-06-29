@@ -247,8 +247,8 @@ pub struct ActivatedSkill {
 pub struct SessionContext {
     /// Identifier of the current session, if any.
     pub session_id: Option<String>,
-    /// Root path of the current workspace, if any.
-    pub workspace_root: Option<PathBuf>,
+    /// Root path of the current workspace.
+    pub workspace_root: PathBuf,
 }
 
 /// Role of a message in a conversation.
@@ -965,7 +965,7 @@ mod tests {
     fn session_context_roundtrips() {
         let ctx = SessionContext {
             session_id: Some("session-1".into()),
-            workspace_root: Some(PathBuf::from("/tmp/workspace")),
+            workspace_root: PathBuf::from("/tmp/workspace"),
         };
         let decoded: SessionContext = decode_json_line(&encode_json_line(&ctx).unwrap()).unwrap();
         assert_eq!(decoded, ctx);

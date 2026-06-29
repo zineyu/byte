@@ -103,6 +103,9 @@ textarea {
 }
 
 .sidebar-header {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
   flex: 0 0 auto;
 }
 
@@ -114,6 +117,16 @@ textarea {
 
 .new-chat-item:hover {
   background: #f9fafb;
+}
+
+.open-workspace-item {
+  color: #374151;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+}
+
+.open-workspace-item:hover {
+  background: #f3f4f6;
 }
 
 .session-list {
@@ -449,6 +462,46 @@ textarea {
   flex: 1;
   min-height: 0;
   gap: 1.5rem;
+}
+
+.workspace-instructions-card {
+  flex: 0 0 auto;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.75rem;
+  padding: 0.75rem 1rem;
+  box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.04);
+}
+
+.workspace-instructions-header {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #6b7280;
+  text-transform: uppercase;
+  letter-spacing: 0.025em;
+  margin-bottom: 0.5rem;
+}
+
+.workspace-instructions-body {
+  margin: 0;
+  font-family: inherit;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: #374151;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 8rem;
+  overflow-y: auto;
+}
+
+.workspace-instructions-error {
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: #b91c1c;
+  background: #fef2f2;
+  border-radius: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  margin-bottom: 0.5rem;
 }
 
 .chat-messages {

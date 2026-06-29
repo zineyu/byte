@@ -127,7 +127,7 @@ mod tests {
 
         let ctx = SessionContext {
             session_id: None,
-            workspace_root: Some(dir.path().to_path_buf()),
+            workspace_root: dir.path().to_path_buf(),
         };
 
         let result = ListDirectoryTool
@@ -152,7 +152,7 @@ mod tests {
 
         let ctx = SessionContext {
             session_id: None,
-            workspace_root: None,
+            workspace_root: tempdir().unwrap().path().to_path_buf(),
         };
         let result = ListDirectoryTool
             .invoke(
@@ -177,7 +177,7 @@ mod tests {
     async fn returns_error_when_path_does_not_exist() {
         let ctx = SessionContext {
             session_id: None,
-            workspace_root: Some(PathBuf::from("/nonexistent/workspace")),
+            workspace_root: PathBuf::from("/nonexistent/workspace"),
         };
         let err = ListDirectoryTool
             .invoke(&call("missing"), &ctx, &CancellationToken::new())
@@ -195,7 +195,7 @@ mod tests {
 
         let ctx = SessionContext {
             session_id: None,
-            workspace_root: Some(dir.path().to_path_buf()),
+            workspace_root: dir.path().to_path_buf(),
         };
         let cancel = CancellationToken::new();
         cancel.cancel();
@@ -216,7 +216,7 @@ mod tests {
         };
         let ctx = SessionContext {
             session_id: None,
-            workspace_root: None,
+            workspace_root: tempdir().unwrap().path().to_path_buf(),
         };
         let err = ListDirectoryTool
             .invoke(&call, &ctx, &CancellationToken::new())

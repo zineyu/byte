@@ -54,7 +54,7 @@ async fn handle_new_session(context: &RpcContext, request: &JsonRpcRequest) -> J
 
     match context
         .session_manager
-        .new_session(&session_id, params.workspace.as_deref())
+        .new_session(&session_id, &params.workspace)
         .await
     {
         Ok(result) => {

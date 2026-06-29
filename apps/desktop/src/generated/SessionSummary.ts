@@ -9,9 +9,9 @@ export type SessionSummary = {
  */
 sessionId: string, 
 /**
- * Optional workspace path associated with the session.
+ * Workspace path associated with the session.
  */
-workspace: string | null, 
+workspace: string, 
 /**
  * ISO 8601 timestamp of when the session was created.
  */

@@ -126,7 +126,7 @@ mod tests {
         };
         let ctx = SessionContext {
             session_id: None,
-            workspace_root: Some(temp.path().to_path_buf()),
+            workspace_root: temp.path().to_path_buf(),
         };
 
         let result = ReadFileTool
@@ -149,7 +149,7 @@ mod tests {
         };
         let ctx = SessionContext {
             session_id: None,
-            workspace_root: Some(PathBuf::from("/other")),
+            workspace_root: PathBuf::from("/other"),
         };
 
         let result = ReadFileTool
@@ -169,7 +169,7 @@ mod tests {
         };
         let ctx = SessionContext {
             session_id: None,
-            workspace_root: Some(temp.path().to_path_buf()),
+            workspace_root: temp.path().to_path_buf(),
         };
 
         let result = ReadFileTool
@@ -177,25 +177,6 @@ mod tests {
             .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("missing.rs"));
-    }
-
-    #[tokio::test]
-    async fn returns_error_for_relative_path_without_workspace() {
-        let call = ToolCall {
-            id: "call-1".into(),
-            name: "read_file".into(),
-            arguments: serde_json::json!({"path": "src/main.rs"}),
-        };
-        let ctx = SessionContext {
-            session_id: None,
-            workspace_root: None,
-        };
-
-        let result = ReadFileTool
-            .invoke(&call, &ctx, &CancellationToken::new())
-            .await;
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("workspace root"));
     }
 
     #[tokio::test]
@@ -211,7 +192,7 @@ mod tests {
         };
         let ctx = SessionContext {
             session_id: None,
-            workspace_root: Some(temp.path().to_path_buf()),
+            workspace_root: temp.path().to_path_buf(),
         };
         let cancel = CancellationToken::new();
         cancel.cancel();
@@ -232,7 +213,7 @@ mod tests {
         };
         let ctx = SessionContext {
             session_id: None,
-            workspace_root: Some(PathBuf::from("/tmp")),
+            workspace_root: PathBuf::from("/tmp"),
         };
 
         let result = ReadFileTool
@@ -257,7 +238,7 @@ mod tests {
         };
         let ctx = SessionContext {
             session_id: None,
-            workspace_root: Some(temp.path().to_path_buf()),
+            workspace_root: temp.path().to_path_buf(),
         };
 
         let result = ReadFileTool

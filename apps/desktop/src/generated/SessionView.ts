@@ -11,9 +11,17 @@ export type SessionView = {
  */
 sessionId: string, 
 /**
- * Optional workspace path associated with the session.
+ * Workspace path associated with the session.
  */
-workspace: string | null, 
+workspace: string, 
+/**
+ * Raw content of the workspace's AGENTS.md instruction file, if found.
+ */
+workspaceInstructions: string | null, 
+/**
+ * Human-readable warning if the workspace's AGENTS.md exists but could not be read.
+ */
+workspaceInstructionsError: string | null, 
 /**
  * Messages in the session, in UI order.
  */

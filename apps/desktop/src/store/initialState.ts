@@ -17,4 +17,6 @@ export const initialState: AppState = {
     runId: null,
     isSending: false,
   },
+  workspaceInstructions: null,
+  workspaceInstructionsError: null,
 };

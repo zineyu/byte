@@ -60,9 +60,7 @@ impl Tool for FindFilesTool {
 
         let base_path = match call.arguments.get("path").and_then(|value| value.as_str()) {
             Some(_) => resolve_tool_path(call, ctx)?,
-            None => ctx.workspace_root.clone().ok_or_else(|| {
-                ToolError::new("missing workspace root; provide a `path` argument")
-            })?,
+            None => ctx.workspace_root.clone(),
         };
 
         match tokio::fs::try_exists(&base_path).await {
@@ -196,7 +194,7 @@ mod tests {
 
         let ctx = SessionContext {
             session_id: None,
-            workspace_root: Some(root.to_path_buf()),
+            workspace_root: root.to_path_buf(),
         };
 
         let result = FindFilesTool
@@ -220,7 +218,7 @@ mod tests {
 
         let ctx = SessionContext {
             session_id: None,
-            workspace_root: Some(root.to_path_buf()),
+            workspace_root: root.to_path_buf(),
         };
 
         let result = FindFilesTool
@@ -233,23 +231,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn returns_error_when_workspace_root_missing_and_no_path_given() {
-        let ctx = SessionContext {
-            session_id: None,
-            workspace_root: None,
-        };
-        let err = FindFilesTool
-            .invoke(&call("*.rs", None), &ctx, &CancellationToken::new())
-            .await
-            .expect_err("should fail");
-        assert!(err.to_string().contains("missing workspace root"));
-    }
-
-    #[tokio::test]
     async fn returns_error_when_directory_does_not_exist() {
         let ctx = SessionContext {
             session_id: None,
-            workspace_root: Some(PathBuf::from("/nonexistent/workspace")),
+            workspace_root: PathBuf::from("/nonexistent/workspace"),
         };
         let err = FindFilesTool
             .invoke(&call("*.rs", Some(".")), &ctx, &CancellationToken::new())
@@ -264,7 +249,7 @@ mod tests {
         let root = dir.path();
         let ctx = SessionContext {
             session_id: None,
-            workspace_root: Some(root.to_path_buf()),
+            workspace_root: root.to_path_buf(),
         };
         let err = FindFilesTool
             .invoke(&call("[", Some(".")), &ctx, &CancellationToken::new())
@@ -282,7 +267,7 @@ mod tests {
         };
         let ctx = SessionContext {
             session_id: None,
-            workspace_root: None,
+            workspace_root: tempdir().unwrap().path().to_path_buf(),
         };
         let err = FindFilesTool
             .invoke(&call, &ctx, &CancellationToken::new())
@@ -299,7 +284,7 @@ mod tests {
 
         let ctx = SessionContext {
             session_id: None,
-            workspace_root: None,
+            workspace_root: tempdir().unwrap().path().to_path_buf(),
         };
         let result = FindFilesTool
             .invoke(
@@ -324,7 +309,7 @@ mod tests {
 
         let ctx = SessionContext {
             session_id: None,
-            workspace_root: None,
+            workspace_root: tempdir().unwrap().path().to_path_buf(),
         };
         let result = FindFilesTool
             .invoke(
@@ -349,7 +334,7 @@ mod tests {
 
         let ctx = SessionContext {
             session_id: None,
-            workspace_root: Some(root.to_path_buf()),
+            workspace_root: root.to_path_buf(),
         };
         let err = FindFilesTool
             .invoke(&call("*.txt", Some(".")), &ctx, &CancellationToken::new())
@@ -372,7 +357,7 @@ mod tests {
 
         let ctx = SessionContext {
             session_id: None,
-            workspace_root: Some(root.to_path_buf()),
+            workspace_root: root.to_path_buf(),
         };
         let result = FindFilesTool
             .invoke(
@@ -398,7 +383,7 @@ mod tests {
 
         let ctx = SessionContext {
             session_id: None,
-            workspace_root: Some(root.to_path_buf()),
+            workspace_root: root.to_path_buf(),
         };
         let cancel = CancellationToken::new();
         cancel.cancel();

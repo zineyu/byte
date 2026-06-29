@@ -47,6 +47,8 @@ export type AppState = {
   currentSessionId: string | null;
   messages: ChatMessage[];
   runState: ChatRunState;
+  workspaceInstructions: string | null;
+  workspaceInstructionsError: string | null;
 };
 
 export type StoreAction =

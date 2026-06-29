@@ -162,7 +162,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let ctx = SessionContext {
             session_id: None,
-            workspace_root: Some(temp.path().to_path_buf()),
+            workspace_root: temp.path().to_path_buf(),
         };
 
         let result = WriteFileTool
@@ -195,7 +195,7 @@ mod tests {
 
         let ctx = SessionContext {
             session_id: None,
-            workspace_root: Some(temp.path().to_path_buf()),
+            workspace_root: temp.path().to_path_buf(),
         };
 
         WriteFileTool
@@ -216,7 +216,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let ctx = SessionContext {
             session_id: None,
-            workspace_root: Some(temp.path().to_path_buf()),
+            workspace_root: temp.path().to_path_buf(),
         };
 
         let result = WriteFileTool
@@ -242,7 +242,7 @@ mod tests {
         };
         let ctx = SessionContext {
             session_id: None,
-            workspace_root: Some(PathBuf::from("/tmp")),
+            workspace_root: PathBuf::from("/tmp"),
         };
 
         let result = WriteFileTool
@@ -262,7 +262,7 @@ mod tests {
         };
         let ctx = SessionContext {
             session_id: None,
-            workspace_root: Some(PathBuf::from("/tmp")),
+            workspace_root: PathBuf::from("/tmp"),
         };
 
         let result = WriteFileTool
@@ -274,28 +274,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn returns_error_for_relative_path_without_workspace() {
-        let result = WriteFileTool
-            .invoke(
-                &call("hello.txt", "content"),
-                &SessionContext {
-                    session_id: None,
-                    workspace_root: None,
-                },
-                &CancellationToken::new(),
-            )
-            .await;
-
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("workspace root"));
-    }
-
-    #[tokio::test]
     async fn returns_error_when_content_exceeds_size_limit() {
         let temp = tempfile::tempdir().unwrap();
         let ctx = SessionContext {
             session_id: None,
-            workspace_root: Some(temp.path().to_path_buf()),
+            workspace_root: temp.path().to_path_buf(),
         };
         // 1 MiB + 1 byte, which exceeds the tool's hard-coded size limit.
         let oversized = "x".repeat(1024 * 1024 + 1);
@@ -322,7 +305,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let ctx = SessionContext {
             session_id: None,
-            workspace_root: Some(temp.path().to_path_buf()),
+            workspace_root: temp.path().to_path_buf(),
         };
 
         WriteFileTool
@@ -367,7 +350,7 @@ mod tests {
 
         let ctx = SessionContext {
             session_id: None,
-            workspace_root: Some(temp.path().to_path_buf()),
+            workspace_root: temp.path().to_path_buf(),
         };
 
         WriteFileTool

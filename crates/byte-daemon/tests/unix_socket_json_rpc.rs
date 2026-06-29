@@ -78,8 +78,33 @@ fn send_message_with_missing_config_emits_visible_error_event() {
         matches!(kind, RuntimeEventKind::DaemonStarted { .. })
     });
 
+    let workspace_dir = unique_workspace_dir();
+    std::fs::create_dir_all(&workspace_dir).expect("workspace dir creates");
+    let new_params = serde_json::to_value(NewSessionParams {
+        workspace: workspace_dir.to_string_lossy().into_owned(),
+    })
+    .expect("new session params encode");
+    let new_request = JsonRpcRequest::new(0, "new_session", Some(new_params));
+    write_request(&mut stream, &new_request);
+
+    let mut session_id: Option<String> = None;
+    while session_id.is_none() {
+        let line = read_line(&mut reader);
+        if let JsonRpcMessage::Response(response) =
+            decode_json_line::<JsonRpcMessage>(&line).expect("message decodes")
+        {
+            assert_eq!(response.id, RpcId::Number(0));
+            assert!(response.error.is_none(), "new_session should succeed");
+            let result: NewSessionResult =
+                serde_json::from_value(response.result.expect("response has result"))
+                    .expect("new_session result decodes");
+            session_id = Some(result.session_id);
+        }
+    }
+    let session_id = session_id.expect("session was created");
+
     let params = serde_json::to_value(SendMessageParams {
-        session_id: "default".to_owned(),
+        session_id,
         message: "hello".to_owned(),
     })
     .expect("params encode");
@@ -150,8 +175,33 @@ fn send_message_with_echo_provider_streams_assistant_message() {
         matches!(kind, RuntimeEventKind::DaemonStarted { .. })
     });
 
+    let workspace_dir = unique_workspace_dir();
+    std::fs::create_dir_all(&workspace_dir).expect("workspace dir creates");
+    let new_params = serde_json::to_value(NewSessionParams {
+        workspace: workspace_dir.to_string_lossy().into_owned(),
+    })
+    .expect("new session params encode");
+    let new_request = JsonRpcRequest::new(1, "new_session", Some(new_params));
+    write_request(&mut stream, &new_request);
+
+    let mut session_id: Option<String> = None;
+    while session_id.is_none() {
+        let line = read_line(&mut reader);
+        if let JsonRpcMessage::Response(response) =
+            decode_json_line::<JsonRpcMessage>(&line).expect("message decodes")
+        {
+            assert_eq!(response.id, RpcId::Number(1));
+            assert!(response.error.is_none(), "new_session should succeed");
+            let result: NewSessionResult =
+                serde_json::from_value(response.result.expect("response has result"))
+                    .expect("new_session result decodes");
+            session_id = Some(result.session_id);
+        }
+    }
+    let session_id = session_id.expect("session was created");
+
     let params = serde_json::to_value(SendMessageParams {
-        session_id: "default".to_owned(),
+        session_id,
         message: "world".to_owned(),
     })
     .expect("params encode");
@@ -230,7 +280,7 @@ fn send_message_persists_messages_to_session() {
     });
 
     let new_params = serde_json::to_value(NewSessionParams {
-        workspace: Some(workspace_dir.to_string_lossy().into_owned()),
+        workspace: workspace_dir.to_string_lossy().into_owned(),
     })
     .expect("new session params encode");
     let new_request = JsonRpcRequest::new(20, "new_session", Some(new_params));
@@ -348,8 +398,12 @@ fn session_operations_emit_session_changed_event() {
         matches!(kind, RuntimeEventKind::DaemonStarted { .. })
     });
 
-    let new_params = serde_json::to_value(NewSessionParams { workspace: None })
-        .expect("new session params encode");
+    let workspace_dir = unique_workspace_dir();
+    std::fs::create_dir_all(&workspace_dir).expect("workspace dir creates");
+    let new_params = serde_json::to_value(NewSessionParams {
+        workspace: workspace_dir.to_string_lossy().into_owned(),
+    })
+    .expect("new session params encode");
     let new_request = JsonRpcRequest::new(5, "new_session", Some(new_params));
     write_request(&mut stream, &new_request);
 
@@ -445,8 +499,10 @@ fn list_sessions_and_delete_session() {
     });
 
     // Create a session.
+    let workspace_dir = unique_workspace_dir();
+    std::fs::create_dir_all(&workspace_dir).expect("workspace dir creates");
     let new_params = serde_json::to_value(NewSessionParams {
-        workspace: Some("/workspace/project".to_owned()),
+        workspace: workspace_dir.to_string_lossy().into_owned(),
     })
     .expect("new session params encode");
     let new_request = JsonRpcRequest::new(7, "new_session", Some(new_params));
@@ -486,8 +542,8 @@ fn list_sessions_and_delete_session() {
             assert_eq!(result.sessions.len(), 1);
             assert_eq!(result.sessions[0].session_id, session_id);
             assert_eq!(
-                result.sessions[0].workspace.as_deref(),
-                Some("/workspace/project")
+                result.sessions[0].workspace,
+                workspace_dir.to_string_lossy().into_owned()
             );
             saw_list = true;
         }
@@ -574,8 +630,33 @@ fn cancel_run_emits_run_cancelled_and_run_finished_cancelled() {
         matches!(kind, RuntimeEventKind::DaemonStarted { .. })
     });
 
+    let workspace_dir = unique_workspace_dir();
+    std::fs::create_dir_all(&workspace_dir).expect("workspace dir creates");
+    let new_params = serde_json::to_value(NewSessionParams {
+        workspace: workspace_dir.to_string_lossy().into_owned(),
+    })
+    .expect("new session params encode");
+    let new_request = JsonRpcRequest::new(10, "new_session", Some(new_params));
+    write_request(&mut stream, &new_request);
+
+    let mut session_id: Option<String> = None;
+    while session_id.is_none() {
+        let line = read_line(&mut reader);
+        if let JsonRpcMessage::Response(response) =
+            decode_json_line::<JsonRpcMessage>(&line).expect("message decodes")
+        {
+            assert_eq!(response.id, RpcId::Number(10));
+            assert!(response.error.is_none(), "new_session should succeed");
+            let result: NewSessionResult =
+                serde_json::from_value(response.result.expect("response has result"))
+                    .expect("new_session result decodes");
+            session_id = Some(result.session_id);
+        }
+    }
+    let session_id = session_id.expect("session was created");
+
     let send_params = serde_json::to_value(SendMessageParams {
-        session_id: "cancel-session".to_owned(),
+        session_id: session_id.clone(),
         message: "hello world".to_owned(),
     })
     .expect("send params encode");
@@ -587,10 +668,8 @@ fn cancel_run_emits_run_cancelled_and_run_finished_cancelled() {
         matches!(kind, RuntimeEventKind::MessageStarted { .. })
     });
 
-    let cancel_params = serde_json::to_value(CancelRunParams {
-        session_id: "cancel-session".to_owned(),
-    })
-    .expect("cancel params encode");
+    let cancel_params =
+        serde_json::to_value(CancelRunParams { session_id }).expect("cancel params encode");
     let cancel_request = JsonRpcRequest::new(12, "cancel_run", Some(cancel_params));
     write_request(&mut stream, &cancel_request);
 
@@ -659,7 +738,7 @@ fn per_session_workspace_resolves_relative_read_file_path() {
     });
 
     let new_params = serde_json::to_value(NewSessionParams {
-        workspace: Some(workspace_dir.to_string_lossy().into_owned()),
+        workspace: workspace_dir.to_string_lossy().into_owned(),
     })
     .expect("new session params encode");
     let new_request = JsonRpcRequest::new(13, "new_session", Some(new_params));
