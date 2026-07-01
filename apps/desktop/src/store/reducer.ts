@@ -113,7 +113,6 @@ function loadSession(
             arguments: call.arguments,
             status: "running",
             output: null,
-            progressMessage: null,
             error: null,
           };
         }
@@ -234,7 +233,6 @@ function applyRuntimeEvent(state: AppState, event: RuntimeEvent): AppState {
             arguments: call.arguments,
             status: "running",
             output: null,
-            progressMessage: null,
             error: null,
           };
           return acc;
@@ -313,23 +311,7 @@ function applyRuntimeEvent(state: AppState, event: RuntimeEvent): AppState {
             arguments: existing?.arguments ?? null,
             status: "running",
             output: existing?.output ?? null,
-            progressMessage: null,
             error: null,
-          },
-        },
-      };
-    }
-    case "tool_delta": {
-      const existing = state.toolCalls[event.tool_call_id];
-      if (!existing) return { ...state, events };
-      return {
-        ...state,
-        events,
-        toolCalls: {
-          ...state.toolCalls,
-          [event.tool_call_id]: {
-            ...existing,
-            progressMessage: event.message,
           },
         },
       };
@@ -349,7 +331,6 @@ function applyRuntimeEvent(state: AppState, event: RuntimeEvent): AppState {
             arguments: existing?.arguments ?? null,
             status: event.is_error ? "error" : "completed",
             output: event.output,
-            progressMessage: null,
             error: event.is_error ? event.output : null,
           },
         },

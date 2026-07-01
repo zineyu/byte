@@ -686,14 +686,6 @@ impl RunExecutor {
             })
             .await;
 
-        runner
-            .emit(RuntimeEventKind::ToolDelta {
-                run_id: self.run_id.clone(),
-                tool_call_id: call.id.clone(),
-                message: format!("正在执行工具 `{}`…", call.name),
-            })
-            .await;
-
         let (output, is_error) = match runner
             .services
             .tool_registry
@@ -1731,15 +1723,34 @@ mod tests {
             "should emit tool_started for {tool_name} with matching run_id and tool_call_id"
         );
 
-        if matches!(tool_name, "grep" | "find_files") {
-            assert!(
-                events.iter().any(|event| matches!(
+        let tool_events: Vec<_> = events
+            .iter()
+            .filter(|event| {
+                matches!(
                     &event.kind,
-                    RuntimeEventKind::ToolDelta { run_id: rid, tool_call_id, .. } if rid == &run_id && *tool_call_id == tool_call.id
-                )),
-                "should emit tool_delta for {tool_name}"
-            );
-        }
+                    RuntimeEventKind::ToolStarted { .. } | RuntimeEventKind::ToolFinished { .. }
+                )
+            })
+            .collect();
+        assert_eq!(
+            tool_events.len(),
+            2,
+            "tool lifecycle should be exactly ToolStarted -> ToolFinished"
+        );
+        assert!(
+            matches!(tool_events[0].kind, RuntimeEventKind::ToolStarted { .. }),
+            "first tool event should be ToolStarted"
+        );
+        assert!(
+            matches!(
+                tool_events[1].kind,
+                RuntimeEventKind::ToolFinished {
+                    is_error: false,
+                    ..
+                }
+            ),
+            "second tool event should be a successful ToolFinished"
+        );
 
         let tool_finished = events.iter().find_map(|event| match &event.kind {
             RuntimeEventKind::ToolFinished {

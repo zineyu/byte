@@ -43,7 +43,6 @@ export type ToolCallState = {
   arguments: JsonValue;
   status: "running" | "completed" | "error";
   output: string | null;
-  progressMessage: string | null;
   error: string | null;
 };
 

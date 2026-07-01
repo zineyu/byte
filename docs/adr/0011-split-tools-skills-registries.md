@@ -85,4 +85,4 @@ issue #19 要求补齐 `byte-tools`、`byte-skills` 与 `byte-core` crate 及 re
   - Workspace 中 crate 数量增加，初次构建时间略有上升。
   - MVP 中 `MvpToolRegistry` 与 `MvpSkillRegistry` 仍是单例 / 进程内实现，未解决多进程共享问题。
   - `activate_skill` 的激活状态保存在 `SessionRunner` 内存中，daemon 重启后清空，未持久化到 session 文件。
-  - `run_command` 等工具当前返回完整输出，未实现流式 `command_output` / `tool_delta`，后续扩展接口时需要谨慎保持向后兼容。
+  - `run_command` 等工具当前返回完整输出，未实现流式 `command_output`，后续扩展接口时需要谨慎保持向后兼容。

@@ -41,9 +41,6 @@ export function ToolCallCard({ toolCall }: ToolCallCardProps) {
         </span>
         <StatusIcon status={toolCall.status} />
       </div>
-      {isRunning && toolCall.progressMessage && (
-        <div className="tool-call-progress">{toolCall.progressMessage}</div>
-      )}
       {toolCall.status === "completed" && (
         <div className="tool-call-body">
           <ToolOutput

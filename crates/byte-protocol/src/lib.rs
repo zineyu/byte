@@ -410,19 +410,6 @@ impl RuntimeEventKind {
         }
     }
 
-    /// A tool call produced a progress delta.
-    pub fn tool_delta(
-        run_id: impl Into<String>,
-        tool_call_id: impl Into<String>,
-        message: impl Into<String>,
-    ) -> Self {
-        Self::ToolDelta {
-            run_id: run_id.into(),
-            tool_call_id: tool_call_id.into(),
-            message: message.into(),
-        }
-    }
-
     /// A tool call finished with output and error status.
     pub fn tool_finished(
         run_id: impl Into<String>,
@@ -530,15 +517,6 @@ pub enum RuntimeEventKind {
         tool_call_id: String,
         /// Tool name.
         name: String,
-    },
-    /// Tool call produced a progress delta.
-    ToolDelta {
-        /// Run identifier.
-        run_id: String,
-        /// Tool call identifier.
-        tool_call_id: String,
-        /// Human-readable progress message.
-        message: String,
     },
     /// Tool call finished.
     ToolFinished {

@@ -197,9 +197,7 @@ message_started
 message_delta
 message_completed
 tool_started
-tool_delta
 tool_finished
-command_output
 session_changed
 compaction_started
 compaction_finished
@@ -300,12 +298,12 @@ Failures are localized to the card and do not affect the assistant message or ru
 
 - non-interactive commands only;
 - configured `cwd`;
-- merged stdout/stderr returned on completion (streaming `command_output` events are not yet implemented);
+- merged stdout/stderr returned on completion;
 - exit code;
 - timeout;
 - cancellation.
 
-`grep` and `find_files` emit `tool_delta` runtime events with a human-readable progress message before they finish; other tools are fast enough to be atomic. Tool lifecycle events (`tool_started`, `tool_delta`, `tool_finished`) carry the active `run_id` so the UI can group them with the current run.
+Tool lifecycle events (`tool_started`, `tool_finished`) carry the active `run_id` so the UI can group them with the current run. There is no intermediate progress event; the result of every tool is delivered in `tool_finished`.
 
 ## 13. Config
 

@@ -50,14 +50,6 @@ function makeEvent(
         tool_call_id: "tc1",
         name: "read_file",
       };
-    case "tool_delta":
-      return {
-        ...base,
-        type,
-        run_id: "r1",
-        tool_call_id: "tc1",
-        message: "progress",
-      };
     case "tool_finished":
       return {
         ...base,

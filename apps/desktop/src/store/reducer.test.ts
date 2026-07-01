@@ -419,26 +419,10 @@ describe("runtime event reducer", () => {
       name: "read_file",
       status: "running",
       output: null,
-      progressMessage: null,
       error: null,
     });
 
-    const afterDelta = reducer(afterCompleted, {
-      type: "runtime_event",
-      event: {
-        sequence: 2,
-        type: "tool_delta",
-        run_id: runId,
-        tool_call_id: toolCallId,
-        message: "正在读取文件…",
-      },
-    });
-
-    expect(afterDelta.toolCalls[toolCallId].progressMessage).toBe(
-      "正在读取文件…",
-    );
-
-    const afterFinished = reducer(afterDelta, {
+    const afterFinished = reducer(afterCompleted, {
       type: "runtime_event",
       event: {
         sequence: 3,
@@ -453,7 +437,6 @@ describe("runtime event reducer", () => {
     expect(afterFinished.toolCalls[toolCallId]).toMatchObject({
       status: "completed",
       output: "fn main() {}",
-      progressMessage: null,
       error: null,
     });
   });
