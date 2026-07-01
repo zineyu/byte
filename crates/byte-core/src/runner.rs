@@ -675,10 +675,21 @@ impl RunExecutor {
     ) -> Option<()> {
         runner
             .emit(RuntimeEventKind::ToolStarted {
+                run_id: self.run_id.clone(),
                 tool_call_id: call.id.clone(),
                 name: call.name.clone(),
             })
             .await;
+
+        if let Some(message) = tool_progress_message(&call.name, &call.arguments) {
+            runner
+                .emit(RuntimeEventKind::ToolDelta {
+                    run_id: self.run_id.clone(),
+                    tool_call_id: call.id.clone(),
+                    message,
+                })
+                .await;
+        }
 
         let (output, is_error) = match runner
             .services
@@ -692,6 +703,7 @@ impl RunExecutor {
 
         runner
             .emit(RuntimeEventKind::ToolFinished {
+                run_id: self.run_id.clone(),
                 tool_call_id: call.id.clone(),
                 output: output.clone(),
                 is_error,
@@ -757,6 +769,36 @@ impl RunExecutor {
             .await;
         info!("run cancelled");
         runner.clear_active_run().await;
+    }
+}
+
+/// Builds a human-readable progress message for long-running search tools.
+/// Returns `None` for tools that are fast enough to be atomic.
+fn tool_progress_message(name: &str, arguments: &serde_json::Value) -> Option<String> {
+    match name {
+        "grep" => {
+            let pattern = arguments
+                .get("pattern")
+                .and_then(|value| value.as_str())
+                .unwrap_or("?");
+            let path = arguments
+                .get("path")
+                .and_then(|value| value.as_str())
+                .unwrap_or(".");
+            Some(format!("正在搜索匹配 `{pattern}` 的文件…（路径：{path}）"))
+        }
+        "find_files" => {
+            let pattern = arguments
+                .get("pattern")
+                .and_then(|value| value.as_str())
+                .unwrap_or("?");
+            let path = arguments
+                .get("path")
+                .and_then(|value| value.as_str())
+                .unwrap_or(".");
+            Some(format!("正在查找匹配 `{pattern}` 的文件…（路径：{path}）"))
+        }
+        _ => None,
     }
 }
 
@@ -1309,12 +1351,18 @@ mod tests {
             "third event should be message_completed with tool_calls"
         );
         assert!(
-            matches!(&run_event_kinds[3], RuntimeEventKind::ToolStarted { .. }),
-            "fourth event should be tool_started"
+            matches!(
+                &run_event_kinds[3],
+                RuntimeEventKind::ToolStarted { run_id: rid, .. } if rid == &run_id
+            ),
+            "fourth event should be tool_started with run_id"
         );
         assert!(
-            matches!(&run_event_kinds[4], RuntimeEventKind::ToolFinished { output: out, is_error: false, .. } if out == "fn main() {}"),
-            "fifth event should be tool_finished with file contents"
+            matches!(
+                &run_event_kinds[4],
+                RuntimeEventKind::ToolFinished { output: out, is_error: false, run_id: rid, .. } if out == "fn main() {}" && rid == &run_id
+            ),
+            "fifth event should be tool_finished with file contents and run_id"
         );
         assert!(
             matches!(&run_event_kinds[6], RuntimeEventKind::MessageCompleted { run_id: rid, tool_calls: None, .. } if rid == &run_id),
@@ -1677,6 +1725,7 @@ mod tests {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn run_tool_end_to_end(
         tool_name: &str,
         tool_call: byte_protocol::ToolCall,
@@ -1723,7 +1772,7 @@ mod tests {
 
         let services = RuntimeServices::new(
             Arc::new(ToolCallProvider {
-                tool_call,
+                tool_call: tool_call.clone(),
                 turn: Mutex::new(0),
             }),
             store.clone(),
@@ -1750,6 +1799,24 @@ mod tests {
             )),
             "should emit tool_started for {tool_name}"
         );
+
+        assert!(
+            events.iter().any(|event| matches!(
+                &event.kind,
+                RuntimeEventKind::ToolStarted { run_id: rid, tool_call_id, .. } if rid == &run_id && *tool_call_id == tool_call.id
+            )),
+            "should emit tool_started for {tool_name} with matching run_id and tool_call_id"
+        );
+
+        if matches!(tool_name, "grep" | "find_files") {
+            assert!(
+                events.iter().any(|event| matches!(
+                    &event.kind,
+                    RuntimeEventKind::ToolDelta { run_id: rid, tool_call_id, .. } if rid == &run_id && *tool_call_id == tool_call.id
+                )),
+                "should emit tool_delta for {tool_name}"
+            );
+        }
 
         let tool_finished = events.iter().find_map(|event| match &event.kind {
             RuntimeEventKind::ToolFinished {

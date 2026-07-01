@@ -398,20 +398,40 @@ impl RuntimeEventKind {
     }
 
     /// A tool call started.
-    pub fn tool_started(tool_call_id: impl Into<String>, name: impl Into<String>) -> Self {
+    pub fn tool_started(
+        run_id: impl Into<String>,
+        tool_call_id: impl Into<String>,
+        name: impl Into<String>,
+    ) -> Self {
         Self::ToolStarted {
+            run_id: run_id.into(),
             tool_call_id: tool_call_id.into(),
             name: name.into(),
         }
     }
 
+    /// A tool call produced a progress delta.
+    pub fn tool_delta(
+        run_id: impl Into<String>,
+        tool_call_id: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self::ToolDelta {
+            run_id: run_id.into(),
+            tool_call_id: tool_call_id.into(),
+            message: message.into(),
+        }
+    }
+
     /// A tool call finished with output and error status.
     pub fn tool_finished(
+        run_id: impl Into<String>,
         tool_call_id: impl Into<String>,
         output: impl Into<String>,
         is_error: bool,
     ) -> Self {
         Self::ToolFinished {
+            run_id: run_id.into(),
             tool_call_id: tool_call_id.into(),
             output: output.into(),
             is_error,
@@ -504,13 +524,26 @@ pub enum RuntimeEventKind {
     },
     /// Tool call started.
     ToolStarted {
+        /// Run identifier.
+        run_id: String,
         /// Tool call identifier.
         tool_call_id: String,
         /// Tool name.
         name: String,
     },
+    /// Tool call produced a progress delta.
+    ToolDelta {
+        /// Run identifier.
+        run_id: String,
+        /// Tool call identifier.
+        tool_call_id: String,
+        /// Human-readable progress message.
+        message: String,
+    },
     /// Tool call finished.
     ToolFinished {
+        /// Run identifier.
+        run_id: String,
         /// Tool call identifier.
         tool_call_id: String,
         /// Tool output.
@@ -1008,24 +1041,24 @@ mod tests {
     fn tool_lifecycle_events_roundtrip() {
         let started = RuntimeEvent {
             sequence: 12,
-            kind: RuntimeEventKind::tool_started("call-1", "read_file"),
+            kind: RuntimeEventKind::tool_started("run-1", "call-1", "read_file"),
         };
         let decoded: RuntimeEvent = decode_json_line(&encode_json_line(&started).unwrap()).unwrap();
         assert!(matches!(
             decoded.kind,
-            RuntimeEventKind::ToolStarted { tool_call_id, name }
+            RuntimeEventKind::ToolStarted { tool_call_id, name, .. }
             if tool_call_id == "call-1" && name == "read_file"
         ));
 
         let finished = RuntimeEvent {
             sequence: 13,
-            kind: RuntimeEventKind::tool_finished("call-1", "contents", false),
+            kind: RuntimeEventKind::tool_finished("run-1", "call-1", "contents", false),
         };
         let decoded: RuntimeEvent =
             decode_json_line(&encode_json_line(&finished).unwrap()).unwrap();
         assert!(matches!(
             decoded.kind,
-            RuntimeEventKind::ToolFinished { tool_call_id, output, is_error }
+            RuntimeEventKind::ToolFinished { tool_call_id, output, is_error, .. }
             if tool_call_id == "call-1" && output == "contents" && !is_error
         ));
     }

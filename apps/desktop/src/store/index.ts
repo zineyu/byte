@@ -1,4 +1,4 @@
-export { groupEvents, type EventGroup } from "./selectors";
+export { buildTimelineItems, groupEvents, type EventGroup } from "./selectors";
 export { initialState } from "./initialState";
 export { reducer } from "./reducer";
 export { useByteStore } from "./useByteStore";
@@ -11,4 +11,6 @@ export type {
   RuntimeEvent,
   RuntimeEventLogEntry,
   StoreAction,
+  TimelineItem,
+  ToolCallState,
 } from "./types";

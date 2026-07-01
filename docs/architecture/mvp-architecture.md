@@ -263,22 +263,36 @@ This means project-specific workspace skills take precedence over user-wide skil
 
 ## 11. Frontend architecture
 
-Use a three-column workbench:
+Use a two-column workbench:
 
 ```text
-┌───────────────┬────────────────────────────┬──────────────────────┐
-│ Workspace     │ Chat + Runtime Timeline    │ Tool/Diff Inspector  │
-│ Sessions      │ User input                 │ Command output       │
-│ Session tree  │ Assistant messages         │ Skill details        │
-└───────────────┴────────────────────────────┴──────────────────────┘
+┌───────────────┬────────────────────────────┐
+│ Workspace     │ Chat + Runtime Timeline    │
+│ Sessions      │ User input                 │
+│ Session tree  │ Assistant messages         │
+│               │ Inline tool result cards   │
+└───────────────┴────────────────────────────┘
 ```
+
+Tool calls are rendered as inline cards in the chat timeline, placed immediately after the assistant message that requested them. The reducer maintains `toolCalls: Record<string, ToolCallState>` from runtime events and reconstructs it from persisted `SessionView.messages` on `load_session`. A selector merges `messages` and `toolCalls` into a `timelineItems` discriminated union that the main chat view renders.
 
 React state:
 
 - load initial `AppState` / `SessionView` from daemon;
 - subscribe to runtime events;
 - apply all events through a central store reducer;
+- derive the timeline from messages and tool calls via a selector;
 - do not parse JSONL directly in React.
+
+Tool cards are typed by tool name:
+
+- `read_file`: filename header plus a `<pre>` block;
+- `list_directory`: file/directory icon list;
+- `grep`: `path:line: content` match lines plus warnings;
+- `find_files`: bulleted file path list;
+- other tools: generic argument summary and plain-text output.
+
+Failures are localized to the card and do not affect the assistant message or run status.
 
 ## 12. Command execution
 
@@ -286,12 +300,12 @@ React state:
 
 - non-interactive commands only;
 - configured `cwd`;
-- merged stdout/stderr returned on completion (streaming `command_output`/`tool_delta` events are not yet implemented);
+- merged stdout/stderr returned on completion (streaming `command_output` events are not yet implemented);
 - exit code;
 - timeout;
 - cancellation.
 
-No PTY, stdin interaction, or background process registry in MVP.
+`grep` and `find_files` emit `tool_delta` runtime events with a human-readable progress message before they finish; other tools are fast enough to be atomic. Tool lifecycle events (`tool_started`, `tool_delta`, `tool_finished`) carry the active `run_id` so the UI can group them with the current run.
 
 ## 13. Config
 

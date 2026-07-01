@@ -1,10 +1,13 @@
 import type { SessionMessage } from "../generated/SessionMessage";
 import type {
   AppState,
+  ChatMessage,
   RuntimeEvent,
   RuntimeEventLogEntry,
   StoreAction,
+  ToolCallState,
 } from "./types";
+
 // Hard cap for the in-memory runtime event log.
 const MAX_EVENTS = 64;
 
@@ -13,27 +16,7 @@ export function reducer(state: AppState, action: StoreAction): AppState {
     case "runtime_event":
       return applyRuntimeEvent(state, action.event);
     case "load_session":
-      return {
-        ...state,
-        currentSessionId: action.session.sessionId,
-        workspaceInstructions: action.session.workspaceInstructions ?? null,
-        workspaceInstructionsError:
-          action.session.workspaceInstructionsError ?? null,
-        messages: action.session.messages
-          .filter(
-            (
-              message,
-            ): message is SessionMessage & {
-              role: "developer" | "assistant";
-            } => message.role === "developer" || message.role === "assistant",
-          )
-          .map((message) => ({
-            id: message.id,
-            role: message.role,
-            content: message.content,
-            status: "completed" as const,
-          })),
-      };
+      return loadSession(state, action.session);
     case "set_sessions":
       return { ...state, sessions: action.sessions };
     case "add_session":
@@ -55,6 +38,7 @@ export function reducer(state: AppState, action: StoreAction): AppState {
         ...state,
         currentSessionId: null,
         messages: [],
+        toolCalls: {},
         runState: {
           runId: null,
           isSending: false,
@@ -98,6 +82,69 @@ export function reducer(state: AppState, action: StoreAction): AppState {
       };
   }
   return state;
+}
+
+function loadSession(
+  state: AppState,
+  session: {
+    sessionId: string;
+    workspaceInstructions: string | null;
+    workspaceInstructionsError: string | null;
+    messages: SessionMessage[];
+  },
+): AppState {
+  const toolCalls: Record<string, ToolCallState> = {};
+  const messages: ChatMessage[] = session.messages
+    .filter(
+      (
+        message,
+      ): message is SessionMessage & {
+        role: "developer" | "assistant";
+      } => message.role === "developer" || message.role === "assistant",
+    )
+    .map((message) => {
+      if (message.role === "assistant" && message.toolCalls) {
+        for (const call of message.toolCalls) {
+          toolCalls[call.id] = {
+            toolCallId: call.id,
+            messageId: message.id,
+            runId: "",
+            name: call.name,
+            arguments: call.arguments,
+            status: "running",
+            output: null,
+            progressMessage: null,
+            error: null,
+          };
+        }
+      }
+      return {
+        id: message.id,
+        role: message.role,
+        content: message.content,
+        status: "completed" as const,
+        toolCalls: message.toolCalls ?? undefined,
+      };
+    });
+
+  for (const message of session.messages) {
+    if (message.role === "tool" && message.toolCallId) {
+      const state = toolCalls[message.toolCallId];
+      if (state) {
+        state.status = "completed";
+        state.output = message.content;
+      }
+    }
+  }
+
+  return {
+    ...state,
+    currentSessionId: session.sessionId,
+    workspaceInstructions: session.workspaceInstructions ?? null,
+    workspaceInstructionsError: session.workspaceInstructionsError ?? null,
+    messages,
+    toolCalls,
+  };
 }
 
 function applyRuntimeEvent(state: AppState, event: RuntimeEvent): AppState {
@@ -176,16 +223,40 @@ function applyRuntimeEvent(state: AppState, event: RuntimeEvent): AppState {
             : message,
         ),
       };
-    case "message_completed":
+    case "message_completed": {
+      const toolCallsFromEvent =
+        event.tool_calls?.reduce<Record<string, ToolCallState>>((acc, call) => {
+          acc[call.id] = {
+            toolCallId: call.id,
+            messageId: event.message_id,
+            runId: event.run_id,
+            name: call.name,
+            arguments: call.arguments,
+            status: "running",
+            output: null,
+            progressMessage: null,
+            error: null,
+          };
+          return acc;
+        }, {}) ?? {};
       return {
         ...state,
         events,
         messages: state.messages.map((message) =>
           message.id === event.message_id
-            ? { ...message, status: "completed" as const }
+            ? {
+                ...message,
+                status: "completed" as const,
+                toolCalls: event.tool_calls ?? undefined,
+              }
             : message,
         ),
+        toolCalls: {
+          ...state.toolCalls,
+          ...toolCallsFromEvent,
+        },
       };
+    }
     case "run_finished": {
       const cancelled = event.status === "cancelled";
       const failed = event.status === "failed";
@@ -223,9 +294,84 @@ function applyRuntimeEvent(state: AppState, event: RuntimeEvent): AppState {
             : message,
         ),
       };
-    case "tool_started":
-    case "tool_finished":
+    case "tool_started": {
+      const existing = state.toolCalls[event.tool_call_id];
+      const messageId =
+        existing?.messageId ??
+        findMessageIdForToolCall(state.messages, event.tool_call_id) ??
+        "";
+      return {
+        ...state,
+        events,
+        toolCalls: {
+          ...state.toolCalls,
+          [event.tool_call_id]: {
+            toolCallId: event.tool_call_id,
+            messageId,
+            runId: event.run_id,
+            name: event.name,
+            arguments: existing?.arguments ?? null,
+            status: "running",
+            output: existing?.output ?? null,
+            progressMessage: null,
+            error: null,
+          },
+        },
+      };
+    }
+    case "tool_delta": {
+      const existing = state.toolCalls[event.tool_call_id];
+      if (!existing) return { ...state, events };
+      return {
+        ...state,
+        events,
+        toolCalls: {
+          ...state.toolCalls,
+          [event.tool_call_id]: {
+            ...existing,
+            progressMessage: event.message,
+          },
+        },
+      };
+    }
+    case "tool_finished": {
+      const existing = state.toolCalls[event.tool_call_id];
+      return {
+        ...state,
+        events,
+        toolCalls: {
+          ...state.toolCalls,
+          [event.tool_call_id]: {
+            toolCallId: event.tool_call_id,
+            messageId: existing?.messageId ?? "",
+            runId: event.run_id,
+            name: existing?.name ?? "工具",
+            arguments: existing?.arguments ?? null,
+            status: event.is_error ? "error" : "completed",
+            output: event.output,
+            progressMessage: null,
+            error: event.is_error ? event.output : null,
+          },
+        },
+      };
+    }
     case "session_changed":
       return { ...state, events };
   }
+}
+
+function findMessageIdForToolCall(
+  messages: ChatMessage[],
+  toolCallId: string,
+): string | undefined {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (
+      message.role === "assistant" &&
+      message.toolCalls?.some((call) => call.id === toolCallId)
+    ) {
+      return message.id;
+    }
+  }
+  return undefined;
 }

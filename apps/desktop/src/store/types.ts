@@ -1,7 +1,9 @@
 import type { DaemonConnectionView as GeneratedDaemonConnectionView } from "../generated/DaemonConnectionView";
+import type { JsonValue } from "../generated/serde_json/JsonValue";
 import type { RuntimeEvent as GeneratedRuntimeEvent } from "../generated/RuntimeEvent";
 import type { SessionSummary } from "../generated/SessionSummary";
 import type { SessionView } from "../generated/SessionView";
+import type { ToolCall } from "../generated/ToolCall";
 
 export type LoadState = "loading" | "ready" | "error";
 
@@ -30,6 +32,19 @@ export type ChatMessage = {
   content: string;
   status: "streaming" | "completed" | "error";
   error?: string;
+  toolCalls?: ToolCall[];
+};
+
+export type ToolCallState = {
+  toolCallId: string;
+  messageId: string;
+  runId: string;
+  name: string;
+  arguments: JsonValue;
+  status: "running" | "completed" | "error";
+  output: string | null;
+  progressMessage: string | null;
+  error: string | null;
 };
 
 export type ChatRunState = {
@@ -46,10 +61,25 @@ export type AppState = {
   sessions: SessionSummary[];
   currentSessionId: string | null;
   messages: ChatMessage[];
+  toolCalls: Record<string, ToolCallState>;
   runState: ChatRunState;
   workspaceInstructions: string | null;
   workspaceInstructionsError: string | null;
 };
+
+export type TimelineMessageItem = {
+  type: "message";
+  id: string;
+  message: ChatMessage;
+};
+
+export type TimelineToolCallItem = {
+  type: "tool_call";
+  id: string;
+  toolCallId: string;
+};
+
+export type TimelineItem = TimelineMessageItem | TimelineToolCallItem;
 
 export type StoreAction =
   | { type: "runtime_event"; event: RuntimeEvent }

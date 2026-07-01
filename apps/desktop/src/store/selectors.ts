@@ -1,4 +1,4 @@
-import type { RuntimeEventLogEntry } from "./types";
+import type { ChatMessage, RuntimeEventLogEntry, TimelineItem } from "./types";
 
 export type EventGroup = {
   event: RuntimeEventLogEntry;
@@ -27,4 +27,21 @@ export function groupEvents(events: RuntimeEventLogEntry[]): EventGroup[] {
     result.push({ event, count: 1 });
   }
   return result;
+}
+
+export function buildTimelineItems(messages: ChatMessage[]): TimelineItem[] {
+  const items: TimelineItem[] = [];
+  for (const message of messages) {
+    items.push({ type: "message", id: message.id, message });
+    if (message.role === "assistant" && message.toolCalls) {
+      for (const call of message.toolCalls) {
+        items.push({
+          type: "tool_call",
+          id: `tool-${call.id}`,
+          toolCallId: call.id,
+        });
+      }
+    }
+  }
+  return items;
 }

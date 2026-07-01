@@ -86,13 +86,33 @@ message_id: string,
  */
 tool_calls: Array<ToolCall> | null, } } | { "tool_started": { 
 /**
+ * Run identifier.
+ */
+run_id: string, 
+/**
  * Tool call identifier.
  */
 tool_call_id: string, 
 /**
  * Tool name.
  */
-name: string, } } | { "tool_finished": { 
+name: string, } } | { "tool_delta": { 
+/**
+ * Run identifier.
+ */
+run_id: string, 
+/**
+ * Tool call identifier.
+ */
+tool_call_id: string, 
+/**
+ * Human-readable progress message.
+ */
+message: string, } } | { "tool_finished": { 
+/**
+ * Run identifier.
+ */
+run_id: string, 
 /**
  * Tool call identifier.
  */

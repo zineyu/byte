@@ -17,7 +17,13 @@ import type { DaemonConnectionView } from "./generated/DaemonConnectionView";
 import type { SessionSummary } from "./generated/SessionSummary";
 import type { SessionView } from "./generated/SessionView";
 import { open } from "@tauri-apps/plugin-dialog";
-import { useByteStore, type ChatRunState, type RuntimeEvent } from "./store";
+import { ToolCallCard } from "./ToolCallCard";
+import {
+  useByteStore,
+  buildTimelineItems,
+  type ChatRunState,
+  type RuntimeEvent,
+} from "./store";
 
 function sessionTitle(session: SessionSummary): string {
   if (session.workspace) {
@@ -59,10 +65,13 @@ export default function App() {
     sessions,
     currentSessionId,
     messages,
+    toolCalls,
     runState,
     workspaceInstructions,
     workspaceInstructionsError,
   } = state;
+
+  const timelineItems = buildTimelineItems(messages);
 
   const refreshDaemonState = useCallback(async () => {
     setLoadState("loading");
@@ -418,34 +427,41 @@ export default function App() {
               />
             )}
             <div className="chat-messages">
-              {messages.map((message) => (
-                <div
-                  key={message.id}
-                  className={`chat-message chat-message--${message.role}`}
-                >
-                  <div className="chat-message__avatar" aria-hidden="true">
-                    {message.role === "developer" ? (
-                      <User size={16} strokeWidth={2} />
-                    ) : (
-                      <Bot size={18} strokeWidth={2} />
-                    )}
-                  </div>
-                  <div className="chat-message__body">
-                    <div className="chat-message__content">
-                      {message.content ||
-                        (message.status === "streaming" ? "…" : "")}
-                      {message.status === "streaming" && (
-                        <span className="chat-cursor" aria-hidden="true" />
+              {timelineItems.map((item) =>
+                item.type === "message" ? (
+                  <div
+                    key={item.id}
+                    className={`chat-message chat-message--${item.message.role}`}
+                  >
+                    <div className="chat-message__avatar" aria-hidden="true">
+                      {item.message.role === "developer" ? (
+                        <User size={16} strokeWidth={2} />
+                      ) : (
+                        <Bot size={18} strokeWidth={2} />
                       )}
                     </div>
-                    {message.status === "error" && (
-                      <div className="chat-message__error" role="alert">
-                        {message.error ?? "出错了"}
+                    <div className="chat-message__body">
+                      <div className="chat-message__content">
+                        {item.message.content ||
+                          (item.message.status === "streaming" ? "…" : "")}
+                        {item.message.status === "streaming" && (
+                          <span className="chat-cursor" aria-hidden="true" />
+                        )}
                       </div>
-                    )}
+                      {item.message.status === "error" && (
+                        <div className="chat-message__error" role="alert">
+                          {item.message.error ?? "出错了"}
+                        </div>
+                      )}
+                    </div>
                   </div>
-                </div>
-              ))}
+                ) : (
+                  <ToolCallCard
+                    key={item.id}
+                    toolCall={toolCalls[item.toolCallId]}
+                  />
+                ),
+              )}
             </div>
 
             <div className="input-card chat-input-card">

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { groupEvents } from "./selectors";
-import type { RuntimeEventLogEntry } from "./types";
+import { buildTimelineItems, groupEvents } from "./selectors";
+import type { ChatMessage, RuntimeEventLogEntry } from "./types";
 
 function makeEvent(
   type: RuntimeEventLogEntry["type"],
@@ -43,11 +43,26 @@ function makeEvent(
         tool_calls: null,
       };
     case "tool_started":
-      return { ...base, type, tool_call_id: "tc1", name: "read_file" };
+      return {
+        ...base,
+        type,
+        run_id: "r1",
+        tool_call_id: "tc1",
+        name: "read_file",
+      };
+    case "tool_delta":
+      return {
+        ...base,
+        type,
+        run_id: "r1",
+        tool_call_id: "tc1",
+        message: "progress",
+      };
     case "tool_finished":
       return {
         ...base,
         type,
+        run_id: "r1",
         tool_call_id: "tc1",
         output: "ok",
         is_error: false,
@@ -60,6 +75,79 @@ function makeEvent(
       return { ...base, type, session_id: "s1", action: "created" };
   }
 }
+
+describe("buildTimelineItems", () => {
+  it("returns message items for messages without tool calls", () => {
+    const messages: ChatMessage[] = [
+      { id: "m1", role: "developer", content: "hi", status: "completed" },
+      { id: "m2", role: "assistant", content: "hello", status: "completed" },
+    ];
+
+    const items = buildTimelineItems(messages);
+
+    expect(items).toHaveLength(2);
+    expect(items[0]).toEqual({
+      type: "message",
+      id: "m1",
+      message: messages[0],
+    });
+    expect(items[1]).toEqual({
+      type: "message",
+      id: "m2",
+      message: messages[1],
+    });
+  });
+
+  it("inserts tool_call items after the assistant message that requested them", () => {
+    const messages: ChatMessage[] = [
+      {
+        id: "m1",
+        role: "assistant",
+        content: "I'll search",
+        status: "completed",
+        toolCalls: [{ id: "tc1", name: "grep", arguments: { pattern: "foo" } }],
+      },
+    ];
+
+    const items = buildTimelineItems(messages);
+
+    expect(items).toHaveLength(2);
+    expect(items[0].type).toBe("message");
+    expect(items[1]).toEqual({
+      type: "tool_call",
+      id: "tool-tc1",
+      toolCallId: "tc1",
+    });
+  });
+
+  it("preserves order across multiple assistant messages with tool calls", () => {
+    const messages: ChatMessage[] = [
+      { id: "m1", role: "developer", content: "a", status: "completed" },
+      {
+        id: "m2",
+        role: "assistant",
+        content: "b",
+        status: "completed",
+        toolCalls: [{ id: "tc1", name: "read_file", arguments: { path: "a" } }],
+      },
+      { id: "m3", role: "assistant", content: "c", status: "completed" },
+    ];
+
+    const items = buildTimelineItems(messages);
+
+    expect(items.map((item) => item.type)).toEqual([
+      "message",
+      "message",
+      "tool_call",
+      "message",
+    ]);
+    expect(items[2]).toEqual({
+      type: "tool_call",
+      id: "tool-tc1",
+      toolCallId: "tc1",
+    });
+  });
+});
 
 describe("groupEvents", () => {
   it("returns events as singleton groups by default", () => {

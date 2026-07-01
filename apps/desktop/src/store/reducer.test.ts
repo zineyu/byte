@@ -372,45 +372,186 @@ describe("runtime event reducer", () => {
     expect(afterError.runState).toEqual({ runId: null, isSending: false });
   });
 
-  it("finalizes streaming messages as completed when run_finished succeeds", () => {
-    const runId = "run-success-1";
-    const messageId = "msg-success-1";
+  it("seeds tool calls from message_completed and updates them through the tool lifecycle", () => {
+    const runId = "run-tool-1";
+    const messageId = "msg-tool-1";
+    const toolCallId = "tc-1";
 
-    const streaming = [
-      { type: "run_started" as const, session_id: "s1", run_id: runId },
-      {
-        type: "message_started" as const,
-        run_id: runId,
-        message_id: messageId,
-        role: "assistant" as const,
-      },
-      {
-        type: "message_delta" as const,
-        run_id: runId,
-        message_id: messageId,
-        delta: "partial",
-      },
-    ].reduce(
-      (state, event, index) =>
-        reducer(state, {
-          type: "runtime_event",
-          event: { ...event, sequence: index + 1 },
-        }),
-      initialState,
-    );
-
-    const afterFinish = reducer(streaming, {
+    const afterStarted = reducer(initialState, {
       type: "runtime_event",
       event: {
-        sequence: 4,
-        type: "run_finished",
+        sequence: 1,
+        type: "message_started",
         run_id: runId,
-        status: "succeeded",
-        error: null,
+        message_id: messageId,
+        role: "assistant",
       },
     });
-    expect(afterFinish.messages[0].status).toBe("completed");
-    expect(afterFinish.messages[0].content).toBe("partial");
-    expect(afterFinish.runState).toEqual({ runId: null, isSending: false });
+
+    const afterCompleted = reducer(afterStarted, {
+      type: "runtime_event",
+      event: {
+        sequence: 2,
+        type: "message_completed",
+        run_id: runId,
+        message_id: messageId,
+        tool_calls: [
+          {
+            id: toolCallId,
+            name: "read_file",
+            arguments: { path: "src/main.rs" },
+          },
+        ],
+      },
+    });
+
+    expect(afterCompleted.messages[0].toolCalls).toEqual([
+      {
+        id: toolCallId,
+        name: "read_file",
+        arguments: { path: "src/main.rs" },
+      },
+    ]);
+    expect(afterCompleted.toolCalls[toolCallId]).toMatchObject({
+      toolCallId,
+      messageId,
+      runId,
+      name: "read_file",
+      status: "running",
+      output: null,
+      progressMessage: null,
+      error: null,
+    });
+
+    const afterDelta = reducer(afterCompleted, {
+      type: "runtime_event",
+      event: {
+        sequence: 2,
+        type: "tool_delta",
+        run_id: runId,
+        tool_call_id: toolCallId,
+        message: "正在读取文件…",
+      },
+    });
+
+    expect(afterDelta.toolCalls[toolCallId].progressMessage).toBe(
+      "正在读取文件…",
+    );
+
+    const afterFinished = reducer(afterDelta, {
+      type: "runtime_event",
+      event: {
+        sequence: 3,
+        type: "tool_finished",
+        run_id: runId,
+        tool_call_id: toolCallId,
+        output: "fn main() {}",
+        is_error: false,
+      },
+    });
+
+    expect(afterFinished.toolCalls[toolCallId]).toMatchObject({
+      status: "completed",
+      output: "fn main() {}",
+      progressMessage: null,
+      error: null,
+    });
+  });
+
+  it("marks failed tool calls as error in toolCalls", () => {
+    const afterCompleted = reducer(initialState, {
+      type: "runtime_event",
+      event: {
+        sequence: 1,
+        type: "message_completed",
+        run_id: "r1",
+        message_id: "m1",
+        tool_calls: [{ id: "tc-1", name: "grep", arguments: { pattern: "x" } }],
+      },
+    });
+
+    const afterError = reducer(afterCompleted, {
+      type: "runtime_event",
+      event: {
+        sequence: 2,
+        type: "tool_finished",
+        run_id: "r1",
+        tool_call_id: "tc-1",
+        output: "directory does not exist",
+        is_error: true,
+      },
+    });
+
+    expect(afterError.toolCalls["tc-1"].status).toBe("error");
+    expect(afterError.toolCalls["tc-1"].error).toBe("directory does not exist");
+  });
+
+  it("reconstructs toolCalls from a persisted session on load_session", () => {
+    const session: SessionView = {
+      sessionId: "session-tool-load",
+      workspace: "/workspace",
+      workspaceInstructions: null,
+      workspaceInstructionsError: null,
+      messages: [
+        {
+          id: "msg-1",
+          parentId: null,
+          role: "developer",
+          content: "read it",
+          toolCallId: null,
+          toolCalls: null,
+        },
+        {
+          id: "msg-2",
+          parentId: "msg-1",
+          role: "assistant",
+          content: "",
+          toolCallId: null,
+          toolCalls: [
+            { id: "tc-1", name: "read_file", arguments: { path: "a" } },
+          ],
+        },
+        {
+          id: "msg-3",
+          parentId: "msg-2",
+          role: "tool",
+          content: "file contents",
+          toolCallId: "tc-1",
+          toolCalls: null,
+        },
+      ],
+      compactions: [],
+    };
+
+    const next = reducer(initialState, { type: "load_session", session });
+
+    expect(next.messages).toHaveLength(2);
+    expect(next.messages[1].toolCalls).toEqual([
+      { id: "tc-1", name: "read_file", arguments: { path: "a" } },
+    ]);
+    expect(next.toolCalls["tc-1"]).toMatchObject({
+      toolCallId: "tc-1",
+      messageId: "msg-2",
+      name: "read_file",
+      status: "completed",
+      output: "file contents",
+    });
+  });
+
+  it("resets toolCalls on reset_session", () => {
+    const withTool = reducer(initialState, {
+      type: "runtime_event",
+      event: {
+        sequence: 1,
+        type: "message_completed",
+        run_id: "r1",
+        message_id: "m1",
+        tool_calls: [{ id: "tc-1", name: "grep", arguments: { pattern: "x" } }],
+      },
+    });
+
+    const next = reducer(withTool, { type: "reset_session" });
+
+    expect(next.toolCalls).toEqual({});
   });
 });

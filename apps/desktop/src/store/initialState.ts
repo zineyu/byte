@@ -13,6 +13,7 @@ export const initialState: AppState = {
   sessions: [],
   currentSessionId: null,
   messages: [],
+  toolCalls: {},
   runState: {
     runId: null,
     isSending: false,
