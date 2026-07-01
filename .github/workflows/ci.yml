@@ -123,6 +123,26 @@ jobs:
             echo "::notice::No root Cargo.toml found; skipping Rust gates until the workspace is added."
           fi
 
+      - name: Install Tauri Linux dependencies
+        if: steps.rust.outputs.present == 'true'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev \
+            build-essential \
+            curl \
+            wget \
+            libssl-dev \
+            libglib2.0-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            pkg-config
+
       - name: Set up Rust toolchain
         if: steps.rust.outputs.present == 'true'
         uses: dtolnay/rust-toolchain@stable

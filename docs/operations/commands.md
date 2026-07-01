@@ -59,3 +59,27 @@ Note: on the current development machine, Tauri needs the dynamic loader path:
 ```bash
 LD_LIBRARY_PATH=/usr/lib pnpm run tauri:dev
 ```
+
+## Linux system dependencies
+
+Tauri's Rust side links against GTK, WebKitGTK, and related system libraries. On Debian/Ubuntu, install the development packages before building:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y \
+  libwebkit2gtk-4.1-dev \
+  libjavascriptcoregtk-4.1-dev \
+  libsoup-3.0-dev \
+  build-essential \
+  curl \
+  wget \
+  libssl-dev \
+  libglib2.0-dev \
+  libgtk-3-dev \
+  libayatana-appindicator3-dev \
+  librsvg2-dev \
+  patchelf \
+  pkg-config
+```
+
+These packages are also installed by the `rust` and `package-desktop` GitHub Actions jobs.
