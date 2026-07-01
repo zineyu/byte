@@ -5,9 +5,10 @@ use std::time::Duration;
 use byte_models::{ProviderError, ProviderEvent, ProviderStream};
 use byte_protocol::{
     ActivatedSkill, CancelRunResult, CompactionSummary, MessageRole, RunMessage, RunStatus,
-    RuntimeEventKind, SendMessageParams, SessionContext, SessionMessage, ToolCall, ToolDefinition,
+    RuntimeEventKind, SendMessageParams, SessionContext, SessionMessage, ToolCall,
 };
 use byte_session::SessionError;
+use byte_skills::SkillError;
 use byte_tools::AllowAllPolicy;
 use futures::StreamExt;
 use tokio::sync::Mutex;
@@ -256,23 +257,6 @@ impl SessionRunner {
     async fn clear_active_run(&self) {
         *self.active_run.lock().await = None;
     }
-
-    /// Emit error and finished events for a failed run.
-    #[instrument(skip_all, fields(run_id))]
-    async fn emit_run_error(&self, run_id: &RunId, message: String) {
-        error!(%run_id, %message, "run failed");
-        self.emit(RuntimeEventKind::Error {
-            run_id: Some(run_id.to_owned()),
-            message: message.clone(),
-        })
-        .await;
-        self.emit(RuntimeEventKind::RunFinished {
-            run_id: run_id.to_owned(),
-            status: RunStatus::Failed,
-            error: Some(message),
-        })
-        .await;
-    }
 }
 
 /// One-shot executor for a single provider run.
@@ -295,18 +279,84 @@ struct RunExecutor {
     cancel_token: CancellationToken,
 }
 
+/// Errors that can occur inside a run after it has started.
+#[derive(Debug, thiserror::Error)]
+enum RunError {
+    /// An error originating from the session store.
+    #[error(transparent)]
+    SessionStore(#[from] SessionError),
+    /// An error originating from the skill registry.
+    #[error(transparent)]
+    SkillRegistry(#[from] SkillError),
+    /// An error originating from the model provider.
+    #[error(transparent)]
+    Provider(#[from] ProviderError),
+    /// Any other fatal run error.
+    #[error("{0}")]
+    Other(String),
+}
+
+/// The final result of a run.
+#[derive(Debug)]
+enum RunOutcome {
+    /// The run completed with an assistant response.
+    Succeeded,
+    /// The run was cancelled by the user.
+    Cancelled {
+        /// Whether to emit a `RunCancelled` event before `RunFinished`.
+        emit_event: bool,
+    },
+}
+
 /// Mutable state carried through a single provider response stream.
-struct StreamState<'a> {
+#[derive(Debug)]
+struct StreamState {
     /// Optional id for the assistant message being built.
-    message_id: &'a mut Option<String>,
+    message_id: Option<String>,
     /// Accumulated assistant message content.
-    assistant_content: &'a mut String,
+    assistant_content: String,
     /// Tool calls extracted from the stream.
-    tool_calls: &'a mut Option<Vec<ToolCall>>,
+    tool_calls: Option<Vec<ToolCall>>,
     /// Whether the stream has produced a complete response.
-    completed: &'a mut bool,
+    completed: bool,
+    /// Whether the stream has produced a `MessageStarted` event.
+    saw_message: bool,
     /// Buffer for small provider deltas.
-    delta_buffer: &'a mut DeltaBuffer,
+    delta_buffer: DeltaBuffer,
+}
+
+impl StreamState {
+    /// Create a fresh stream state with the given delta buffer threshold.
+    const fn new(threshold: usize) -> Self {
+        Self {
+            message_id: None,
+            assistant_content: String::new(),
+            tool_calls: None,
+            completed: false,
+            saw_message: false,
+            delta_buffer: DeltaBuffer::new(threshold),
+        }
+    }
+}
+
+/// Result of consuming one provider stream.
+#[derive(Debug)]
+enum StreamOutcome {
+    /// The stream produced a complete assistant message.
+    Assistant(AssistantOutcome),
+    /// The stream was cancelled while a message was in flight.
+    Cancelled,
+}
+
+/// The assistant message produced by a single provider stream.
+#[derive(Debug)]
+struct AssistantOutcome {
+    /// Accumulated assistant message content.
+    content: String,
+    /// Tool calls extracted from the stream, if any.
+    tool_calls: Option<Vec<ToolCall>>,
+    /// Whether the stream produced a `MessageStarted` event.
+    saw_message: bool,
 }
 
 impl RunExecutor {
@@ -317,6 +367,60 @@ impl RunExecutor {
         let _ = tracing::Span::current().record("session_id", &self.session_id);
         info!("starting run");
 
+        let outcome = self.run_inner(&runner).await;
+        runner.clear_active_run().await;
+
+        match outcome {
+            Ok(RunOutcome::Succeeded) => {
+                info!("run finished successfully");
+                runner
+                    .emit(RuntimeEventKind::RunFinished {
+                        run_id: self.run_id.clone(),
+                        status: RunStatus::Succeeded,
+                        error: None,
+                    })
+                    .await;
+            }
+            Ok(RunOutcome::Cancelled { emit_event }) => {
+                if emit_event {
+                    runner
+                        .emit(RuntimeEventKind::RunCancelled {
+                            run_id: self.run_id.clone(),
+                        })
+                        .await;
+                }
+                info!("run cancelled");
+                runner
+                    .emit(RuntimeEventKind::RunFinished {
+                        run_id: self.run_id.clone(),
+                        status: RunStatus::Cancelled,
+                        error: None,
+                    })
+                    .await;
+            }
+            Err(error) => {
+                let message = error.to_string();
+                error!(%self.run_id, %message, "run failed");
+                runner
+                    .emit(RuntimeEventKind::Error {
+                        run_id: Some(self.run_id.clone()),
+                        message: message.clone(),
+                    })
+                    .await;
+                runner
+                    .emit(RuntimeEventKind::RunFinished {
+                        run_id: self.run_id.clone(),
+                        status: RunStatus::Failed,
+                        error: Some(message),
+                    })
+                    .await;
+            }
+        }
+    }
+
+    /// Run the conversation loop until the run succeeds, is cancelled, or
+    /// encounters a fatal error.
+    async fn run_inner(&self, runner: &Arc<SessionRunner>) -> Result<RunOutcome, RunError> {
         runner
             .emit(RuntimeEventKind::RunStarted {
                 session_id: self.session_id.clone(),
@@ -324,15 +428,20 @@ impl RunExecutor {
             })
             .await;
 
-        let Some(session_ctx) = self.load_session_context(&runner).await else {
-            return;
+        let view = runner.services.store.load_session(&self.session_id).await?;
+        let session_ctx = SessionContext {
+            session_id: Some(self.session_id.clone()),
+            workspace_root: PathBuf::from(view.workspace),
         };
+
+        let available_skills = runner
+            .services
+            .skill_registry
+            .catalog(Some(session_ctx.workspace_root.as_path()))
+            .await?;
 
         let tools = runner.services.tool_registry.definitions();
         let active_skills = runner.active_skills.lock().await.clone();
-        let Some(available_skills) = self.load_available_skills(&runner, &session_ctx).await else {
-            return;
-        };
         let prompt_context = PromptContext {
             user_message: self.message.clone(),
             history: self.history.clone(),
@@ -343,16 +452,15 @@ impl RunExecutor {
             workspace_instructions: self.workspace_instructions.clone(),
         };
         let mut messages = PromptBuilder::new().build(prompt_context);
-        let mut turn_messages: Vec<RunMessage> = Vec::new();
-        // ID of the most recently persisted entry in this run. Used to chain
-        // assistant messages and tool results into a single linear history.
         let mut last_entry_id = self.developer_message_id.clone();
+        let mut turn_messages: Vec<RunMessage> = Vec::new();
         let mut saw_message = false;
 
         loop {
             if self.cancel_token.is_cancelled() {
-                self.finish_cancelled(&runner, saw_message).await;
-                return;
+                return Ok(RunOutcome::Cancelled {
+                    emit_event: saw_message,
+                });
             }
 
             if !turn_messages.is_empty() {
@@ -361,152 +469,77 @@ impl RunExecutor {
                 messages.extend(turn_messages);
                 turn_messages = Vec::new();
             }
+
             // Rebuild the system prompt on every turn so skills activated
             // mid-run are reflected in subsequent provider requests. Available
             // skills are cached from the initial turn; they are stable for a run.
             let tools = runner.services.tool_registry.definitions();
             let active_skills = runner.active_skills.lock().await.clone();
-            let available_skills = available_skills.clone();
             if !messages.is_empty() && messages[0].role == MessageRole::System {
                 messages[0].content =
                     PromptBuilder::build_system_prompt(&tools, &active_skills, &available_skills);
             }
-            let Some(mut stream) = self
-                .request_provider_stream(&runner, messages.clone(), tools)
-                .await
-            else {
-                return;
-            };
 
-            let Some((assistant_content, tool_calls)) = self
-                .process_provider_stream(&runner, &mut stream, &mut last_entry_id, &mut saw_message)
-                .await
-            else {
-                return;
-            };
+            let stream = runner
+                .services
+                .provider
+                .send_message(messages.clone(), tools)
+                .await?;
 
-            let Some(calls) = tool_calls else {
-                self.finish_succeeded(&runner).await;
-                return;
+            let outcome = self
+                .consume_provider_stream(runner, stream, &mut last_entry_id)
+                .await?;
+
+            let assistant = match outcome {
+                StreamOutcome::Assistant(assistant) => assistant,
+                StreamOutcome::Cancelled => {
+                    return Ok(RunOutcome::Cancelled { emit_event: false });
+                }
+            };
+            saw_message |= assistant.saw_message;
+
+            let Some(calls) = assistant.tool_calls else {
+                return Ok(RunOutcome::Succeeded);
             };
 
             if self.cancel_token.is_cancelled() {
-                self.finish_cancelled(&runner, true).await;
-                return;
+                return Ok(RunOutcome::Cancelled { emit_event: true });
             }
 
             turn_messages.push(RunMessage {
                 role: MessageRole::Assistant,
-                content: assistant_content,
+                content: assistant.content,
                 tool_call_id: None,
                 tool_calls: Some(calls.clone()),
             });
 
             for call in calls {
-                if self
-                    .execute_tool_call(
-                        &runner,
-                        &call,
-                        &session_ctx,
-                        &mut last_entry_id,
-                        &mut turn_messages,
-                    )
-                    .await
-                    .is_none()
-                {
-                    return;
-                }
-            }
-        }
-    }
-
-    /// Loads the available skill catalog for the current workspace.
-    /// Returns `None` after emitting a run error and clearing the active run.
-    async fn load_available_skills(
-        &self,
-        runner: &Arc<SessionRunner>,
-        session_ctx: &SessionContext,
-    ) -> Option<Vec<byte_protocol::SkillEntry>> {
-        match runner
-            .services
-            .skill_registry
-            .catalog(Some(session_ctx.workspace_root.as_path()))
-            .await
-        {
-            Ok(skills) => Some(skills),
-            Err(error) => {
-                error!(%error, "failed to load skill catalog");
-                runner
-                    .emit_run_error(
-                        &self.run_id,
-                        format!("failed to load skill catalog: {error}"),
-                    )
-                    .await;
-                runner.clear_active_run().await;
-                None
-            }
-        }
-    }
-
-    /// Loads the session view and builds the runtime context for tool calls.
-    /// Returns `None` after emitting a run error and clearing the active run.
-    async fn load_session_context(&self, runner: &Arc<SessionRunner>) -> Option<SessionContext> {
-        match runner.services.store.load_session(&self.session_id).await {
-            Ok(view) => Some(SessionContext {
-                session_id: Some(self.session_id.clone()),
-                workspace_root: PathBuf::from(view.workspace),
-            }),
-            Err(error) => {
-                error!(%error, "failed to load session view");
-                runner.emit_run_error(&self.run_id, error.to_string()).await;
-                runner.clear_active_run().await;
-                None
-            }
-        }
-    }
-
-    /// Sends the current conversation to the provider and returns the response
-    /// stream, or `None` after emitting a run error and clearing the active run.
-    async fn request_provider_stream(
-        &self,
-        runner: &Arc<SessionRunner>,
-        messages: Vec<RunMessage>,
-        tools: Vec<ToolDefinition>,
-    ) -> Option<ProviderStream> {
-        match runner.services.provider.send_message(messages, tools).await {
-            Ok(stream) => Some(stream),
-            Err(error) => {
-                error!(%error, "provider request failed");
-                runner.emit_run_error(&self.run_id, error.to_string()).await;
-                runner.clear_active_run().await;
-                None
+                let tool_result = self
+                    .execute_tool_call(runner, &call, &session_ctx, &mut last_entry_id)
+                    .await?;
+                turn_messages.push(tool_result);
             }
         }
     }
 
     /// Consumes a provider stream, emits message lifecycle events, persists the
-    /// assistant message, and returns its content plus any tool calls. Returns
-    /// `None` if the run finished (success, cancellation, or error) inside the
-    /// stream loop.
-    async fn process_provider_stream(
+    /// assistant message, and returns the assistant outcome. Returns
+    /// `StreamOutcome::Cancelled` when the run is cancelled while a message is
+    /// in flight.
+    async fn consume_provider_stream(
         &self,
         runner: &Arc<SessionRunner>,
-        stream: &mut ProviderStream,
+        mut stream: ProviderStream,
         last_entry_id: &mut String,
-        saw_message: &mut bool,
-    ) -> Option<(String, Option<Vec<ToolCall>>)> {
-        let mut message_id: Option<String> = None;
-        let mut assistant_content = String::new();
-        let mut tool_calls: Option<Vec<ToolCall>> = None;
-        let mut completed = false;
-        let mut delta_buffer = DeltaBuffer::new(8);
+    ) -> Result<StreamOutcome, RunError> {
+        let mut state = StreamState::new(8);
 
         loop {
             tokio::select! {
                 biased;
                 () = self.cancel_token.cancelled() => {
-                    if let Some(id) = message_id.as_ref() {
-                        if let Some(flush) = delta_buffer.flush() {
+                    if let Some(id) = state.message_id.as_ref() {
+                        if let Some(flush) = state.delta_buffer.flush() {
                             runner.emit(RuntimeEventKind::MessageDelta {
                                 run_id: self.run_id.clone(),
                                 message_id: id.clone(),
@@ -517,64 +550,54 @@ impl RunExecutor {
                             run_id: self.run_id.clone(),
                         }).await;
                     }
-                    self.finish_cancelled(runner, false).await;
-                    return None;
+                    return Ok(StreamOutcome::Cancelled);
                 }
                 maybe_event = stream.next() => {
-                    if let Some(event) = maybe_event {
-                        self.handle_provider_event(
-                            runner,
-                            event,
-                            &mut StreamState {
-                                message_id: &mut message_id,
-                                assistant_content: &mut assistant_content,
-                                tool_calls: &mut tool_calls,
-                                completed: &mut completed,
-                                delta_buffer: &mut delta_buffer,
-                            },
-                            last_entry_id,
-                            saw_message,
-                        )
-                        .await?;
-                    } else {
-                        break;
+                    match maybe_event {
+                        Some(event) => {
+                            self.handle_provider_event(
+                                runner,
+                                event?,
+                                &mut state,
+                                last_entry_id,
+                            ).await?;
+                        }
+                        None => break,
                     }
                 }
             }
         }
 
-        if !completed {
-            runner
-                .emit_run_error(
-                    &self.run_id,
-                    "provider stream ended without completing the assistant message".into(),
-                )
-                .await;
-            runner.clear_active_run().await;
-            return None;
+        if !state.completed {
+            return Err(RunError::Other(
+                "provider stream ended without completing the assistant message".into(),
+            ));
         }
 
-        Some((assistant_content, tool_calls))
+        Ok(StreamOutcome::Assistant(AssistantOutcome {
+            content: state.assistant_content,
+            tool_calls: state.tool_calls,
+            saw_message: state.saw_message,
+        }))
     }
 
     /// Handles a single provider event inside the stream loop. Updates the
-    /// per-turn state and returns `None` when the run should finish.
+    /// per-turn state and returns an error when the run should finish.
     async fn handle_provider_event(
         &self,
         runner: &Arc<SessionRunner>,
-        event: Result<ProviderEvent, ProviderError>,
-        state: &mut StreamState<'_>,
+        event: ProviderEvent,
+        state: &mut StreamState,
         last_entry_id: &mut String,
-        saw_message: &mut bool,
-    ) -> Option<()> {
+    ) -> Result<(), RunError> {
         match event {
-            Ok(ProviderEvent::MessageStarted { message_id: id }) => {
+            ProviderEvent::MessageStarted { message_id: id } => {
                 debug!(message_id = %id, "assistant message started");
-                *saw_message = true;
+                state.saw_message = true;
                 state.message_id.clone_from(&Some(id.clone()));
                 state.assistant_content.clear();
-                *state.tool_calls = None;
-                *state.completed = false;
+                state.tool_calls = None;
+                state.completed = false;
                 runner
                     .emit(RuntimeEventKind::MessageStarted {
                         run_id: self.run_id.clone(),
@@ -583,10 +606,10 @@ impl RunExecutor {
                     })
                     .await;
             }
-            Ok(ProviderEvent::TextDelta {
+            ProviderEvent::TextDelta {
                 message_id: id,
                 delta,
-            }) => {
+            } => {
                 if state.message_id.as_ref() == Some(&id) {
                     state.assistant_content.push_str(&delta);
                     if let Some(flush) = state.delta_buffer.push(&delta) {
@@ -600,10 +623,10 @@ impl RunExecutor {
                     }
                 }
             }
-            Ok(ProviderEvent::MessageCompleted {
+            ProviderEvent::MessageCompleted {
                 message_id: id,
                 tool_calls: calls,
-            }) => {
+            } => {
                 if state.message_id.as_ref() == Some(&id) {
                     if let Some(flush) = state.delta_buffer.flush() {
                         runner
@@ -622,7 +645,7 @@ impl RunExecutor {
                         })
                         .await;
 
-                    if let Err(error) = runner
+                    let _ = runner
                         .services
                         .store
                         .append_message(
@@ -630,49 +653,31 @@ impl RunExecutor {
                             Some(&id),
                             Some(last_entry_id),
                             MessageRole::Assistant,
-                            &**state.assistant_content,
+                            &*state.assistant_content,
                             calls.clone(),
                         )
-                        .await
-                    {
-                        error!(%error, "failed to persist assistant message");
-                        runner
-                            .emit_run_error(
-                                &self.run_id,
-                                format!("failed to persist assistant message: {error}"),
-                            )
-                            .await;
-                        runner.clear_active_run().await;
-                        return None;
-                    }
+                        .await?;
+
                     last_entry_id.clone_from(&id);
 
-                    *state.tool_calls = calls;
-                    *state.completed = true;
+                    state.tool_calls = calls;
+                    state.completed = true;
                 }
-            }
-            Err(error) => {
-                error!(%error, "provider stream error");
-                runner.emit_run_error(&self.run_id, error.to_string()).await;
-                runner.clear_active_run().await;
-                return None;
             }
         }
 
-        Some(())
+        Ok(())
     }
 
     /// Executes a single tool call, emits its lifecycle events, persists the
-    /// result, and appends a tool-result message to the turn. Returns `None`
-    /// after emitting a run error and clearing the active run.
+    /// result, and returns the tool-result message to append to the turn.
     async fn execute_tool_call(
         &self,
         runner: &Arc<SessionRunner>,
         call: &ToolCall,
         session_ctx: &SessionContext,
         last_entry_id: &mut String,
-        turn_messages: &mut Vec<RunMessage>,
-    ) -> Option<()> {
+    ) -> Result<RunMessage, RunError> {
         runner
             .emit(RuntimeEventKind::ToolStarted {
                 run_id: self.run_id.clone(),
@@ -681,15 +686,13 @@ impl RunExecutor {
             })
             .await;
 
-        if let Some(message) = tool_progress_message(&call.name, &call.arguments) {
-            runner
-                .emit(RuntimeEventKind::ToolDelta {
-                    run_id: self.run_id.clone(),
-                    tool_call_id: call.id.clone(),
-                    message,
-                })
-                .await;
-        }
+        runner
+            .emit(RuntimeEventKind::ToolDelta {
+                run_id: self.run_id.clone(),
+                tool_call_id: call.id.clone(),
+                message: format!("正在执行工具 `{}`…", call.name),
+            })
+            .await;
 
         let (output, is_error) = match runner
             .services
@@ -710,95 +713,15 @@ impl RunExecutor {
             })
             .await;
 
-        let tool_result_id = match runner
+        let tool_result_id = runner
             .services
             .store
             .append_tool_result(&self.session_id, None, last_entry_id, &call.id, &output)
-            .await
-        {
-            Ok(id) => id,
-            Err(error) => {
-                error!(%error, "failed to persist tool result");
-                runner
-                    .emit_run_error(
-                        &self.run_id,
-                        format!("failed to persist tool result: {error}"),
-                    )
-                    .await;
-                runner.clear_active_run().await;
-                return None;
-            }
-        };
+            .await?;
+
         last_entry_id.clone_from(&tool_result_id);
 
-        turn_messages.push(RunMessage::tool_result(&call.id, output));
-        Some(())
-    }
-
-    /// Emits a successful run-finished event and clears the active run.
-    async fn finish_succeeded(&self, runner: &Arc<SessionRunner>) {
-        runner
-            .emit(RuntimeEventKind::RunFinished {
-                run_id: self.run_id.clone(),
-                status: RunStatus::Succeeded,
-                error: None,
-            })
-            .await;
-        info!("run finished successfully");
-        runner.clear_active_run().await;
-    }
-
-    /// Emits a cancelled run-finished event and clears the active run.
-    /// `emit_run_cancelled` controls whether a preceding `RunCancelled` event
-    /// should also be emitted (the stream loop already emits one when a message
-    /// is in flight).
-    async fn finish_cancelled(&self, runner: &Arc<SessionRunner>, emit_run_cancelled: bool) {
-        if emit_run_cancelled {
-            runner
-                .emit(RuntimeEventKind::RunCancelled {
-                    run_id: self.run_id.clone(),
-                })
-                .await;
-        }
-        runner
-            .emit(RuntimeEventKind::RunFinished {
-                run_id: self.run_id.clone(),
-                status: RunStatus::Cancelled,
-                error: None,
-            })
-            .await;
-        info!("run cancelled");
-        runner.clear_active_run().await;
-    }
-}
-
-/// Builds a human-readable progress message for long-running search tools.
-/// Returns `None` for tools that are fast enough to be atomic.
-fn tool_progress_message(name: &str, arguments: &serde_json::Value) -> Option<String> {
-    match name {
-        "grep" => {
-            let pattern = arguments
-                .get("pattern")
-                .and_then(|value| value.as_str())
-                .unwrap_or("?");
-            let path = arguments
-                .get("path")
-                .and_then(|value| value.as_str())
-                .unwrap_or(".");
-            Some(format!("正在搜索匹配 `{pattern}` 的文件…（路径：{path}）"))
-        }
-        "find_files" => {
-            let pattern = arguments
-                .get("pattern")
-                .and_then(|value| value.as_str())
-                .unwrap_or("?");
-            let path = arguments
-                .get("path")
-                .and_then(|value| value.as_str())
-                .unwrap_or(".");
-            Some(format!("正在查找匹配 `{pattern}` 的文件…（路径：{path}）"))
-        }
-        _ => None,
+        Ok(RunMessage::tool_result(&call.id, output))
     }
 }
 

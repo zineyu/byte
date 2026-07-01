@@ -40,6 +40,12 @@ _Avoid_: Session, background job, queued task
 
 See `docs/protocol/glossary.md` for protocol-level terms.
 
+### Model Turn
+
+A single request to the Model Provider and the response it yields within a Run. One Conversation Turn may contain multiple Model Turns when the model issues tool calls that must be executed and fed back into a follow-up request. A Model Turn ends when the model returns either assistant content or a set of tool calls.
+
+_Avoid_: Conversation Turn when the whole user-facing exchange matters, Run when persistence and lifecycle matter
+
 ### Model Provider
 
 An external model service that the Desktop Coding Agent can ask for assistant responses during a Conversation Turn. The MVP treats it as Developer-configured local product state, not as Code Workspace content.
