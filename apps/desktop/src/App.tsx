@@ -400,6 +400,7 @@ export default function App() {
               Byte Agent
             </div>
             <h1 className="hero-title">有什么可以帮你写？</h1>
+            <span className="beta-badge">Beta Preview</span>
             <p className="hero-subtitle">
               本地编码助手，对话即可生成、调试和理解代码。
             </p>
