@@ -1,0 +1,306 @@
+---
+name: Byte Agent
+description: A luminous, minimal interface for a local coding assistant. The design language is soft, rounded, and white-first, with a calm blue accent for modes and status, and a dark neutral for authority and text.
+version: alpha
+colors:
+  background: "#ffffff"
+  background-subtle: "#f9fafb"
+  background-hover: "#f2f3f5"
+  primary: "#1a1a1a"
+  primary-hover: "#333333"
+  on-primary: "#ffffff"
+  text-primary: "#111827"
+  text-body: "#1f2937"
+  text-secondary: "#6b7280"
+  text-muted: "#9ca3af"
+  accent: "#3b82f6"
+  accent-subtle: "#eff6ff"
+  accent-soft: "#dbeafe"
+  success: "#22c55e"
+  success-soft: "#d1fae5"
+  error: "#ef4444"
+  error-soft: "#fee2e2"
+  error-subtle: "#fef2f2"
+  error-text: "#991b1b"
+  warning: "#b45309"
+  warning-soft: "#fef3c7"
+  warning-subtle: "#fffbeb"
+  warning-text: "#78350f"
+typography:
+  display:
+    fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif"
+    fontSize: "2.5rem"
+    fontWeight: 500
+    letterSpacing: "-0.02em"
+  headline:
+    fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif"
+    fontSize: "1.25rem"
+    fontWeight: 700
+  body:
+    fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif"
+    fontSize: "1rem"
+    lineHeight: 1.6
+    fontWeight: 400
+  body-chat:
+    fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif"
+    fontSize: "1rem"
+    lineHeight: 1.65
+  label:
+    fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif"
+    fontSize: "0.9rem"
+    fontWeight: 500
+  caption:
+    fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif"
+    fontSize: "0.875rem"
+    fontWeight: 400
+  small:
+    fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif"
+    fontSize: "0.8125rem"
+    lineHeight: 1.5
+  overline:
+    fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif"
+    fontSize: "0.75rem"
+    fontWeight: 600
+    letterSpacing: "0.025em"
+    textTransform: uppercase
+  code:
+    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace"
+    fontSize: "0.8125rem"
+    lineHeight: 1.5
+rounded:
+  pill: "999px"
+  2xl: "28px"
+  xl: "22px"
+  lg: "18px"
+  md: "14px"
+  sm: "10px"
+  xs: "8px"
+spacing:
+  0: "0"
+  xs: "0.25rem"
+  sm: "0.5rem"
+  md: "0.75rem"
+  lg: "1rem"
+  xl: "1.25rem"
+  2xl: "1.5rem"
+  3xl: "2rem"
+  4xl: "3rem"
+  2-5: "0.65rem"
+  4-5: "1.1rem"
+components:
+  input-card:
+    backgroundColor: "{colors.background}"
+    textColor: "{colors.text-body}"
+    rounded: "{rounded.2xl}"
+    padding: "1rem 1.25rem"
+  input-card-focus:
+    backgroundColor: "{colors.background}"
+  send-button:
+    backgroundColor: "{colors.primary}"
+    textColor: "{colors.on-primary}"
+    rounded: "{rounded.pill}"
+    size: "2.25rem"
+  send-button-hover:
+    backgroundColor: "{colors.primary-hover}"
+  nav-item:
+    backgroundColor: "{colors.background}"
+    textColor: "#4b5563"
+    rounded: "{rounded.sm}"
+    padding: "0.6rem 0.75rem"
+  nav-item-active:
+    backgroundColor: "{colors.background-hover}"
+    textColor: "{colors.text-primary}"
+  session-row-hover:
+    backgroundColor: "{colors.background-hover}"
+    textColor: "{colors.text-body}"
+  hero-title:
+    textColor: "{colors.text-primary}"
+    typography: "{typography.display}"
+  hero-subtitle:
+    textColor: "{colors.text-secondary}"
+    typography: "{typography.body}"
+  placeholder:
+    textColor: "{colors.text-muted}"
+    typography: "{typography.body}"
+  developer-avatar:
+    backgroundColor: "{colors.accent-soft}"
+    textColor: "{colors.accent}"
+    rounded: "{rounded.pill}"
+    size: "2rem"
+  assistant-avatar:
+    backgroundColor: "{colors.success-soft}"
+    textColor: "{colors.success}"
+    rounded: "{rounded.pill}"
+    size: "2rem"
+  summary-avatar:
+    backgroundColor: "{colors.warning-soft}"
+    textColor: "{colors.warning}"
+    rounded: "{rounded.pill}"
+    size: "2rem"
+  message-developer:
+    backgroundColor: "{colors.background-subtle}"
+    textColor: "{colors.text-body}"
+    rounded: "{rounded.lg}"
+  message-assistant:
+    backgroundColor: "{colors.background-subtle}"
+    textColor: "{colors.text-body}"
+    rounded: "{rounded.lg}"
+  message-summary:
+    backgroundColor: "{colors.warning-subtle}"
+    textColor: "{colors.warning-text}"
+    rounded: "{rounded.md}"
+  tool-call-card:
+    backgroundColor: "{colors.background-subtle}"
+    textColor: "{colors.text-body}"
+    rounded: "{rounded.md}"
+  tool-call-card-running:
+    backgroundColor: "{colors.accent-subtle}"
+    textColor: "{colors.accent}"
+    rounded: "{rounded.md}"
+  tool-call-card-error:
+    backgroundColor: "{colors.error-subtle}"
+    textColor: "{colors.error}"
+    rounded: "{rounded.md}"
+  status-badge:
+    backgroundColor: "{colors.background-subtle}"
+    textColor: "{colors.text-body}"
+    rounded: "{rounded.pill}"
+  drawer:
+    backgroundColor: "{colors.background}"
+  sidebar:
+    backgroundColor: "{colors.background}"
+  error-banner:
+    backgroundColor: "{colors.error-subtle}"
+    textColor: "{colors.error-text}"
+    rounded: "{rounded.sm}"
+  mode-badge:
+    backgroundColor: "{colors.accent-subtle}"
+    textColor: "{colors.accent}"
+    rounded: "{rounded.pill}"
+  beta-badge:
+    backgroundColor: "{colors.accent-subtle}"
+    textColor: "{colors.accent}"
+    rounded: "{rounded.pill}"
+  delete-button-hover:
+    backgroundColor: "{colors.error-soft}"
+    textColor: "{colors.error}"
+    rounded: "{rounded.xs}"
+  connection-online:
+    textColor: "{colors.success}"
+    rounded: "{rounded.pill}"
+  connection-offline:
+    textColor: "{colors.error}"
+    rounded: "{rounded.pill}"
+---
+
+## Overview
+
+Byte Agent is a local desktop coding assistant. Its interface should feel airy, approachable, and quietly competent — more like a clean workspace than a traditional chat client. The design language is white-first, softly rounded, and spacious, with a calm blue accent that marks modes, previews, and the developer's presence. Authority comes from the dark neutral type and crisp hierarchy, not from heavy surfaces or saturated color.
+
+## Colors
+
+The palette is almost monochromatic, letting the content breathe. Color is used only to mark mode, status, or sender identity.
+
+- **Primary (#1a1a1a):** Near-black for the primary action button, brand authority, and key text. A softer dark than pure black.
+- **Primary Hover (#333333):** Slightly lighter neutral for hovered primary surfaces.
+- **Background (#ffffff):** Clean white for the main canvas, cards, and drawers.
+- **Background Subtle (#f9fafb):** Soft gray for assistant message bubbles, tool cards, status badges, and hovered list rows.
+- **Background Hover (#f2f3f5):** Hover states for navigation items, session rows, and neutral buttons.
+- **Text Primary (#111827):** Strong headings, hero title, and active navigation.
+- **Text Body (#1f2937):** Default body and message text.
+- **Text Secondary (#6b7280):** Captions, metadata, placeholder text, and muted labels.
+- **Text Muted (#9ca3af):** Disabled controls and subtle hints.
+- **Accent (#3b82f6):** Agent mode badges, Beta Preview labels, active tool-call states, and the developer avatar. The single source of interactive color.
+- **Success (#22c55e):** Online connection indicator, successful tool-call status, and assistant avatar accents.
+- **Error (#ef4444):** Offline indicator, deletion hover, and error banners.
+- **Warning (#b45309):** Summary/compaction entries, paired with a warm cream background to separate them from normal chat turns.
+
+Borders are rendered with light grays: `#e8eaed` for most cards and inputs, `#f1f3f4` for subtle separators inside the sidebar, and `#d1d5db` for focused inputs.
+
+## Typography
+
+All UI text uses Inter or the system sans-serif stack for clarity. Code snippets and tool arguments use a system monospace stack.
+
+- **Display (2.5rem, weight 500):** Hero headline on the empty state. Generous size with slightly tighter letter spacing for a polished, friendly feel.
+- **Headline (1.25rem, weight 700):** Brand title and drawer section titles.
+- **Body (1rem, line-height 1.6):** Default prose, hero subtitle, and input placeholders.
+- **Body Chat (1rem, line-height 1.65):** Chat message content; slightly more open for readability.
+- **Label (0.9rem, weight 500):** Navigation items, session rows, and tool names.
+- **Caption (0.875rem):** Drawer body text, connection status, and tool output prose.
+- **Small (0.8125rem, line-height 1.5):** Tool call headers, file listings, and compact content.
+- **Overline (0.75rem, weight 600, uppercase):** Section headers such as "Workspace Instructions" and summary labels.
+- **Code (0.8125rem, monospace):** Inline code, tool arguments, and grep results.
+
+## Layout
+
+The application uses a three-column grid with generous whitespace:
+
+1. **Left sidebar** (240px): brand header, top mode tabs (Chat / Work), grouped navigation, session list, and footer connection status. The sidebar is white, relying on spacing and subtle hover states rather than background color to create hierarchy.
+2. **Main area** (flexible): centered empty-state hero with a large rounded input card, or a chat conversation stream when messages exist.
+3. **Right drawer** (360px, collapsible): runtime events and settings, fixed to viewport height and scrolling independently.
+
+On medium screens (≤900px) the sidebar narrows to 200px and the right drawer becomes a fixed overlay. On small screens (≤680px) the sidebar collapses to a top bar, hiding session lists and footer, and the right drawer becomes full-width.
+
+The layout favors centered, contained content over full-bleed surfaces. The empty state anchors the input card in the center of the viewport with plenty of surrounding space.
+
+## Elevation & Depth
+
+Elevation is extremely subtle, used only to lift the input card and drawer above the flat canvas:
+
+- **Input card:** `0 2px 16px rgba(0,0,0,0.03)` at rest, intensifying to `0 8px 32px rgba(0,0,0,0.06)` on focus. The border is a whisper rather than a hard line.
+- **Right drawer overlay:** `-4px 0 24px rgba(0,0,0,0.05)` when it floats above the main area on narrow screens.
+- **Active tool cards:** a faint colored border (`#93c5fd` for running, `#fca5a5` for error) instead of a shadow lift.
+
+No heavy shadows, gradients, or material layers. Depth is created through typography scale, spacing, and the gentle shadow of the input card.
+
+## Shapes
+
+- **Pill (999px):** Status badges, mode badges, Beta Preview badge, send button, and avatar backgrounds.
+- **2x Large (28px):** Main input card border radius. The largest, most prominent radius in the interface.
+- **Large (18px):** Chat message bubbles and workspace-instruction cards.
+- **Medium (14px):** Summary cards and tool call cards.
+- **Small (10px):** Navigation items and session rows.
+- **Extra Small (8px):** Drawer close buttons and deletion buttons.
+- **2x Small (6px):** Inline code blocks.
+
+Radius is used to make the interface feel friendly and approachable. Cards are significantly rounder than sharp utility panels.
+
+## Components
+
+### Input card
+
+A large, softly rounded surface for composing messages. It uses a white background, 28px radius, a very light border (`#e8eaed`), and a gentle shadow. The footer is separated by a light border and holds tool actions on the left and the mode badge + circular send button on the right. The textarea is transparent, borderless, and auto-growing. On focus the border shifts to `#d1d5db` and the shadow deepens.
+
+### Mode tabs
+
+At the top of the sidebar, a compact segmented control switches between views (e.g., Chat / Work). The active tab uses a soft gray background with dark text; inactive tabs use muted text. The style is pill-like but restrained.
+
+### Navigation
+
+Sidebar navigation items are full-width buttons with a 10px radius. Default state uses transparent background with secondary text; hover uses the hover gray; active uses the hover gray with primary text. Primary actions (new chat, open workspace) are outlined with light borders to sit cleanly against the white sidebar. Section labels (e.g., Project, Tasks) use small, muted uppercase text to group items without heavy separators.
+
+### Hero empty state
+
+A centered, spacious composition: a brand icon above a large display headline, a small Beta Preview badge beneath the headline, and the input card below. The icon is friendly and colorful, but the rest of the state remains neutral.
+
+### Chat messages
+
+Messages are arranged horizontally with an avatar and a rounded bubble. Developer and assistant messages both use the subtle gray background (`#f9fafb`), differentiated by avatar tint rather than bubble color. The developer avatar uses the accent blue; the assistant avatar uses success green. Summary/compact entries are full-width cards with warm warning tones and a `#fde68a` border.
+
+### Tool call cards
+
+Rendered inline in the chat timeline, tool call cards are compact gray cards with a monospace tool name, status icon, and expandable output. Running states turn light blue with a `#93c5fd` border; error states turn light red with a `#fca5a5` border. Output blocks are white with a `#e8eaed` border and use monospace text.
+
+### Status badges and connection
+
+Connection status uses a small dot (green for online, red for offline) beside a label. Status badges in the drawer are pill-shaped with a light border and bold value text. Mode badges (Agent, Ask, Beta Preview) use the accent subtle background with the accent text color.
+
+## Do's and Don'ts
+
+- Do keep the interface white-first and spacious. Generous padding and centered content are central to the feel.
+- Do use the large 28px radius for the main input card and generous 18px radius for messages.
+- Do use the accent blue only for modes, previews, status, and the developer's identity. Avoid using it for generic decoration.
+- Do collapse repeated runtime events and truncate long output to keep the right drawer scannable.
+- Don't introduce additional saturated colors beyond the blue accent and green/red status palette.
+- Don't use heavy shadows, gradients, or dark backgrounds. The interface should feel light and airy.
+- Don't make the input card visually compete with the chat content; it should recede until focused.

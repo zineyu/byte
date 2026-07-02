@@ -1,12 +1,13 @@
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
-# Run validation suite or one gate: just verify [all|repo|workflow|rust|desktop|audit].
+# Run validation suite or one gate: just verify [all|repo|design-md|workflow|rust|desktop|audit].
 verify target="all":
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{target}}" in
       all)
         just _repo-hygiene
+        just _design-md-check
         just _workflow-syntax
         just _verify-rust
         just _verify-desktop
@@ -14,6 +15,10 @@ verify target="all":
         ;;
       repo|repo-hygiene)
         just _repo-hygiene
+        just _design-md-check
+        ;;
+      design-md|design.md)
+        just _design-md-check
         ;;
       workflow|workflow-syntax)
         just _workflow-syntax
@@ -29,10 +34,19 @@ verify target="all":
         ;;
       *)
         echo "unknown verify target: {{target}}" >&2
-        echo "usage: just verify [all|repo|workflow|rust|desktop|audit]" >&2
+        echo "usage: just verify [all|repo|design-md|workflow|rust|desktop|audit]" >&2
         exit 2
         ;;
     esac
+
+# Validate DESIGN.md against the Google Labs design.md specification.
+_design-md-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    tmpdir="$(mktemp -d)"
+    trap 'rm -rf "$tmpdir"' EXIT
+    npm install --prefix "$tmpdir" @google/design.md >/dev/null 2>&1
+    "$tmpdir/node_modules/.bin/designmd" lint DESIGN.md
 
 # Check required docs, Markdown sanity, and obvious committed secrets.
 _repo-hygiene:
