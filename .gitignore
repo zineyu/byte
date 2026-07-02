@@ -8,6 +8,9 @@ node_modules/
 /apps/desktop/node_modules/
 /apps/desktop/dist/
 
+# direnv
+.direnv/
+
 # OS/editor
 .DS_Store
 *.swp
