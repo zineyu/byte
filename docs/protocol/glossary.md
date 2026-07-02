@@ -38,9 +38,9 @@ The role of a message inside a Run or a persisted Session history node:
 - `developer`: the human Developer message.
 - `assistant`: the model-generated response.
 - `tool`: a tool result returned to the model, persisted as a `Message` entry with a `text` body block.
-- `summary`: a compacted summary of earlier conversation history, persisted as a visible Session entry.
+- `summary`: a compacted summary of earlier conversation history, persisted as a `Message` entry with `role = "summary"` and a `text` body block.
 
-At the provider adapter boundary, `system` maps to the OpenAI `system` role and `developer` maps to the OpenAI `user` role. `summary` is converted to a `system` message before being sent to the Model Provider.
+At the provider adapter boundary, `system` maps to the OpenAI `system` role and `developer` maps to the OpenAI `user` role. `summary` messages are converted to `system` messages before being sent to the Model Provider.
 
 ### Message Body
 

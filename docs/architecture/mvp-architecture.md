@@ -21,7 +21,7 @@ Byte Agent MVP is a desktop coding agent for a local code workspace. It uses a T
 - Runtime progress is event-driven, but persisted state is not full event sourcing. See `docs/adr/0003-use-runtime-event-stream-without-event-sourcing.md`.
 - MVP runs in unrestricted local agent mode. See `docs/adr/0004-use-unrestricted-local-agent-mode-for-mvp.md`.
 - Sessions are JSONL trees with `id` / `parent_id`. See `docs/adr/0005-store-sessions-as-jsonl-trees.md`.
-- Auto-compaction creates visible session entries. See `docs/adr/0006-store-compaction-as-visible-session-entries.md`.
+- Auto-compaction persists summaries as `Message` entries with `role = "summary"`. See `docs/adr/0006-store-compaction-as-visible-session-entries.md`.
 - MVP secrets are stored in plaintext config behind a replaceable `SecretStore`. See `docs/adr/0007-store-mvp-secrets-in-plaintext-config.md`.
 
 ## 4. High-level shape
@@ -233,7 +233,7 @@ Each session file starts with a header and then append-only entries:
 {"type":"session","version":4,"id":"...","workspace":"...","created_at":"..."}
 {"type":"message","id":"...","parent_id":null,"role":"developer","body":[{"type":"text","text":"..."}]}
 {"type":"message","id":"...","parent_id":"...","role":"tool","body":[{"type":"text","text":"..."}]}
-{"type":"compaction","id":"...","parent_id":"...","summary":"..."}
+{"type":"message","id":"...","parent_id":"...","role":"summary","body":[{"type":"text","text":"Earlier summary..."}]}
 ```
 
 The active path is resolved by following `parent_id` links. Branching can be implemented by appending a new child to any prior entry without creating a new file.
@@ -366,5 +366,5 @@ These risks are accepted for MVP speed, but the architecture preserves seams for
 - Agent can read, search, edit files, and run non-interactive commands.
 - UI shows messages, tool calls, command output, and diffs.
 - Session is saved as JSONL and reloads after app restart.
-- Auto-compaction creates a visible Compaction Entry.
+- Auto-compaction creates a visible Summary `Message`.
 - User and workspace Skills are discovered; `activate_skill` works.

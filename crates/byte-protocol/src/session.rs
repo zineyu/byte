@@ -15,19 +15,6 @@ pub struct SessionSummary {
     pub created_at: String,
 }
 
-/// A lightweight summary of a compaction entry for the UI.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export, rename_all = "camelCase")]
-pub struct CompactionSummary {
-    /// Compaction entry identifier.
-    pub id: String,
-    /// Identifier of the parent message this compaction replaces.
-    pub parent_id: String,
-    /// Human-readable summary text.
-    pub summary: String,
-}
-
 /// A normalized view of a Session for the React UI.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
@@ -43,8 +30,6 @@ pub struct SessionView {
     pub workspace_instructions_error: Option<String>,
     /// Messages in the session, in UI order.
     pub messages: Vec<Message>,
-    /// Compaction entries in the session.
-    pub compactions: Vec<CompactionSummary>,
 }
 
 /// A persisted message node, also used as the runtime view of a session history node.
@@ -146,18 +131,6 @@ pub enum SessionEntry {
     },
     /// Message record.
     Message(Message),
-    /// Compaction record.
-    ///
-    /// Deprecated in favour of `Message` entries with `role = Summary`; kept
-    /// for migration during Slice 1.
-    Compaction {
-        /// Compaction entry identifier.
-        id: String,
-        /// Parent message identifier.
-        parent_id: String,
-        /// Human-readable summary text.
-        summary: String,
-    },
 }
 
 /// Parameters for creating a new session.
@@ -263,17 +236,20 @@ mod tests {
             workspace: "/home/dev/project".into(),
             workspace_instructions: Some("follow these instructions".into()),
             workspace_instructions_error: None,
-            messages: vec![Message {
-                id: "msg-1".into(),
-                parent_id: None,
-                role: MessageRole::Assistant,
-                body: MessageBody::text("hi"),
-            }],
-            compactions: vec![CompactionSummary {
-                id: "compact-1".into(),
-                parent_id: "msg-1".into(),
-                summary: "summary text".into(),
-            }],
+            messages: vec![
+                Message {
+                    id: "msg-1".into(),
+                    parent_id: None,
+                    role: MessageRole::Assistant,
+                    body: MessageBody::text("hi"),
+                },
+                Message {
+                    id: "msg-2".into(),
+                    parent_id: Some("msg-1".into()),
+                    role: MessageRole::Summary,
+                    body: MessageBody::text("summary text"),
+                },
+            ],
         };
 
         let value = serde_json::to_value(&view).expect("view encodes");

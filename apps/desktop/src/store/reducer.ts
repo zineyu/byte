@@ -102,11 +102,12 @@ function loadSession(
       (
         message,
       ): message is Message & {
-        role: "developer" | "assistant" | "tool";
+        role: "developer" | "assistant" | "tool" | "summary";
       } =>
         message.role === "developer" ||
         message.role === "assistant" ||
-        message.role === "tool",
+        message.role === "tool" ||
+        message.role === "summary",
     )
     .map((message) => {
       const content = getMessageBodyText(message.body);

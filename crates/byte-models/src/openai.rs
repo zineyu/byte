@@ -135,6 +135,15 @@ impl ModelProvider for OpenAiCompatibleProvider {
                             tool_call_id: m.tool_call_id.unwrap_or_default(),
                         })
                     }
+                    MessageRole::Summary => {
+                        // Summary messages are converted to system messages by
+                        // `LlmContextBuilder` before reaching the provider; treat
+                        // any remaining Summary role as system for safety.
+                        ChatCompletionRequestMessage::System(ChatCompletionRequestSystemMessage {
+                            content: ChatCompletionRequestSystemMessageContent::Text(text),
+                            name: None,
+                        })
+                    }
                 }
             })
             .collect();

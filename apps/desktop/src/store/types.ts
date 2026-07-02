@@ -79,7 +79,7 @@ export type RuntimeEventLogEntry = RuntimeEvent & {
 
 export type ChatMessage = {
   id: string;
-  role: "developer" | "assistant" | "tool";
+  role: "developer" | "assistant" | "tool" | "summary";
   content: string;
   body: MessageBody;
   status: "streaming" | "completed" | "error";
@@ -136,13 +136,22 @@ export type TimelineMessageItem = {
   message: ChatMessage;
 };
 
+export type TimelineSummaryItem = {
+  type: "summary";
+  id: string;
+  message: ChatMessage;
+};
+
 export type TimelineToolCallItem = {
   type: "tool_call";
   id: string;
   toolCallId: string;
 };
 
-export type TimelineItem = TimelineMessageItem | TimelineToolCallItem;
+export type TimelineItem =
+  | TimelineMessageItem
+  | TimelineSummaryItem
+  | TimelineToolCallItem;
 
 export type StoreAction =
   | { type: "runtime_event"; event: RuntimeEvent }

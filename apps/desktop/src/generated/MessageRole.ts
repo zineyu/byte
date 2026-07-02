@@ -3,4 +3,4 @@
 /**
  * Role of a message in a conversation.
  */
-export type MessageRole = "system" | "developer" | "assistant" | "tool";
+export type MessageRole = "system" | "developer" | "assistant" | "tool" | "summary";

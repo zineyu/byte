@@ -578,6 +578,37 @@ textarea {
   font-size: 0.875rem;
 }
 
+.chat-message--summary {
+  align-self: stretch;
+}
+
+.chat-message--summary .chat-message__avatar {
+  color: #b45309;
+  background: #fef3c7;
+}
+
+.chat-message--summary .chat-message__body {
+  max-width: 100%;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  padding: 0.75rem 1rem;
+  border-radius: 0.75rem;
+}
+
+.chat-message__summary-header {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #b45309;
+  text-transform: uppercase;
+  letter-spacing: 0.025em;
+  margin-bottom: 0.4rem;
+}
+
+.chat-message__content--summary {
+  color: #78350f;
+  font-size: 0.875rem;
+}
+
 .chat-cursor {
   display: inline-block;
   width: 0.5rem;

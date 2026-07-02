@@ -1,8 +1,7 @@
 use byte_protocol::{
-    ActivatedSkill, CompactionSummary, LlmMessage, Message, MessageRole, SkillEntry, ToolDefinition,
+    ActivatedSkill, LlmMessage, Message, MessageBlock, MessageBody, MessageRole, SkillEntry,
+    ToolDefinition,
 };
-#[cfg(test)]
-use byte_protocol::{MessageBlock, MessageBody};
 use std::fmt::Write;
 
 /// Context supplied to `LlmContextBuilder` for a single run.
@@ -12,8 +11,6 @@ pub struct LlmContextInput {
     pub user_message: String,
     /// Prior messages in the session, in chronological order.
     pub history: Vec<Message>,
-    /// Summaries of compacted conversation ranges.
-    pub compactions: Vec<CompactionSummary>,
     /// Tool definitions available to the model for this run.
     pub tools: Vec<ToolDefinition>,
     /// Skills that have been activated for the current session.
@@ -25,13 +22,12 @@ pub struct LlmContextInput {
 }
 
 impl LlmContextInput {
-    /// Create a context with no history, compactions, tools, skills, active
+    /// Create a context with no history, tools, skills, active
     /// skills, or workspace instructions.
     pub fn new(user_message: impl Into<String>) -> Self {
         Self {
             user_message: user_message.into(),
             history: Vec::new(),
-            compactions: Vec::new(),
             tools: Vec::new(),
             active_skills: Vec::new(),
             available_skills: Vec::new(),
@@ -72,25 +68,30 @@ impl LlmContextBuilder {
             messages.push(LlmMessage::text(MessageRole::System, instructions.clone()));
         }
 
-        // Add compaction summaries as system reminders so they remain visible
-        // without polluting the persisted message history.
-        for compaction in &context.compactions {
-            messages.push(LlmMessage::text(
-                MessageRole::System,
-                format!(
-                    "Earlier conversation summary ({}): {}",
-                    compaction.id, compaction.summary
-                ),
-            ));
-        }
-
-        // Add persisted history.
+        // Add persisted history. Summary messages are converted to system
+        // reminders so they remain visible without polluting the persisted
+        // message history. Inject summaries first, then the active history
+        // messages, preserving chronological order within each group.
         for message in &context.history {
-            messages.push(LlmMessage {
-                role: message.role,
-                body: message.body.clone(),
-                tool_call_id: None,
-            });
+            if message.role == MessageRole::Summary {
+                messages.push(LlmMessage::text(
+                    MessageRole::System,
+                    format!(
+                        "Earlier conversation summary ({}): {}",
+                        message.id,
+                        body_text(&message.body)
+                    ),
+                ));
+            }
+        }
+        for message in &context.history {
+            if message.role != MessageRole::Summary {
+                messages.push(LlmMessage {
+                    role: message.role,
+                    body: message.body.clone(),
+                    tool_call_id: None,
+                });
+            }
         }
 
         // Add current user message.
@@ -150,16 +151,15 @@ impl LlmContextBuilder {
     }
 }
 
-#[cfg(test)]
 /// Concatenate all text blocks in a body into a single string.
 fn body_text(body: &MessageBody) -> String {
-    let mut text = String::new();
-    for block in &body.0 {
-        if let MessageBlock::Text { text: t } = block {
-            text.push_str(t);
-        }
-    }
-    text
+    body.0
+        .iter()
+        .filter_map(|block| match block {
+            MessageBlock::Text { text } => Some(text.as_str()),
+            MessageBlock::ToolCall(_) => None,
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -184,7 +184,6 @@ mod tests {
         let context = LlmContextInput {
             user_message: "hello".into(),
             history: vec![],
-            compactions: vec![],
             tools: vec![ToolDefinition {
                 name: "read_file".into(),
                 description: "Read a file.".into(),
@@ -204,16 +203,19 @@ mod tests {
     }
 
     #[test]
-    fn builder_appends_history_and_compactions() {
+    fn builder_appends_history_and_summaries() {
         let builder = LlmContextBuilder::new();
         let context = LlmContextInput {
             user_message: "current".into(),
-            history: vec![message_text(MessageRole::Developer, "past")],
-            compactions: vec![CompactionSummary {
-                id: "c1".into(),
-                parent_id: "m1".into(),
-                summary: "old topic".into(),
-            }],
+            history: vec![
+                message_text(MessageRole::Developer, "past"),
+                Message {
+                    id: "s1".into(),
+                    parent_id: Some("m1".into()),
+                    role: MessageRole::Summary,
+                    body: MessageBody::text("old topic"),
+                },
+            ],
             tools: vec![],
             active_skills: vec![],
             available_skills: vec![],
@@ -237,7 +239,6 @@ mod tests {
         let context = LlmContextInput {
             user_message: "hello".into(),
             history: vec![],
-            compactions: vec![],
             tools: vec![],
             active_skills: vec![],
             available_skills: vec![
@@ -268,7 +269,6 @@ mod tests {
         let context = LlmContextInput {
             user_message: "hello".into(),
             history: vec![],
-            compactions: vec![],
             tools: vec![],
             active_skills: vec![ActivatedSkill {
                 name: "rust".into(),
@@ -302,7 +302,6 @@ mod tests {
         let context = LlmContextInput {
             user_message: "hello".into(),
             history: vec![],
-            compactions: vec![],
             tools: vec![],
             active_skills: vec![],
             available_skills: vec![],

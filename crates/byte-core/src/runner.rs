@@ -4,9 +4,8 @@ use std::time::Duration;
 
 use byte_models::{ProviderError, ProviderEvent, ProviderStream};
 use byte_protocol::{
-    ActivatedSkill, BlockDelta, CancelRunResult, CompactionSummary, LlmMessage, Message,
-    MessageBlock, MessageBody, MessageRole, RunStatus, RuntimeEventKind, SendMessageParams,
-    SessionContext, ToolCall,
+    ActivatedSkill, BlockDelta, CancelRunResult, LlmMessage, Message, MessageBlock, MessageBody,
+    MessageRole, RunStatus, RuntimeEventKind, SendMessageParams, SessionContext, ToolCall,
 };
 use byte_session::SessionError;
 use byte_skills::SkillError;
@@ -173,7 +172,6 @@ impl SessionRunner {
             message: params.message,
             developer_message_id,
             history: view.messages,
-            compactions: view.compactions,
             workspace_instructions: view.workspace_instructions,
             cancel_token: token.child_token(),
         };
@@ -271,8 +269,6 @@ struct RunExecutor {
     developer_message_id: String,
     /// Prior session messages.
     history: Vec<Message>,
-    /// Summaries of compacted conversation ranges.
-    compactions: Vec<CompactionSummary>,
     /// Raw content of the workspace's AGENTS.md instruction file, if found.
     workspace_instructions: Option<String>,
     /// Token used to cancel this run.
@@ -445,7 +441,6 @@ impl RunExecutor {
         let prompt_context = LlmContextInput {
             user_message: self.message.clone(),
             history: self.history.clone(),
-            compactions: self.compactions.clone(),
             tools,
             active_skills,
             available_skills: available_skills.clone(),

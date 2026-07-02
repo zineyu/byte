@@ -7,7 +7,7 @@ use std::path::PathBuf;
 /// JSON-RPC protocol version.
 pub const JSON_RPC_VERSION: &str = "2.0";
 /// Wire format version supported by this crate.
-pub const PROTOCOL_VERSION: u16 = 5;
+pub const PROTOCOL_VERSION: u16 = 6;
 /// JSON-RPC method name used for runtime event notifications.
 pub const RUNTIME_EVENT_METHOD: &str = "runtime_event";
 
@@ -15,9 +15,9 @@ pub const RUNTIME_EVENT_METHOD: &str = "runtime_event";
 pub mod session;
 /// Re-exported session request/result and view types.
 pub use session::{
-    BlockDelta, CompactionSummary, DeleteSessionParams, DeleteSessionResult, ListSessionsResult,
-    LoadSessionParams, LoadSessionResult, Message, MessageBlock, MessageBody, NewSessionParams,
-    NewSessionResult, SessionEntry, SessionSummary, SessionView,
+    BlockDelta, DeleteSessionParams, DeleteSessionResult, ListSessionsResult, LoadSessionParams,
+    LoadSessionResult, Message, MessageBlock, MessageBody, NewSessionParams, NewSessionResult,
+    SessionEntry, SessionSummary, SessionView,
 };
 
 /// JSON-RPC request identifier, which may be a number or a string.
@@ -264,6 +264,8 @@ pub enum MessageRole {
     Assistant,
     /// Tool result message.
     Tool,
+    /// Summary of compacted earlier conversation history.
+    Summary,
 }
 
 impl std::fmt::Display for MessageRole {
@@ -273,6 +275,7 @@ impl std::fmt::Display for MessageRole {
             Self::Developer => write!(f, "developer"),
             Self::Assistant => write!(f, "assistant"),
             Self::Tool => write!(f, "tool"),
+            Self::Summary => write!(f, "summary"),
         }
     }
 }

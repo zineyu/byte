@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import {
   ArrowUp,
   Bot,
+  FileText,
   FolderOpen,
   MessageSquare,
   Plus,
@@ -428,8 +429,29 @@ export default function App() {
               />
             )}
             <div className="chat-messages">
-              {timelineItems.map((item) =>
-                item.type === "message" ? (
+              {timelineItems.map((item) => {
+                if (item.type === "summary") {
+                  return (
+                    <div
+                      key={item.id}
+                      className="chat-message chat-message--summary"
+                    >
+                      <div className="chat-message__avatar" aria-hidden="true">
+                        <FileText size={16} strokeWidth={2} />
+                      </div>
+                      <div className="chat-message__body">
+                        <div className="chat-message__summary-header">
+                          会话摘要
+                        </div>
+                        <div className="chat-message__content chat-message__content--summary">
+                          {item.message.content}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                }
+
+                return item.type === "message" ? (
                   <div
                     key={item.id}
                     className={`chat-message chat-message--${item.message.role}`}
@@ -463,8 +485,8 @@ export default function App() {
                     key={item.id}
                     toolCall={toolCalls[item.toolCallId]}
                   />
-                ),
-              )}
+                );
+              })}
             </div>
 
             <div className="input-card chat-input-card">

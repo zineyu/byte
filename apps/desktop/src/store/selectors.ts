@@ -33,6 +33,10 @@ export function groupEvents(events: RuntimeEventLogEntry[]): EventGroup[] {
 export function buildTimelineItems(messages: ChatMessage[]): TimelineItem[] {
   const items: TimelineItem[] = [];
   for (const message of messages) {
+    if (message.role === "summary") {
+      items.push({ type: "summary", id: message.id, message });
+      continue;
+    }
     items.push({ type: "message", id: message.id, message });
     if (message.role === "assistant") {
       for (const call of getMessageBodyToolCalls(message.body)) {

@@ -226,7 +226,6 @@ describe("runtime event reducer", () => {
           body: [{ type: "text", text: "Hi there" }],
         },
       ],
-      compactions: [],
     };
 
     const next = reducer(initialState, { type: "load_session", session });
@@ -265,7 +264,6 @@ describe("runtime event reducer", () => {
             body: [{ type: "text", text: "Hello" }],
           },
         ],
-        compactions: [],
       },
     });
     const running = reducer(withMessage, {
@@ -509,7 +507,6 @@ describe("runtime event reducer", () => {
           body: [{ type: "text", text: "file contents" }],
         },
       ],
-      compactions: [],
     };
 
     const next = reducer(initialState, { type: "load_session", session });

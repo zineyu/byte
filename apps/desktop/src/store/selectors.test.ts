@@ -186,6 +186,45 @@ describe("buildTimelineItems", () => {
       toolCallId: "tc1",
     });
   });
+
+  it("renders summary messages as distinct summary items", () => {
+    const messages: ChatMessage[] = [
+      {
+        id: "m1",
+        role: "developer",
+        content: "hi",
+        status: "completed",
+        body: [{ type: "text", text: "hi" }],
+      },
+      {
+        id: "s1",
+        role: "summary",
+        content: "earlier discussion summary",
+        status: "completed",
+        body: [{ type: "text", text: "earlier discussion summary" }],
+      },
+      {
+        id: "m2",
+        role: "assistant",
+        content: "hello",
+        status: "completed",
+        body: [{ type: "text", text: "hello" }],
+      },
+    ];
+
+    const items = buildTimelineItems(messages);
+
+    expect(items.map((item) => item.type)).toEqual([
+      "message",
+      "summary",
+      "message",
+    ]);
+    expect(items[1]).toEqual({
+      type: "summary",
+      id: "s1",
+      message: messages[1],
+    });
+  });
 });
 
 describe("groupEvents", () => {
