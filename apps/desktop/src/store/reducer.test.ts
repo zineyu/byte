@@ -494,8 +494,13 @@ describe("runtime event reducer", () => {
 
     const next = reducer(initialState, { type: "load_session", session });
 
-    expect(next.messages).toHaveLength(2);
+    expect(next.messages).toHaveLength(3);
+    expect(next.messages[0].role).toBe("developer");
+    expect(next.messages[0].content).toBe("read it");
+    expect(next.messages[1].role).toBe("assistant");
     expect(next.messages[1].content).toBe("");
+    expect(next.messages[2].role).toBe("tool");
+    expect(next.messages[2].content).toBe("file contents");
     expect(next.toolCalls).toEqual({});
   });
 

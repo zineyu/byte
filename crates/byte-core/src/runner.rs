@@ -711,7 +711,14 @@ impl RunExecutor {
         let tool_result_id = runner
             .services
             .store
-            .append_tool_result(&self.session_id, None, last_entry_id, &call.id, &output)
+            .append_message(
+                &self.session_id,
+                None,
+                Some(last_entry_id),
+                MessageRole::Tool,
+                &output,
+                None,
+            )
             .await?;
 
         last_entry_id.clone_from(&tool_result_id);
@@ -1313,7 +1320,7 @@ mod tests {
         let contents = tokio::fs::read_to_string(store_dir.path().join("s1.jsonl"))
             .await
             .expect("read session file");
-        assert!(contents.contains("echo-call-1"));
+        assert!(contents.contains("\"role\":\"tool\""));
         assert!(contents.contains("fn main() {}"));
     }
 
@@ -1508,7 +1515,7 @@ mod tests {
         let jsonl = tokio::fs::read_to_string(store_dir.path().join("write-s1.jsonl"))
             .await
             .expect("read session jsonl");
-        assert!(jsonl.contains("tool_result"));
+        assert!(jsonl.contains("\"role\":\"tool\""));
     }
 
     #[tokio::test]
@@ -1591,7 +1598,7 @@ mod tests {
         let jsonl = tokio::fs::read_to_string(store_dir.path().join("patch-s1.jsonl"))
             .await
             .expect("read session jsonl");
-        assert!(jsonl.contains("tool_result"));
+        assert!(jsonl.contains("\"role\":\"tool\""));
         assert!(jsonl.contains("applied 2 patch(es)"));
     }
     /// A provider that deterministically requests a single tool call on turn 0
@@ -1779,8 +1786,8 @@ mod tests {
             .await
             .expect("read session jsonl");
         assert!(
-            jsonl.contains("tool_result"),
-            "session jsonl should contain tool_result"
+            jsonl.contains("\"role\":\"tool\""),
+            "session jsonl should contain a tool role message"
         );
     }
 

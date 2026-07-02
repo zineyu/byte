@@ -228,9 +228,9 @@ Responses and runtime events share the local Unix socket as LF-delimited JSON-RP
 Each session file starts with a header and then append-only entries:
 
 ```json
-{"type":"session","version":2,"id":"...","workspace":"...","created_at":"..."}
+{"type":"session","version":3,"id":"...","workspace":"...","created_at":"..."}
 {"type":"message","id":"...","parent_id":null,"role":"developer","body":[{"type":"text","text":"..."}]}
-{"type":"tool_result","id":"...","parent_id":"...","tool_call_id":"..."}
+{"type":"message","id":"...","parent_id":"...","role":"tool","body":[{"type":"text","text":"..."}]}
 {"type":"compaction","id":"...","parent_id":"...","summary":"..."}
 ```
 
@@ -238,7 +238,7 @@ The active path is resolved by following `parent_id` links. Branching can be imp
 
 ### Message format
 
-Persisted history nodes are `Message` entries with a `role` and a `body` array of `MessageBlock`s. In the MVP the body contains a single `text` block; later slices will inline `toolCall` blocks directly inside the assistant message body.
+Persisted history nodes are `Message` entries with a `role` and a `body` array of `MessageBlock`s. A tool result is persisted as a `Message` entry with `role = "tool"` and a single `text` block containing the serialized output; it is no longer a separate `tool_result` entry type. In the MVP the body contains a single `text` block; later slices will inline `toolCall` blocks directly inside the assistant message body.
 
 ## 10. Skills
 

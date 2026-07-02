@@ -99,8 +99,11 @@ function loadSession(
       (
         message,
       ): message is Message & {
-        role: "developer" | "assistant";
-      } => message.role === "developer" || message.role === "assistant",
+        role: "developer" | "assistant" | "tool";
+      } =>
+        message.role === "developer" ||
+        message.role === "assistant" ||
+        message.role === "tool",
     )
     .map((message) => {
       const content = message.body[0]?.text?.text ?? "";

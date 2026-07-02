@@ -147,33 +147,6 @@ impl SessionStore {
         Ok(id)
     }
 
-    /// Append a tool result entry to the session file and return its stable id.
-    /// If `id` is `None`, a UUID is generated.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the session id is invalid or the entry cannot be
-    /// written.
-    pub async fn append_tool_result(
-        &self,
-        session_id: &str,
-        id: Option<&str>,
-        parent_id: &str,
-        tool_call_id: impl Into<String>,
-        content: impl Into<String>,
-    ) -> Result<String, SessionError> {
-        let path = self.session_path(session_id)?;
-        let id = id.map_or_else(|| uuid::Uuid::new_v4().to_string(), ToOwned::to_owned);
-        let entry = SessionEntry::ToolResult {
-            id: id.clone(),
-            parent_id: parent_id.to_owned(),
-            tool_call_id: tool_call_id.into(),
-            content: content.into(),
-        };
-        self.write_line(&path, &entry).await?;
-        Ok(id)
-    }
-
     /// Maximum session file size that will be loaded into memory (64 MiB).
     pub const MAX_SESSION_FILE_SIZE: u64 = 64 * 1024 * 1024;
 
@@ -449,23 +422,6 @@ fn reconstruct_view(
                     },
                 );
             }
-            SessionEntry::ToolResult {
-                id,
-                parent_id,
-                content,
-                ..
-            } => {
-                message_order.push(id.clone());
-                let _ = messages_by_id.insert(
-                    id.clone(),
-                    Message {
-                        id,
-                        parent_id: Some(parent_id),
-                        role: MessageRole::Tool,
-                        body: MessageBody::text(content),
-                    },
-                );
-            }
             SessionEntry::Compaction {
                 id,
                 parent_id,
@@ -653,7 +609,7 @@ mod tests {
         assert_eq!(message_text(&view.messages[1]), "hi");
     }
     #[tokio::test]
-    async fn load_session_preserves_tool_result() {
+    async fn load_session_preserves_tool_message() {
         let store = temp_store();
         store.new_session("session-1", "/workspace").await.unwrap();
 
@@ -680,7 +636,14 @@ mod tests {
             .await
             .unwrap();
         let _ = store
-            .append_tool_result("session-1", None, &assistant_id, "call-1", "fn main() {}")
+            .append_message(
+                "session-1",
+                None,
+                Some(&assistant_id),
+                MessageRole::Tool,
+                "fn main() {}",
+                None,
+            )
             .await
             .unwrap();
 

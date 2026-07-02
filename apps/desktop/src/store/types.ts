@@ -28,7 +28,7 @@ export type RuntimeEventLogEntry = RuntimeEvent & {
 
 export type ChatMessage = {
   id: string;
-  role: "developer" | "assistant";
+  role: "developer" | "assistant" | "tool";
   content: string;
   status: "streaming" | "completed" | "error";
   error?: string;

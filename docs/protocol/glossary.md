@@ -37,7 +37,7 @@ The role of a message inside a Run or a persisted Session history node:
 - `system`: a dynamic, per-run instruction and tool context built by `LlmContextBuilder`. It is **not** persisted in the Session.
 - `developer`: the human Developer message.
 - `assistant`: the model-generated response.
-- `tool`: a tool result returned to the model.
+- `tool`: a tool result returned to the model, persisted as a `Message` entry with a `text` body block.
 - `summary`: a compacted summary of earlier conversation history, persisted as a visible Session entry.
 
 At the provider adapter boundary, `system` maps to the OpenAI `system` role and `developer` maps to the OpenAI `user` role. `summary` is converted to a `system` message before being sent to the Model Provider.

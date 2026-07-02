@@ -108,20 +108,6 @@ pub enum SessionEntry {
     },
     /// Message record.
     Message(Message),
-    /// Tool result record.
-    ///
-    /// Deprecated in favour of `Message` entries with `role = Tool`; kept for
-    /// migration during Slice 1.
-    ToolResult {
-        /// Result record identifier.
-        id: String,
-        /// Parent message identifier.
-        parent_id: String,
-        /// Identifier of the tool call that produced this result.
-        tool_call_id: String,
-        /// Serialized tool output.
-        content: String,
-    },
     /// Compaction record.
     ///
     /// Deprecated in favour of `Message` entries with `role = Summary`; kept
@@ -270,20 +256,5 @@ mod tests {
         let decoded: SessionSummary = serde_json::from_value(value).expect("summary decodes");
 
         assert_eq!(decoded, summary);
-    }
-
-    #[test]
-    fn tool_result_entry_roundtrips() {
-        let entry = SessionEntry::ToolResult {
-            id: "tr-1".into(),
-            parent_id: "msg-1".into(),
-            tool_call_id: "call-1".into(),
-            content: "file contents".into(),
-        };
-
-        let line = serde_json::to_string(&entry).expect("entry encodes");
-        let decoded: SessionEntry = decode_json_line(&line).expect("entry decodes");
-
-        assert_eq!(decoded, entry);
     }
 }
