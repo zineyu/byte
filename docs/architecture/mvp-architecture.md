@@ -228,7 +228,7 @@ Responses and runtime events share the local Unix socket as LF-delimited JSON-RP
 Each session file starts with a header and then append-only entries:
 
 ```json
-{"type":"session","version":3,"id":"...","workspace":"...","created_at":"..."}
+{"type":"session","version":4,"id":"...","workspace":"...","created_at":"..."}
 {"type":"message","id":"...","parent_id":null,"role":"developer","body":[{"type":"text","text":"..."}]}
 {"type":"message","id":"...","parent_id":"...","role":"tool","body":[{"type":"text","text":"..."}]}
 {"type":"compaction","id":"...","parent_id":"...","summary":"..."}
@@ -238,7 +238,7 @@ The active path is resolved by following `parent_id` links. Branching can be imp
 
 ### Message format
 
-Persisted history nodes are `Message` entries with a `role` and a `body` array of `MessageBlock`s. A tool result is persisted as a `Message` entry with `role = "tool"` and a single `text` block containing the serialized output; it is no longer a separate `tool_result` entry type. In the MVP the body contains a single `text` block; later slices will inline `toolCall` blocks directly inside the assistant message body.
+Persisted history nodes are `Message` entries with a `role` and a `body` array of `MessageBlock`s. A tool result is persisted as a `Message` entry with `role = "tool"` and a single `text` block containing the serialized output; it is no longer a separate `tool_result` entry type. Assistant messages may also contain `toolCall` blocks inline alongside their `text` block, so the model response and its requested actions are stored as a single coherent unit.
 
 ## 10. Skills
 
@@ -276,7 +276,7 @@ Use a two-column workbench:
 └───────────────┴────────────────────────────┘
 ```
 
-Tool calls are rendered as inline cards in the chat timeline, placed immediately after the assistant message that requested them. The reducer maintains `toolCalls: Record<string, ToolCallState>` from runtime events and reconstructs it from persisted `SessionView.messages` on `load_session`. A selector merges `messages` and `toolCalls` into a `timelineItems` discriminated union that the main chat view renders.
+Tool calls are rendered as inline cards in the chat timeline, placed immediately after the assistant message that requested them. The assistant message body contains both `text` and inline `toolCall` blocks; the selector derives `tool_call` timeline items directly from those blocks. The reducer still maintains `toolCalls: Record<string, ToolCallState>` from runtime events so that live execution status (running, completed, error) can be shown in each card.
 
 React state:
 

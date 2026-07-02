@@ -1,8 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { initialState } from "./initialState";
 import { reducer } from "./reducer";
-import type { SessionView } from "../generated/SessionView";
-import type { RuntimeEvent } from "./types";
+import type { RuntimeEvent, SessionView } from "./types";
 
 const readyDaemonEvent: RuntimeEvent = {
   sequence: 1,
@@ -95,7 +94,7 @@ describe("runtime event reducer", () => {
         type: "message_completed",
         run_id: runId,
         message_id: messageId,
-        tool_calls: null,
+        body: null,
       },
       {
         sequence: 7,
@@ -116,6 +115,7 @@ describe("runtime event reducer", () => {
       id: messageId,
       role: "assistant",
       content: "Hello world",
+      body: [],
       status: "completed",
     });
     expect(final.events.map((event) => event.type)).toEqual([
@@ -214,13 +214,13 @@ describe("runtime event reducer", () => {
           id: "msg-1",
           parentId: null,
           role: "developer",
-          body: [{ text: { text: "Hello" } }],
+          body: [{ type: "text", text: "Hello" }],
         },
         {
           id: "msg-2",
           parentId: "msg-1",
           role: "assistant",
-          body: [{ text: { text: "Hi there" } }],
+          body: [{ type: "text", text: "Hi there" }],
         },
       ],
       compactions: [],
@@ -233,12 +233,14 @@ describe("runtime event reducer", () => {
         id: "msg-1",
         role: "developer",
         content: "Hello",
+        body: [{ type: "text", text: "Hello" }],
         status: "completed",
       },
       {
         id: "msg-2",
         role: "assistant",
         content: "Hi there",
+        body: [{ type: "text", text: "Hi there" }],
         status: "completed",
       },
     ]);
@@ -257,7 +259,7 @@ describe("runtime event reducer", () => {
             id: "msg-1",
             parentId: null,
             role: "developer",
-            body: [{ text: { text: "Hello" } }],
+            body: [{ type: "text", text: "Hello" }],
           },
         ],
         compactions: [],
@@ -291,6 +293,7 @@ describe("runtime event reducer", () => {
         id: "user-1",
         role: "developer",
         content: "Hello",
+        body: [{ type: "text", text: "Hello" }],
         status: "completed",
       },
     ]);
@@ -389,8 +392,10 @@ describe("runtime event reducer", () => {
         type: "message_completed",
         run_id: runId,
         message_id: messageId,
-        tool_calls: [
+        body: [
+          { type: "text", text: "" },
           {
+            type: "toolCall",
             id: toolCallId,
             name: "read_file",
             arguments: { path: "src/main.rs" },
@@ -399,13 +404,18 @@ describe("runtime event reducer", () => {
       },
     });
 
-    expect(afterCompleted.messages[0].toolCalls).toEqual([
-      {
-        id: toolCallId,
-        name: "read_file",
-        arguments: { path: "src/main.rs" },
-      },
-    ]);
+    expect(afterCompleted.messages[0]).toMatchObject({
+      status: "completed",
+      body: [
+        { type: "text", text: "" },
+        {
+          type: "toolCall",
+          id: toolCallId,
+          name: "read_file",
+          arguments: { path: "src/main.rs" },
+        },
+      ],
+    });
     expect(afterCompleted.toolCalls[toolCallId]).toMatchObject({
       toolCallId,
       messageId,
@@ -443,7 +453,14 @@ describe("runtime event reducer", () => {
         type: "message_completed",
         run_id: "r1",
         message_id: "m1",
-        tool_calls: [{ id: "tc-1", name: "grep", arguments: { pattern: "x" } }],
+        body: [
+          {
+            type: "toolCall",
+            id: "tc-1",
+            name: "grep",
+            arguments: { pattern: "x" },
+          },
+        ],
       },
     });
 
@@ -474,19 +491,19 @@ describe("runtime event reducer", () => {
           id: "msg-1",
           parentId: null,
           role: "developer",
-          body: [{ text: { text: "read it" } }],
+          body: [{ type: "text", text: "read it" }],
         },
         {
           id: "msg-2",
           parentId: "msg-1",
           role: "assistant",
-          body: [{ text: { text: "" } }],
+          body: [{ type: "text", text: "" }],
         },
         {
           id: "msg-3",
           parentId: "msg-2",
           role: "tool",
-          body: [{ text: { text: "file contents" } }],
+          body: [{ type: "text", text: "file contents" }],
         },
       ],
       compactions: [],
@@ -495,12 +512,21 @@ describe("runtime event reducer", () => {
     const next = reducer(initialState, { type: "load_session", session });
 
     expect(next.messages).toHaveLength(3);
-    expect(next.messages[0].role).toBe("developer");
-    expect(next.messages[0].content).toBe("read it");
-    expect(next.messages[1].role).toBe("assistant");
-    expect(next.messages[1].content).toBe("");
-    expect(next.messages[2].role).toBe("tool");
-    expect(next.messages[2].content).toBe("file contents");
+    expect(next.messages[0]).toMatchObject({
+      role: "developer",
+      content: "read it",
+      body: [{ type: "text", text: "read it" }],
+    });
+    expect(next.messages[1]).toMatchObject({
+      role: "assistant",
+      content: "",
+      body: [{ type: "text", text: "" }],
+    });
+    expect(next.messages[2]).toMatchObject({
+      role: "tool",
+      content: "file contents",
+      body: [{ type: "text", text: "file contents" }],
+    });
     expect(next.toolCalls).toEqual({});
   });
 
@@ -512,7 +538,14 @@ describe("runtime event reducer", () => {
         type: "message_completed",
         run_id: "r1",
         message_id: "m1",
-        tool_calls: [{ id: "tc-1", name: "grep", arguments: { pattern: "x" } }],
+        body: [
+          {
+            type: "toolCall",
+            id: "tc-1",
+            name: "grep",
+            arguments: { pattern: "x" },
+          },
+        ],
       },
     });
 

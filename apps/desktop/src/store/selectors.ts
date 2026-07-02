@@ -1,4 +1,5 @@
 import type { ChatMessage, RuntimeEventLogEntry, TimelineItem } from "./types";
+import { getMessageBodyToolCalls } from "./types";
 
 export type EventGroup = {
   event: RuntimeEventLogEntry;
@@ -33,8 +34,8 @@ export function buildTimelineItems(messages: ChatMessage[]): TimelineItem[] {
   const items: TimelineItem[] = [];
   for (const message of messages) {
     items.push({ type: "message", id: message.id, message });
-    if (message.role === "assistant" && message.toolCalls) {
-      for (const call of message.toolCalls) {
+    if (message.role === "assistant") {
+      for (const call of getMessageBodyToolCalls(message.body)) {
         items.push({
           type: "tool_call",
           id: `tool-${call.id}`,

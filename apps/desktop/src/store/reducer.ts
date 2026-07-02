@@ -1,12 +1,14 @@
-import type { Message } from "../generated/Message";
 import type {
   AppState,
   ChatMessage,
+  Message,
+  MessageBody,
   RuntimeEvent,
   RuntimeEventLogEntry,
   StoreAction,
   ToolCallState,
 } from "./types";
+import { getMessageBodyText, getMessageBodyToolCalls } from "./types";
 
 // Hard cap for the in-memory runtime event log.
 const MAX_EVENTS = 64;
@@ -59,6 +61,7 @@ export function reducer(state: AppState, action: StoreAction): AppState {
             id: action.id,
             role: "developer",
             content: action.content,
+            body: [{ type: "text", text: action.content }],
             status: "completed" as const,
           },
         ],
@@ -106,11 +109,12 @@ function loadSession(
         message.role === "tool",
     )
     .map((message) => {
-      const content = message.body[0]?.text?.text ?? "";
+      const content = getMessageBodyText(message.body);
       return {
         id: message.id,
         role: message.role,
         content,
+        body: message.body,
         status: "completed" as const,
       };
     });
@@ -186,6 +190,7 @@ function applyRuntimeEvent(state: AppState, event: RuntimeEvent): AppState {
             id: event.message_id,
             role: "assistant",
             content: "",
+            body: [],
             status: "streaming",
           },
         ],
@@ -202,20 +207,23 @@ function applyRuntimeEvent(state: AppState, event: RuntimeEvent): AppState {
         ),
       };
     case "message_completed": {
-      const toolCallsFromEvent =
-        event.tool_calls?.reduce<Record<string, ToolCallState>>((acc, call) => {
-          acc[call.id] = {
-            toolCallId: call.id,
+      const completedBody = event.body as MessageBody | null;
+      const toolCallsFromBody =
+        completedBody?.reduce<Record<string, ToolCallState>>((acc, block) => {
+          if (block.type !== "toolCall") return acc;
+          acc[block.id] = {
+            toolCallId: block.id,
             messageId: event.message_id,
             runId: event.run_id,
-            name: call.name,
-            arguments: call.arguments,
+            name: block.name,
+            arguments: block.arguments,
             status: "running",
             output: null,
             error: null,
           };
           return acc;
         }, {}) ?? {};
+
       return {
         ...state,
         events,
@@ -224,13 +232,18 @@ function applyRuntimeEvent(state: AppState, event: RuntimeEvent): AppState {
             ? {
                 ...message,
                 status: "completed" as const,
-                toolCalls: event.tool_calls ?? undefined,
+                ...(completedBody
+                  ? {
+                      content: getMessageBodyText(completedBody),
+                      body: completedBody,
+                    }
+                  : {}),
               }
             : message,
         ),
         toolCalls: {
           ...state.toolCalls,
-          ...toolCallsFromEvent,
+          ...toolCallsFromBody,
         },
       };
     }
@@ -328,7 +341,9 @@ function findMessageIdForToolCall(
     const message = messages[index];
     if (
       message.role === "assistant" &&
-      message.toolCalls?.some((call) => call.id === toolCallId)
+      getMessageBodyToolCalls(message.body).some(
+        (call) => call.id === toolCallId,
+      )
     ) {
       return message.id;
     }

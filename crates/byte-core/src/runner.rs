@@ -4,8 +4,9 @@ use std::time::Duration;
 
 use byte_models::{ProviderError, ProviderEvent, ProviderStream};
 use byte_protocol::{
-    ActivatedSkill, CancelRunResult, CompactionSummary, LlmMessage, Message, MessageRole,
-    RunStatus, RuntimeEventKind, SendMessageParams, SessionContext, ToolCall,
+    ActivatedSkill, CancelRunResult, CompactionSummary, LlmMessage, Message, MessageBlock,
+    MessageBody, MessageRole, RunStatus, RuntimeEventKind, SendMessageParams, SessionContext,
+    ToolCall,
 };
 use byte_session::SessionError;
 use byte_skills::SkillError;
@@ -154,8 +155,7 @@ impl SessionRunner {
                 None,
                 parent_id.as_deref(),
                 MessageRole::Developer,
-                &params.message,
-                None,
+                MessageBody::text(&params.message),
             )
             .await
         {
@@ -476,11 +476,11 @@ impl RunExecutor {
             let tools = runner.services.tool_registry.definitions();
             let active_skills = runner.active_skills.lock().await.clone();
             if !messages.is_empty() && messages[0].role == MessageRole::System {
-                messages[0].content = LlmContextBuilder::build_system_prompt(
+                messages[0].body = MessageBody::text(LlmContextBuilder::build_system_prompt(
                     &tools,
                     &active_skills,
                     &available_skills,
-                );
+                ));
             }
 
             let stream = runner
@@ -509,12 +509,10 @@ impl RunExecutor {
                 return Ok(RunOutcome::Cancelled { emit_event: true });
             }
 
-            turn_messages.push(LlmMessage {
-                role: MessageRole::Assistant,
-                content: assistant.content,
-                tool_call_id: None,
-                tool_calls: Some(calls.clone()),
-            });
+            turn_messages.push(LlmMessage::assistant(
+                assistant.content,
+                Some(calls.clone()),
+            ));
 
             for call in calls {
                 let tool_result = self
@@ -640,12 +638,23 @@ impl RunExecutor {
                             })
                             .await;
                     }
+
+                    let mut blocks = vec![MessageBlock::Text {
+                        text: state.assistant_content.clone(),
+                    }];
+                    if let Some(calls) = &calls {
+                        for call in calls {
+                            blocks.push(MessageBlock::ToolCall(call.clone()));
+                        }
+                    }
+                    let body = MessageBody(blocks);
+
                     runner
-                        .emit(RuntimeEventKind::MessageCompleted {
-                            run_id: self.run_id.clone(),
-                            message_id: id.clone(),
-                            tool_calls: calls.clone(),
-                        })
+                        .emit(RuntimeEventKind::message_completed(
+                            self.run_id.clone(),
+                            id.clone(),
+                            Some(body.clone()),
+                        ))
                         .await;
 
                     let _ = runner
@@ -656,8 +665,7 @@ impl RunExecutor {
                             Some(&id),
                             Some(last_entry_id),
                             MessageRole::Assistant,
-                            &*state.assistant_content,
-                            calls.clone(),
+                            body,
                         )
                         .await?;
 
@@ -716,8 +724,7 @@ impl RunExecutor {
                 None,
                 Some(last_entry_id),
                 MessageRole::Tool,
-                &output,
-                None,
+                MessageBody::text(&output),
             )
             .await?;
 
@@ -737,7 +744,7 @@ mod tests {
     use async_trait::async_trait;
     use byte_models::{EchoProvider, ModelProvider, ProviderError, ProviderEvent, ProviderStream};
     use byte_protocol::{
-        LlmMessage, Message, MessageBlock, MessageRole, RunStatus, RuntimeEventKind,
+        LlmMessage, Message, MessageBlock, MessageBody, MessageRole, RunStatus, RuntimeEventKind,
         SendMessageParams,
     };
     use byte_session::SessionStore;
@@ -754,6 +761,21 @@ mod tests {
             [MessageBlock::Text { text }] => text.as_str(),
             _ => "",
         }
+    }
+
+    fn llm_message_text(message: &LlmMessage) -> String {
+        message
+            .body
+            .0
+            .iter()
+            .filter_map(|block| {
+                if let MessageBlock::Text { text } = block {
+                    Some(text.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     use crate::event_bus::RecordingEventBus;
@@ -1282,7 +1304,14 @@ mod tests {
             "second event should be assistant message_started"
         );
         assert!(
-            matches!(&run_event_kinds[2], RuntimeEventKind::MessageCompleted { run_id: rid, tool_calls: Some(_), .. } if rid == &run_id),
+            matches!(
+                &run_event_kinds[2],
+                RuntimeEventKind::MessageCompleted {
+                    run_id: rid,
+                    body: Some(MessageBody(blocks)),
+                    ..
+                } if rid == &run_id && blocks.iter().any(|b| matches!(b, MessageBlock::ToolCall(_)))
+            ),
             "third event should be message_completed with tool_calls"
         );
         assert!(
@@ -1300,7 +1329,14 @@ mod tests {
             "fifth event should be tool_finished with file contents and run_id"
         );
         assert!(
-            matches!(&run_event_kinds[6], RuntimeEventKind::MessageCompleted { run_id: rid, tool_calls: None, .. } if rid == &run_id),
+            matches!(
+                &run_event_kinds[6],
+                RuntimeEventKind::MessageCompleted {
+                    run_id: rid,
+                    body: Some(MessageBody(blocks)),
+                    ..
+                } if rid == &run_id && blocks.iter().all(|b| !matches!(b, MessageBlock::ToolCall(_)))
+            ),
             "seventh event should be message_completed without tool_calls"
         );
         let view = store.load_session("s1").await.expect("session loads");
@@ -1437,18 +1473,101 @@ mod tests {
         // Second turn: system, user, assistant (must carry tool_calls), tool result.
         assert_eq!(calls[1].len(), 4);
         assert_eq!(calls[1][2].role, MessageRole::Assistant);
+        let assistant_tool_calls: Vec<_> = calls[1][2]
+            .body
+            .0
+            .iter()
+            .filter_map(|block| {
+                if let MessageBlock::ToolCall(call) = block {
+                    Some(call)
+                } else {
+                    None
+                }
+            })
+            .collect();
         assert!(
-            calls[1][2].tool_calls.is_some(),
+            !assistant_tool_calls.is_empty(),
             "assistant LlmMessage passed to the next turn must carry tool_calls"
         );
-        let tool_calls = calls[1][2].tool_calls.as_ref().unwrap();
-        assert_eq!(tool_calls.len(), 1);
-        assert_eq!(tool_calls[0].id, "call-1");
-        assert_eq!(tool_calls[0].name, "read_file");
+        assert_eq!(assistant_tool_calls.len(), 1);
+        assert_eq!(assistant_tool_calls[0].id, "call-1");
+        assert_eq!(assistant_tool_calls[0].name, "read_file");
 
         assert_eq!(calls[1][3].role, MessageRole::Tool);
         assert_eq!(calls[1][3].tool_call_id, Some("call-1".into()));
     }
+
+    #[tokio::test]
+    async fn assistant_message_completed_body_includes_text_and_tool_call_blocks() {
+        let params = SendMessageParams {
+            session_id: "s1".into(),
+            message: "读一下 main.rs".into(),
+        };
+        let bus = Arc::new(RecordingEventBus::new());
+        let store = temp_store();
+        let temp = tempdir().expect("temp dir");
+        let workspace = temp.path().to_path_buf();
+        store
+            .new_session(&params.session_id, workspace.to_str().unwrap())
+            .await
+            .expect("create session with workspace");
+        tokio::fs::write(workspace.join("main.rs"), "fn main() {}")
+            .await
+            .expect("write main.rs");
+
+        let mut registry = MvpToolRegistry::new();
+        registry.register(
+            "read_file".to_string(),
+            Arc::new(ReadFileTool),
+            Arc::new(AllowAllPolicy),
+        );
+        let services = RuntimeServices::new(
+            Arc::new(EchoProvider::default()),
+            store.clone(),
+            bus.clone(),
+            Arc::new(registry),
+            Arc::new(MvpSkillRegistry::new()),
+        );
+        let runner = SessionRunner::new(services);
+
+        let run_id = runner.send_message(params).await.expect("send accepted");
+        runner.wait_until_idle().await;
+
+        let events = bus.take_events().await;
+        let completed = events
+            .iter()
+            .find(|event| matches!(&event.kind, RuntimeEventKind::MessageCompleted { run_id: rid, .. } if rid == &run_id))
+            .expect("message_completed event should be emitted");
+        let body = match &completed.kind {
+            RuntimeEventKind::MessageCompleted {
+                body: Some(body), ..
+            } => body.clone(),
+            _ => panic!("message_completed should carry a body"),
+        };
+
+        assert_eq!(
+            body.0.len(),
+            2,
+            "body should contain one text block and one tool-call block"
+        );
+        assert!(matches!(body.0[0], MessageBlock::Text { .. }));
+        assert!(
+            matches!(body.0[1], MessageBlock::ToolCall(ref call) if call.id == "echo-call-1" && call.name == "read_file"),
+            "second block should be the read_file tool call"
+        );
+
+        let view = store.load_session("s1").await.expect("session loads");
+        let assistant = view
+            .messages
+            .iter()
+            .find(|message| message.role == MessageRole::Assistant)
+            .expect("assistant message should be persisted");
+        assert_eq!(
+            assistant.body, body,
+            "persisted assistant body should match MessageCompleted body"
+        );
+    }
+
     #[tokio::test]
     async fn write_file_tool_loop_end_to_end() {
         let params = SendMessageParams {
@@ -2015,7 +2134,7 @@ mod tests {
         // First run turn 0: system prompt only lists tools.
         assert_eq!(calls[0][0].role, MessageRole::System);
         assert!(
-            !calls[0][0].content.contains("Always review carefully."),
+            !llm_message_text(&calls[0][0]).contains("Always review carefully."),
             "first run turn 0 should not yet contain skill content"
         );
 
@@ -2023,14 +2142,14 @@ mod tests {
         // activated during the previous turn.
         assert_eq!(calls[1][0].role, MessageRole::System);
         assert!(
-            calls[1][0].content.contains("Always review carefully."),
+            llm_message_text(&calls[1][0]).contains("Always review carefully."),
             "first run turn 1 should reflect the newly activated skill"
         );
 
         // Second run rebuilds the system prompt with the activated skill.
         assert_eq!(calls[2][0].role, MessageRole::System);
         assert!(
-            calls[2][0].content.contains("Always review carefully."),
+            llm_message_text(&calls[2][0]).contains("Always review carefully."),
             "second run system prompt should contain skill content"
         );
 

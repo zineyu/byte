@@ -50,7 +50,7 @@ _Avoid_: Message Content when the new term is used.
 
 ### Message Block
 
-A single typed unit inside a Message Body, such as a text segment or a tool call. MVP supports `text` and `toolCall` blocks; future blocks may include images or thinking traces.
+A single typed unit inside a Message Body, such as a text segment or a tool call. MVP supports `text` and `toolCall` blocks; future blocks may include images or thinking traces. Assistant messages may contain both `text` and inline `toolCall` blocks so that the model response and its requested actions are stored as a single unit.
 
 ### Block Delta
 

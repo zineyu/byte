@@ -11,10 +11,35 @@ use async_openai::types::chat::{
     CreateChatCompletionRequestArgs, FunctionCall, FunctionObject,
 };
 use async_trait::async_trait;
-use byte_protocol::{LlmMessage, MessageRole, ToolCall};
+use byte_protocol::{LlmMessage, MessageBlock, MessageBody, MessageRole, ToolCall};
 
 use crate::config::ModelProviderConfig;
 use crate::provider::{ModelProvider, ProviderError, ProviderEvent, ProviderStream};
+
+/// Concatenate all text blocks in a [`MessageBody`] into a single string.
+fn body_text(body: &MessageBody) -> String {
+    let mut text = String::new();
+    for block in &body.0 {
+        if let MessageBlock::Text { text: t } = block {
+            text.push_str(t);
+        }
+    }
+    text
+}
+
+/// Collect every [`ToolCall`] block in a [`MessageBody`].
+fn body_tool_calls(body: &MessageBody) -> Vec<ToolCall> {
+    body.0
+        .iter()
+        .filter_map(|block| {
+            if let MessageBlock::ToolCall(call) = block {
+                Some(call.clone())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
 
 /// Remove any trailing slash from a base URL.
 fn normalize_base_url(url: &str) -> String {
@@ -55,51 +80,61 @@ impl ModelProvider for OpenAiCompatibleProvider {
     ) -> Result<ProviderStream, ProviderError> {
         let chat_messages: Vec<ChatCompletionRequestMessage> = messages
             .into_iter()
-            .map(|m| match m.role {
-                MessageRole::System => {
-                    ChatCompletionRequestMessage::System(ChatCompletionRequestSystemMessage {
-                        content: ChatCompletionRequestSystemMessageContent::Text(m.content),
-                        name: None,
-                    })
-                }
-                MessageRole::Developer => {
-                    ChatCompletionRequestMessage::User(ChatCompletionRequestUserMessage {
-                        content: ChatCompletionRequestUserMessageContent::Text(m.content),
-                        name: None,
-                    })
-                }
-                MessageRole::Assistant => {
-                    ChatCompletionRequestMessage::Assistant(ChatCompletionRequestAssistantMessage {
-                        content: Some(ChatCompletionRequestAssistantMessageContent::Text(
-                            m.content,
-                        )),
-                        name: None,
-                        tool_calls: m.tool_calls.map(|calls| {
-                            calls
-                                .into_iter()
-                                .map(|call| {
-                                    ChatCompletionMessageToolCalls::Function(
-                                        ChatCompletionMessageToolCall {
-                                            id: call.id,
-                                            function: FunctionCall {
-                                                name: call.name,
-                                                arguments: call.arguments.to_string(),
-                                            },
-                                        },
+            .map(|m| {
+                let text = body_text(&m.body);
+                match m.role {
+                    MessageRole::System => {
+                        ChatCompletionRequestMessage::System(ChatCompletionRequestSystemMessage {
+                            content: ChatCompletionRequestSystemMessageContent::Text(text),
+                            name: None,
+                        })
+                    }
+                    MessageRole::Developer => {
+                        ChatCompletionRequestMessage::User(ChatCompletionRequestUserMessage {
+                            content: ChatCompletionRequestUserMessageContent::Text(text),
+                            name: None,
+                        })
+                    }
+                    MessageRole::Assistant => {
+                        let tool_calls = body_tool_calls(&m.body);
+                        ChatCompletionRequestMessage::Assistant(
+                            ChatCompletionRequestAssistantMessage {
+                                content: Some(ChatCompletionRequestAssistantMessageContent::Text(
+                                    text,
+                                )),
+                                name: None,
+                                tool_calls: if tool_calls.is_empty() {
+                                    None
+                                } else {
+                                    Some(
+                                        tool_calls
+                                            .into_iter()
+                                            .map(|call| {
+                                                ChatCompletionMessageToolCalls::Function(
+                                                    ChatCompletionMessageToolCall {
+                                                        id: call.id,
+                                                        function: FunctionCall {
+                                                            name: call.name,
+                                                            arguments: call.arguments.to_string(),
+                                                        },
+                                                    },
+                                                )
+                                            })
+                                            .collect(),
                                     )
-                                })
-                                .collect()
-                        }),
-                        function_call: None,
-                        refusal: None,
-                        audio: None,
-                    })
-                }
-                MessageRole::Tool => {
-                    ChatCompletionRequestMessage::Tool(ChatCompletionRequestToolMessage {
-                        content: ChatCompletionRequestToolMessageContent::Text(m.content),
-                        tool_call_id: m.tool_call_id.unwrap_or_default(),
-                    })
+                                },
+                                function_call: None,
+                                refusal: None,
+                                audio: None,
+                            },
+                        )
+                    }
+                    MessageRole::Tool => {
+                        ChatCompletionRequestMessage::Tool(ChatCompletionRequestToolMessage {
+                            content: ChatCompletionRequestToolMessageContent::Text(text),
+                            tool_call_id: m.tool_call_id.unwrap_or_default(),
+                        })
+                    }
                 }
             })
             .collect();
@@ -342,6 +377,41 @@ mod tests {
             "expected MessageCompleted, got {:?}",
             events[3]
         );
+    }
+
+    #[test]
+    fn body_text_concatenates_all_text_blocks() {
+        let body = MessageBody(vec![
+            MessageBlock::Text {
+                text: "Hello,".into(),
+            },
+            MessageBlock::ToolCall(ToolCall {
+                id: "call-1".into(),
+                name: "read_file".into(),
+                arguments: serde_json::json!({"path": "main.rs"}),
+            }),
+            MessageBlock::Text {
+                text: " world!".into(),
+            },
+        ]);
+        assert_eq!(body_text(&body), "Hello, world!");
+    }
+
+    #[test]
+    fn body_tool_calls_extracts_tool_call_blocks() {
+        let call = ToolCall {
+            id: "call-1".into(),
+            name: "read_file".into(),
+            arguments: serde_json::json!({"path": "main.rs"}),
+        };
+        let body = MessageBody(vec![
+            MessageBlock::Text {
+                text: String::new(),
+            },
+            MessageBlock::ToolCall(call.clone()),
+        ]);
+        let calls = body_tool_calls(&body);
+        assert_eq!(calls, vec![call]);
     }
 
     #[tokio::test]

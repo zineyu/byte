@@ -2,13 +2,15 @@ import { useCallback, useReducer } from "react";
 import { initialState } from "./initialState";
 import { reducer } from "./reducer";
 import type { SessionSummary } from "../generated/SessionSummary";
-import type { SessionView } from "../generated/SessionView";
+import type { SessionView as GeneratedSessionView } from "../generated/SessionView";
 import type {
   DaemonConnectionView,
   LoadState,
   RuntimeEvent,
+  SessionView,
   StoreAction,
 } from "./types";
+import { asSessionView } from "./types";
 
 export type StoreDispatch = (action: StoreAction) => void;
 
@@ -19,8 +21,8 @@ export function useByteStore() {
     dispatch({ type: "runtime_event", event });
   }, []);
 
-  const loadSession = useCallback((session: SessionView) => {
-    dispatch({ type: "load_session", session });
+  const loadSession = useCallback((session: GeneratedSessionView) => {
+    dispatch({ type: "load_session", session: asSessionView(session) });
   }, []);
 
   const setSessions = useCallback((sessions: SessionSummary[]) => {

@@ -1,8 +1,24 @@
 use std::pin::Pin;
 
 use async_trait::async_trait;
-use byte_protocol::{LlmMessage, MessageRole};
+use byte_protocol::{LlmMessage, MessageBlock, MessageRole};
 use futures::Stream;
+
+/// Concatenate all text blocks in an [`LlmMessage`] body into a single string.
+fn message_text(message: &LlmMessage) -> String {
+    message
+        .body
+        .0
+        .iter()
+        .filter_map(|block| {
+            if let MessageBlock::Text { text } = block {
+                Some(text.as_str())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
 
 /// A pinned, sendable stream of provider events or errors.
 pub type ProviderStream = Pin<Box<dyn Stream<Item = Result<ProviderEvent, ProviderError>> + Send>>;
@@ -97,9 +113,9 @@ impl ModelProvider for EchoProvider {
                 .iter()
                 .rev()
                 .find(|message| message.role == MessageRole::Developer)
-                .map_or("", |message| message.content.as_str());
+                .map_or(String::new(), message_text);
 
-            if has_write_file && is_write_file_intent(last_user_message) {
+            if has_write_file && is_write_file_intent(last_user_message.as_str()) {
                 let tool_call = byte_protocol::ToolCall {
                     id: "echo-call-1".into(),
                     name: "write_file".into(),
@@ -111,7 +127,7 @@ impl ModelProvider for EchoProvider {
                 return Ok(tool_call_stream(tool_call, self.delay));
             }
 
-            if has_apply_patch && is_apply_patch_intent(last_user_message) {
+            if has_apply_patch && is_apply_patch_intent(last_user_message.as_str()) {
                 let tool_call = byte_protocol::ToolCall {
                     id: "echo-call-1".into(),
                     name: "apply_patch".into(),
@@ -139,7 +155,7 @@ impl ModelProvider for EchoProvider {
         let last = messages
             .into_iter()
             .filter(|m| m.role == MessageRole::Developer)
-            .map(|m| m.content)
+            .map(|m| message_text(&m))
             .next_back()
             .unwrap_or_default();
 

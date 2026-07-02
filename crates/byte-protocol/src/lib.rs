@@ -7,7 +7,7 @@ use std::path::PathBuf;
 /// JSON-RPC protocol version.
 pub const JSON_RPC_VERSION: &str = "2.0";
 /// Wire format version supported by this crate.
-pub const PROTOCOL_VERSION: u16 = 3;
+pub const PROTOCOL_VERSION: u16 = 4;
 /// JSON-RPC method name used for runtime event notifications.
 pub const RUNTIME_EVENT_METHOD: &str = "runtime_event";
 
@@ -384,16 +384,16 @@ impl RuntimeEventKind {
         }
     }
 
-    /// A message completed, optionally with tool calls.
+    /// A message completed, optionally with its final body.
     pub fn message_completed(
         run_id: impl Into<String>,
         message_id: impl Into<String>,
-        tool_calls: Option<Vec<ToolCall>>,
+        body: Option<MessageBody>,
     ) -> Self {
         Self::MessageCompleted {
             run_id: run_id.into(),
             message_id: message_id.into(),
-            tool_calls,
+            body,
         }
     }
 
@@ -505,9 +505,9 @@ pub enum RuntimeEventKind {
         run_id: String,
         /// Message identifier.
         message_id: String,
-        /// Tool calls emitted in this message, if any.
+        /// Final message body, including any tool-call blocks not streamed as deltas.
         #[serde(skip_serializing_if = "Option::is_none")]
-        tool_calls: Option<Vec<ToolCall>>,
+        body: Option<MessageBody>,
     },
     /// Tool call started.
     ToolStarted {
@@ -548,14 +548,11 @@ pub enum RuntimeEventKind {
 pub struct LlmMessage {
     /// Role of the message sender.
     pub role: MessageRole,
-    /// Text content of the message.
-    pub content: String,
+    /// Body content of the message.
+    pub body: MessageBody,
     /// Identifier of the tool call this message answers, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
-    /// Tool calls requested in this message, if any.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_calls: Option<Vec<ToolCall>>,
 }
 
 impl LlmMessage {
@@ -563,9 +560,8 @@ impl LlmMessage {
     pub fn text(role: MessageRole, content: impl Into<String>) -> Self {
         Self {
             role,
-            content: content.into(),
+            body: MessageBody::text(content),
             tool_call_id: None,
-            tool_calls: None,
         }
     }
 
@@ -573,19 +569,25 @@ impl LlmMessage {
     pub fn tool_result(tool_call_id: impl Into<String>, content: impl Into<String>) -> Self {
         Self {
             role: MessageRole::Tool,
-            content: content.into(),
+            body: MessageBody::text(content),
             tool_call_id: Some(tool_call_id.into()),
-            tool_calls: None,
         }
     }
 
     /// Create an assistant message that may carry tool calls.
     pub fn assistant(content: impl Into<String>, tool_calls: Option<Vec<ToolCall>>) -> Self {
+        let mut blocks = vec![MessageBlock::Text {
+            text: content.into(),
+        }];
+        if let Some(calls) = tool_calls {
+            for call in calls {
+                blocks.push(MessageBlock::ToolCall(call));
+            }
+        }
         Self {
             role: MessageRole::Assistant,
-            content: content.into(),
+            body: MessageBody(blocks),
             tool_call_id: None,
-            tool_calls,
         }
     }
 }
@@ -988,7 +990,7 @@ mod tests {
         let decoded: LlmMessage = decode_json_line(&encode_json_line(&message).unwrap()).unwrap();
         assert_eq!(decoded.role, MessageRole::Tool);
         assert_eq!(decoded.tool_call_id, Some("call-1".into()));
-        assert_eq!(decoded.content, "contents");
+        assert_eq!(decoded.body, MessageBody::text("contents"));
     }
     #[test]
     fn llm_message_without_tool_call_id_roundtrips() {
@@ -996,7 +998,26 @@ mod tests {
         let decoded: LlmMessage = decode_json_line(&encode_json_line(&message).unwrap()).unwrap();
         assert_eq!(decoded.role, MessageRole::Developer);
         assert_eq!(decoded.tool_call_id, None);
-        assert_eq!(decoded.content, "hello");
+        assert_eq!(decoded.body, MessageBody::text("hello"));
+    }
+    #[test]
+    fn llm_message_assistant_with_tool_call_roundtrips() {
+        let call = ToolCall {
+            id: "call-1".into(),
+            name: "read_file".into(),
+            arguments: serde_json::json!({"path": "main.rs"}),
+        };
+        let message = LlmMessage::assistant("hello", Some(vec![call.clone()]));
+        let decoded: LlmMessage = decode_json_line(&encode_json_line(&message).unwrap()).unwrap();
+        assert_eq!(decoded.role, MessageRole::Assistant);
+        assert_eq!(decoded.body.0.len(), 2);
+        assert_eq!(
+            decoded.body.0[0],
+            MessageBlock::Text {
+                text: "hello".into()
+            }
+        );
+        assert_eq!(decoded.body.0[1], MessageBlock::ToolCall(call));
     }
 
     #[test]
@@ -1042,22 +1063,22 @@ mod tests {
     #[test]
     fn message_completed_with_tool_calls_roundtrips() {
         let event = RuntimeEvent {
-            sequence: 14,
+            sequence: 7,
             kind: RuntimeEventKind::message_completed(
                 "run-1",
                 "msg-1",
-                Some(vec![ToolCall {
+                Some(MessageBody(vec![MessageBlock::ToolCall(ToolCall {
                     id: "call-1".into(),
                     name: "read_file".into(),
                     arguments: serde_json::json!({"path": "src/main.rs"}),
-                }]),
+                })])),
             ),
         };
         let decoded: RuntimeEvent = decode_json_line(&encode_json_line(&event).unwrap()).unwrap();
         assert!(matches!(
             decoded.kind,
-            RuntimeEventKind::MessageCompleted { run_id, message_id, tool_calls }
-            if run_id == "run-1" && message_id == "msg-1" && tool_calls.as_ref().map(Vec::len) == Some(1)
+            RuntimeEventKind::MessageCompleted { run_id, message_id, body }
+            if run_id == "run-1" && message_id == "msg-1" && body.as_ref().map(|b| b.0.len()) == Some(1)
         ));
     }
 }

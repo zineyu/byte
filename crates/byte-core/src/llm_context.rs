@@ -1,7 +1,8 @@
 use byte_protocol::{
-    ActivatedSkill, CompactionSummary, LlmMessage, Message, MessageBlock, MessageBody, MessageRole,
-    SkillEntry, ToolDefinition,
+    ActivatedSkill, CompactionSummary, LlmMessage, Message, MessageRole, SkillEntry, ToolDefinition,
 };
+#[cfg(test)]
+use byte_protocol::{MessageBlock, MessageBody};
 use std::fmt::Write;
 
 /// Context supplied to `LlmContextBuilder` for a single run.
@@ -55,60 +56,48 @@ impl LlmContextBuilder {
     pub fn build(&self, context: LlmContextInput) -> Vec<LlmMessage> {
         let mut messages = Vec::new();
 
-        messages.push(LlmMessage {
-            role: MessageRole::System,
-            content: Self::build_system_prompt(
+        messages.push(LlmMessage::text(
+            MessageRole::System,
+            Self::build_system_prompt(
                 &context.tools,
                 &context.active_skills,
                 &context.available_skills,
             ),
-            tool_call_id: None,
-            tool_calls: None,
-        });
+        ));
 
         // Inject workspace instructions as a separate system message so they
         // are visible to the model without being merged into the main system
         // prompt or persisted history.
         if let Some(instructions) = &context.workspace_instructions {
-            messages.push(LlmMessage {
-                role: MessageRole::System,
-                content: instructions.clone(),
-                tool_call_id: None,
-                tool_calls: None,
-            });
+            messages.push(LlmMessage::text(MessageRole::System, instructions.clone()));
         }
 
         // Add compaction summaries as system reminders so they remain visible
         // without polluting the persisted message history.
         for compaction in &context.compactions {
-            messages.push(LlmMessage {
-                role: MessageRole::System,
-                content: format!(
+            messages.push(LlmMessage::text(
+                MessageRole::System,
+                format!(
                     "Earlier conversation summary ({}): {}",
                     compaction.id, compaction.summary
                 ),
-                tool_call_id: None,
-                tool_calls: None,
-            });
+            ));
         }
 
         // Add persisted history.
         for message in &context.history {
             messages.push(LlmMessage {
                 role: message.role,
-                content: body_text(&message.body),
+                body: message.body.clone(),
                 tool_call_id: None,
-                tool_calls: None,
             });
         }
 
         // Add current user message.
-        messages.push(LlmMessage {
-            role: MessageRole::Developer,
-            content: context.user_message,
-            tool_call_id: None,
-            tool_calls: None,
-        });
+        messages.push(LlmMessage::text(
+            MessageRole::Developer,
+            context.user_message,
+        ));
 
         messages
     }
@@ -161,12 +150,16 @@ impl LlmContextBuilder {
     }
 }
 
-/// Extracts the text from a single-text-block [`MessageBody`].
+#[cfg(test)]
+/// Concatenate all text blocks in a body into a single string.
 fn body_text(body: &MessageBody) -> String {
-    match &body.0[..] {
-        [MessageBlock::Text { text }] => text.clone(),
-        _ => String::new(),
+    let mut text = String::new();
+    for block in &body.0 {
+        if let MessageBlock::Text { text: t } = block {
+            text.push_str(t);
+        }
     }
+    text
 }
 
 #[cfg(test)]
@@ -205,9 +198,9 @@ mod tests {
 
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].role, MessageRole::System);
-        assert!(messages[0].content.contains("read_file"));
+        assert!(body_text(&messages[0].body).contains("read_file"));
         assert_eq!(messages[1].role, MessageRole::Developer);
-        assert_eq!(messages[1].content, "hello");
+        assert_eq!(body_text(&messages[1].body), "hello");
     }
 
     #[test]
@@ -231,11 +224,11 @@ mod tests {
         assert_eq!(messages.len(), 4);
         assert_eq!(messages[0].role, MessageRole::System);
         assert_eq!(messages[1].role, MessageRole::System);
-        assert!(messages[1].content.contains("old topic"));
+        assert!(body_text(&messages[1].body).contains("old topic"));
         assert_eq!(messages[2].role, MessageRole::Developer);
-        assert_eq!(messages[2].content, "past");
+        assert_eq!(body_text(&messages[2].body), "past");
         assert_eq!(messages[3].role, MessageRole::Developer);
-        assert_eq!(messages[3].content, "current");
+        assert_eq!(body_text(&messages[3].body), "current");
     }
 
     #[test]
@@ -263,7 +256,7 @@ mod tests {
 
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].role, MessageRole::System);
-        let system = &messages[0].content;
+        let system = body_text(&messages[0].body);
         assert!(system.contains("rust: Rust best practices."));
         assert!(system.contains("testing: Testing guidelines."));
         assert!(system.contains("activate_skill"));
@@ -296,7 +289,7 @@ mod tests {
         let messages = builder.build(context);
 
         assert_eq!(messages.len(), 2);
-        let system = &messages[0].content;
+        let system = body_text(&messages[0].body);
         assert!(system.contains("Active skills:"));
         assert!(system.contains("## rust"));
         assert!(system.contains("testing: Testing guidelines."));
@@ -319,10 +312,10 @@ mod tests {
 
         assert_eq!(messages.len(), 3);
         assert_eq!(messages[0].role, MessageRole::System);
-        assert!(messages[0].content.contains("Byte Agent"));
+        assert!(body_text(&messages[0].body).contains("Byte Agent"));
         assert_eq!(messages[1].role, MessageRole::System);
-        assert_eq!(messages[1].content, "Always write tests.");
+        assert_eq!(body_text(&messages[1].body), "Always write tests.");
         assert_eq!(messages[2].role, MessageRole::Developer);
-        assert_eq!(messages[2].content, "hello");
+        assert_eq!(body_text(&messages[2].body), "hello");
     }
 }

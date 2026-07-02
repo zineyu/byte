@@ -40,7 +40,7 @@ function makeEvent(
         type,
         run_id: "r1",
         message_id: "m1",
-        tool_calls: null,
+        body: null,
       };
     case "tool_started":
       return {
@@ -71,8 +71,20 @@ function makeEvent(
 describe("buildTimelineItems", () => {
   it("returns message items for messages without tool calls", () => {
     const messages: ChatMessage[] = [
-      { id: "m1", role: "developer", content: "hi", status: "completed" },
-      { id: "m2", role: "assistant", content: "hello", status: "completed" },
+      {
+        id: "m1",
+        role: "developer",
+        content: "hi",
+        status: "completed",
+        body: [{ type: "text", text: "hi" }],
+      },
+      {
+        id: "m2",
+        role: "assistant",
+        content: "hello",
+        status: "completed",
+        body: [{ type: "text", text: "hello" }],
+      },
     ];
 
     const items = buildTimelineItems(messages);
@@ -97,7 +109,15 @@ describe("buildTimelineItems", () => {
         role: "assistant",
         content: "I'll search",
         status: "completed",
-        toolCalls: [{ id: "tc1", name: "grep", arguments: { pattern: "foo" } }],
+        body: [
+          { type: "text", text: "I'll search" },
+          {
+            type: "toolCall",
+            id: "tc1",
+            name: "grep",
+            arguments: { pattern: "foo" },
+          },
+        ],
       },
     ];
 
@@ -114,15 +134,35 @@ describe("buildTimelineItems", () => {
 
   it("preserves order across multiple assistant messages with tool calls", () => {
     const messages: ChatMessage[] = [
-      { id: "m1", role: "developer", content: "a", status: "completed" },
+      {
+        id: "m1",
+        role: "developer",
+        content: "a",
+        status: "completed",
+        body: [{ type: "text", text: "a" }],
+      },
       {
         id: "m2",
         role: "assistant",
         content: "b",
         status: "completed",
-        toolCalls: [{ id: "tc1", name: "read_file", arguments: { path: "a" } }],
+        body: [
+          { type: "text", text: "b" },
+          {
+            type: "toolCall",
+            id: "tc1",
+            name: "read_file",
+            arguments: { path: "a" },
+          },
+        ],
       },
-      { id: "m3", role: "assistant", content: "c", status: "completed" },
+      {
+        id: "m3",
+        role: "assistant",
+        content: "c",
+        status: "completed",
+        body: [{ type: "text", text: "c" }],
+      },
     ];
 
     const items = buildTimelineItems(messages);

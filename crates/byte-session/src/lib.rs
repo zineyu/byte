@@ -130,18 +130,15 @@ impl SessionStore {
         id: Option<&str>,
         parent_id: Option<&str>,
         role: MessageRole,
-        content: impl Into<String>,
-        tool_calls: Option<Vec<byte_protocol::ToolCall>>,
+        body: MessageBody,
     ) -> Result<String, SessionError> {
-        let _ = content;
         let path = self.session_path(session_id)?;
         let id = id.map_or_else(|| uuid::Uuid::new_v4().to_string(), ToOwned::to_owned);
-        let _ = tool_calls; // ToolCall blocks are added in Slice 3 (#39).
         let entry = SessionEntry::Message(Message {
             id: id.clone(),
             parent_id: parent_id.map(ToOwned::to_owned),
             role,
-            body: MessageBody::text(content.into()),
+            body,
         });
         self.write_line(&path, &entry).await?;
         Ok(id)
@@ -408,19 +405,7 @@ fn reconstruct_view(
             }
             SessionEntry::Message(message) => {
                 message_order.push(message.id.clone());
-                let content = match &message.body.0[..] {
-                    [byte_protocol::MessageBlock::Text { text }] => text.clone(),
-                    _ => String::new(),
-                };
-                let _ = messages_by_id.insert(
-                    message.id.clone(),
-                    Message {
-                        id: message.id,
-                        parent_id: message.parent_id,
-                        role: message.role,
-                        body: MessageBody::text(content),
-                    },
-                );
+                let _ = messages_by_id.insert(message.id.clone(), message);
             }
             SessionEntry::Compaction {
                 id,
@@ -529,8 +514,7 @@ mod tests {
                 None,
                 None,
                 MessageRole::Developer,
-                "hello",
-                None,
+                MessageBody::text("hello"),
             )
             .await
             .expect("append first");
@@ -541,8 +525,7 @@ mod tests {
                 None,
                 Some(&first_id),
                 MessageRole::Assistant,
-                "hi",
-                None,
+                MessageBody::text("hi"),
             )
             .await
             .expect("append second");
@@ -578,8 +561,7 @@ mod tests {
                 None,
                 None,
                 MessageRole::Developer,
-                "hello",
-                None,
+                MessageBody::text("hello"),
             )
             .await
             .unwrap();
@@ -589,8 +571,7 @@ mod tests {
                 None,
                 Some(&first_id),
                 MessageRole::Assistant,
-                "hi",
-                None,
+                MessageBody::text("hi"),
             )
             .await
             .unwrap();
@@ -619,8 +600,7 @@ mod tests {
                 None,
                 None,
                 MessageRole::Developer,
-                "read main.rs",
-                None,
+                MessageBody::text("read main.rs"),
             )
             .await
             .unwrap();
@@ -630,8 +610,7 @@ mod tests {
                 None,
                 Some(&dev_id),
                 MessageRole::Assistant,
-                "",
-                None,
+                MessageBody::text(""),
             )
             .await
             .unwrap();
@@ -641,8 +620,7 @@ mod tests {
                 None,
                 Some(&assistant_id),
                 MessageRole::Tool,
-                "fn main() {}",
-                None,
+                MessageBody::text("fn main() {}"),
             )
             .await
             .unwrap();
@@ -700,8 +678,7 @@ mod tests {
                 None,
                 None,
                 MessageRole::Developer,
-                "hello",
-                None,
+                MessageBody::text("hello"),
             )
             .await
             .unwrap();
@@ -711,8 +688,7 @@ mod tests {
                 None,
                 Some(&first_id),
                 MessageRole::Assistant,
-                "hi",
-                None,
+                MessageBody::text("hi"),
             )
             .await
             .unwrap();

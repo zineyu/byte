@@ -1,11 +1,44 @@
 import type { DaemonConnectionView as GeneratedDaemonConnectionView } from "../generated/DaemonConnectionView";
 import type { JsonValue } from "../generated/serde_json/JsonValue";
 import type { RuntimeEvent as GeneratedRuntimeEvent } from "../generated/RuntimeEvent";
-import type { SessionSummary } from "../generated/SessionSummary";
-import type { SessionView } from "../generated/SessionView";
+import type { SessionSummary as GeneratedSessionSummary } from "../generated/SessionSummary";
+import type { SessionView as GeneratedSessionView } from "../generated/SessionView";
+import type { Message as GeneratedMessage } from "../generated/Message";
+import type { MessageBody as GeneratedMessageBody } from "../generated/MessageBody";
 import type { ToolCall } from "../generated/ToolCall";
 
 export type LoadState = "loading" | "ready" | "error";
+
+// ts-rs emits an externally-tagged shape for MessageBlock, but the wire format
+// is internally tagged (Rust: #[serde(tag = "type", rename_all = "camelCase")]).
+// Use runtime-correct types at the frontend boundaries and cast generated values.
+export type MessageBlock =
+  | { type: "text"; text: string }
+  | ({ type: "toolCall" } & ToolCall);
+
+export type MessageBody = Array<MessageBlock>;
+
+export type Message = Omit<GeneratedMessage, "body"> & {
+  body: MessageBody;
+};
+
+export type SessionView = Omit<GeneratedSessionView, "messages"> & {
+  messages: Message[];
+};
+
+export type SessionSummary = GeneratedSessionSummary;
+
+export function asMessageBody(body: GeneratedMessageBody): MessageBody {
+  return body as unknown as MessageBody;
+}
+
+export function asMessage(message: GeneratedMessage): Message {
+  return { ...message, body: asMessageBody(message.body) };
+}
+
+export function asSessionView(session: GeneratedSessionView): SessionView {
+  return { ...session, messages: session.messages.map(asMessage) };
+}
 
 // ts-rs flattens tagged enums into an intersection whose keys are the variant
 // names. Project that back into a TypeScript-friendly discriminated union that
@@ -13,7 +46,11 @@ export type LoadState = "loading" | "ready" | "error";
 type RuntimeEventVariant<E> = E extends { sequence: number } & infer U
   ? U extends infer U1
     ? U1 extends object
-      ? { [K in keyof U1]: { type: K } & U1[K] }[keyof U1]
+      ? {
+          [K in keyof U1]: K extends "message_completed"
+            ? { type: K } & Omit<U1[K], "body"> & { body: MessageBody | null }
+            : { type: K } & U1[K];
+        }[keyof U1]
       : never
     : never
   : never;
@@ -30,10 +67,23 @@ export type ChatMessage = {
   id: string;
   role: "developer" | "assistant" | "tool";
   content: string;
+  body: MessageBody;
   status: "streaming" | "completed" | "error";
   error?: string;
-  toolCalls?: ToolCall[];
 };
+
+export function getMessageBodyText(body: MessageBody): string {
+  return body
+    .filter((b): b is { type: "text"; text: string } => b.type === "text")
+    .map((b) => b.text)
+    .join("");
+}
+
+export function getMessageBodyToolCalls(body: MessageBody): ToolCall[] {
+  return body
+    .filter((b): b is { type: "toolCall" } & ToolCall => b.type === "toolCall")
+    .map((b) => ({ id: b.id, name: b.name, arguments: b.arguments }));
+}
 
 export type ToolCallState = {
   toolCallId: string;

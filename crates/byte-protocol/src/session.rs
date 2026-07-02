@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::MessageRole;
+use crate::{MessageRole, ToolCall};
 
 /// A lightweight summary of a Session for listing in the UI.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
@@ -89,6 +89,8 @@ pub enum MessageBlock {
         /// The text value.
         text: String,
     },
+    /// A tool call requested by the model.
+    ToolCall(ToolCall),
 }
 
 /// A single persisted record inside a Session JSONL file.
