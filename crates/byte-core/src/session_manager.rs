@@ -532,8 +532,14 @@ mod tests {
         let view = store.load_session("s1").await.expect("session loads");
         assert_eq!(
             view.messages.len(),
-            1,
-            "assistant message should not be persisted"
+            2,
+            "developer message and partial assistant message should be persisted"
+        );
+        assert_eq!(view.messages[0].role, byte_protocol::MessageRole::Developer);
+        assert_eq!(view.messages[1].role, byte_protocol::MessageRole::Assistant);
+        assert!(
+            !view.messages[1].body.0.is_empty(),
+            "partial assistant message should have a body"
         );
     }
 

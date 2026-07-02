@@ -543,6 +543,24 @@ impl RunExecutor {
                                 delta: BlockDelta::TextDelta { delta: flush },
                             }).await;
                         }
+
+                        // Persist any partial assistant message so that cancelled
+                        // runs still leave a recoverable history entry.
+                        if !state.assistant_content.is_empty() {
+                            let _ = runner
+                                .services
+                                .store
+                                .append_message(
+                                    &self.session_id,
+                                    Some(id),
+                                    Some(last_entry_id),
+                                    MessageRole::Assistant,
+                                    MessageBody::text(&state.assistant_content),
+                                )
+                                .await?;
+                            last_entry_id.clone_from(id);
+                        }
+
                         runner.emit(RuntimeEventKind::RunCancelled {
                             run_id: self.run_id.clone(),
                         }).await;
@@ -1122,8 +1140,19 @@ mod tests {
         let view = store.load_session("s1").await.expect("session loads");
         assert_eq!(
             view.messages.len(),
-            1,
-            "assistant message should not be persisted"
+            2,
+            "developer message and partial assistant message should be persisted"
+        );
+        assert_eq!(view.messages[0].role, MessageRole::Developer);
+        assert_eq!(message_text(&view.messages[0]), "hello");
+        assert_eq!(view.messages[1].role, MessageRole::Assistant);
+        assert_eq!(
+            view.messages[1].parent_id,
+            Some(view.messages[0].id.clone())
+        );
+        assert!(
+            !message_text(&view.messages[1]).is_empty(),
+            "partial assistant message should contain streamed content"
         );
     }
 
@@ -1155,7 +1184,28 @@ mod tests {
             .send_message(params.clone())
             .await
             .expect("send accepted");
-        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        // Wait until at least one delta has been emitted so the first run is
+        // guaranteed to produce a partial assistant message that should be
+        // persisted on cancellation.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+        let mut accumulated = Vec::new();
+        let mut saw_delta = false;
+        while !saw_delta {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            accumulated.append(&mut bus.take_events().await);
+            saw_delta = accumulated.iter().any(|event| {
+                matches!(
+                    &event.kind,
+                    RuntimeEventKind::MessageDelta { run_id: rid, .. } if rid == &first_id
+                )
+            });
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timeout waiting for message_delta"
+            );
+        }
+
         runner.cancel_run().await.expect("cancel succeeds");
 
         let second_id = runner
@@ -1165,7 +1215,8 @@ mod tests {
         assert_ne!(first_id, second_id);
         runner.wait_until_idle().await;
 
-        let events = bus.take_events().await;
+        let mut events = accumulated;
+        events.append(&mut bus.take_events().await);
         let finished_runs: Vec<_> = events
             .iter()
             .filter(|event| {
@@ -1180,8 +1231,8 @@ mod tests {
         let view = store.load_session("s1").await.expect("session loads");
         assert_eq!(
             view.messages.len(),
-            3,
-            "should persist two developer messages and one assistant message"
+            4,
+            "should persist two developer messages, one partial assistant, and one final assistant"
         );
     }
 
