@@ -10,7 +10,7 @@ const readyDaemonEvent: RuntimeEvent = {
   state: {
     status: "ready",
     daemon_version: "0.1.0",
-    protocol_version: 1,
+    protocol_version: 2,
   },
 };
 
@@ -25,7 +25,7 @@ describe("runtime event reducer", () => {
     expect(next.connection.state).toEqual({
       status: "ready",
       daemon_version: "0.1.0",
-      protocol_version: 1,
+      protocol_version: 2,
     });
     expect(next.connection.error).toBeNull();
     expect(next.loadState).toBe("ready");
@@ -44,7 +44,7 @@ describe("runtime event reducer", () => {
       state: {
         status: "ready",
         daemon_version: "0.1.0",
-        protocol_version: 1,
+        protocol_version: 2,
       },
     };
 
@@ -214,17 +214,13 @@ describe("runtime event reducer", () => {
           id: "msg-1",
           parentId: null,
           role: "developer",
-          content: "Hello",
-          toolCallId: null,
-          toolCalls: null,
+          body: [{ text: { text: "Hello" } }],
         },
         {
           id: "msg-2",
           parentId: "msg-1",
           role: "assistant",
-          content: "Hi there",
-          toolCallId: null,
-          toolCalls: null,
+          body: [{ text: { text: "Hi there" } }],
         },
       ],
       compactions: [],
@@ -261,9 +257,7 @@ describe("runtime event reducer", () => {
             id: "msg-1",
             parentId: null,
             role: "developer",
-            content: "Hello",
-            toolCallId: null,
-            toolCalls: null,
+            body: [{ text: { text: "Hello" } }],
           },
         ],
         compactions: [],
@@ -310,7 +304,7 @@ describe("runtime event reducer", () => {
         state: {
           status: "ready",
           daemon_version: "0.1.0",
-          protocol_version: 1,
+          protocol_version: 2,
         },
         error: null,
       },
@@ -469,7 +463,7 @@ describe("runtime event reducer", () => {
     expect(afterError.toolCalls["tc-1"].error).toBe("directory does not exist");
   });
 
-  it("reconstructs toolCalls from a persisted session on load_session", () => {
+  it("loads a session snapshot as completed messages including tool role", () => {
     const session: SessionView = {
       sessionId: "session-tool-load",
       workspace: "/workspace",
@@ -480,27 +474,19 @@ describe("runtime event reducer", () => {
           id: "msg-1",
           parentId: null,
           role: "developer",
-          content: "read it",
-          toolCallId: null,
-          toolCalls: null,
+          body: [{ text: { text: "read it" } }],
         },
         {
           id: "msg-2",
           parentId: "msg-1",
           role: "assistant",
-          content: "",
-          toolCallId: null,
-          toolCalls: [
-            { id: "tc-1", name: "read_file", arguments: { path: "a" } },
-          ],
+          body: [{ text: { text: "" } }],
         },
         {
           id: "msg-3",
           parentId: "msg-2",
           role: "tool",
-          content: "file contents",
-          toolCallId: "tc-1",
-          toolCalls: null,
+          body: [{ text: { text: "file contents" } }],
         },
       ],
       compactions: [],
@@ -509,16 +495,8 @@ describe("runtime event reducer", () => {
     const next = reducer(initialState, { type: "load_session", session });
 
     expect(next.messages).toHaveLength(2);
-    expect(next.messages[1].toolCalls).toEqual([
-      { id: "tc-1", name: "read_file", arguments: { path: "a" } },
-    ]);
-    expect(next.toolCalls["tc-1"]).toMatchObject({
-      toolCallId: "tc-1",
-      messageId: "msg-2",
-      name: "read_file",
-      status: "completed",
-      output: "file contents",
-    });
+    expect(next.messages[1].content).toBe("");
+    expect(next.toolCalls).toEqual({});
   });
 
   it("resets toolCalls on reset_session", () => {

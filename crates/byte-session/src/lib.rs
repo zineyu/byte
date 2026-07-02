@@ -10,8 +10,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use byte_protocol::{
-    CompactionSummary, MessageRole, SessionEntry, SessionMessage, SessionMessageContent,
-    SessionSummary, SessionView, encode_json_line,
+    CompactionSummary, Message, MessageBody, MessageRole, SessionEntry, SessionSummary,
+    SessionView, encode_json_line,
 };
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
@@ -136,15 +136,13 @@ impl SessionStore {
         let _ = content;
         let path = self.session_path(session_id)?;
         let id = id.map_or_else(|| uuid::Uuid::new_v4().to_string(), ToOwned::to_owned);
-        let entry = SessionEntry::Message {
+        let _ = tool_calls; // ToolCall blocks are added in Slice 3 (#39).
+        let entry = SessionEntry::Message(Message {
             id: id.clone(),
             parent_id: parent_id.map(ToOwned::to_owned),
-            message: SessionMessageContent {
-                role,
-                text: Some(content.into()),
-                tool_calls,
-            },
-        };
+            role,
+            body: MessageBody::text(content.into()),
+        });
         self.write_line(&path, &entry).await?;
         Ok(id)
     }
@@ -424,7 +422,7 @@ fn reconstruct_view(
     workspace_instructions_error: Option<String>,
 ) -> Result<SessionView, SessionError> {
     let mut workspace: Option<String> = None;
-    let mut messages_by_id: HashMap<String, SessionMessage> = HashMap::new();
+    let mut messages_by_id: HashMap<String, Message> = HashMap::new();
     let mut message_order: Vec<String> = Vec::new();
     let mut compactions_by_parent: HashMap<String, CompactionSummary> = HashMap::new();
 
@@ -435,40 +433,36 @@ fn reconstruct_view(
             } if id == session_id => {
                 workspace = Some(ws);
             }
-            SessionEntry::Message {
-                id,
-                parent_id,
-                message,
-            } => {
-                message_order.push(id.clone());
+            SessionEntry::Message(message) => {
+                message_order.push(message.id.clone());
+                let content = match &message.body.0[..] {
+                    [byte_protocol::MessageBlock::Text { text }] => text.clone(),
+                    _ => String::new(),
+                };
                 let _ = messages_by_id.insert(
-                    id.clone(),
-                    SessionMessage {
-                        id,
-                        parent_id,
+                    message.id.clone(),
+                    Message {
+                        id: message.id,
+                        parent_id: message.parent_id,
                         role: message.role,
-                        content: message.text.unwrap_or_default(),
-                        tool_call_id: None,
-                        tool_calls: message.tool_calls,
+                        body: MessageBody::text(content),
                     },
                 );
             }
             SessionEntry::ToolResult {
                 id,
                 parent_id,
-                tool_call_id,
                 content,
+                ..
             } => {
                 message_order.push(id.clone());
                 let _ = messages_by_id.insert(
                     id.clone(),
-                    SessionMessage {
+                    Message {
                         id,
                         parent_id: Some(parent_id),
                         role: MessageRole::Tool,
-                        content,
-                        tool_call_id: Some(tool_call_id),
-                        tool_calls: None,
+                        body: MessageBody::text(content),
                     },
                 );
             }
@@ -490,7 +484,7 @@ fn reconstruct_view(
         }
     }
 
-    let mut messages: Vec<SessionMessage> = Vec::new();
+    let mut messages: Vec<Message> = Vec::new();
     let mut compactions: Vec<CompactionSummary> = Vec::new();
     if let Some(latest_id) = message_order.last().cloned() {
         let mut current: Option<String> = Some(latest_id);
@@ -526,6 +520,13 @@ mod tests {
     #![allow(clippy::expect_used, clippy::unwrap_used)]
 
     use super::*;
+
+    fn message_text(message: &Message) -> &str {
+        match &message.body.0[..] {
+            [byte_protocol::MessageBlock::Text { text }] => text.as_str(),
+            _ => "",
+        }
+    }
 
     fn temp_store() -> SessionStore {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -597,9 +598,18 @@ mod tests {
         assert_eq!(lines.len(), 3);
 
         let second: SessionEntry = serde_json::from_str(lines[2]).expect("parse second entry");
-        assert!(
-            matches!(second, SessionEntry::Message { id, parent_id: Some(parent), message } if id == second_id && parent == first_id && message.role == MessageRole::Assistant && message.text == Some("hi".into()))
-        );
+        assert!(matches!(
+            &second,
+            SessionEntry::Message(Message {
+                id,
+                parent_id: Some(parent),
+                role: MessageRole::Assistant,
+                ..
+            }) if id == &second_id && parent == &first_id
+        ));
+        if let SessionEntry::Message(message) = &second {
+            assert_eq!(message_text(message), "hi");
+        }
     }
 
     #[tokio::test]
@@ -636,14 +646,14 @@ mod tests {
         assert_eq!(view.messages.len(), 2);
         assert_eq!(view.messages[0].id, first_id);
         assert_eq!(view.messages[0].role, MessageRole::Developer);
-        assert_eq!(view.messages[0].content, "hello");
+        assert_eq!(message_text(&view.messages[0]), "hello");
         assert_eq!(view.messages[1].id, second_id);
         assert_eq!(view.messages[1].parent_id, Some(first_id));
         assert_eq!(view.messages[1].role, MessageRole::Assistant);
-        assert_eq!(view.messages[1].content, "hi");
+        assert_eq!(message_text(&view.messages[1]), "hi");
     }
     #[tokio::test]
-    async fn load_session_preserves_tool_calls_and_tool_results() {
+    async fn load_session_preserves_tool_result() {
         let store = temp_store();
         store.new_session("session-1", "/workspace").await.unwrap();
 
@@ -658,11 +668,6 @@ mod tests {
             )
             .await
             .unwrap();
-        let tool_call = byte_protocol::ToolCall {
-            id: "call-1".into(),
-            name: "read_file".into(),
-            arguments: serde_json::json!({"path": "main.rs"}),
-        };
         let assistant_id = store
             .append_message(
                 "session-1",
@@ -670,7 +675,7 @@ mod tests {
                 Some(&dev_id),
                 MessageRole::Assistant,
                 "",
-                Some(vec![tool_call.clone()]),
+                None,
             )
             .await
             .unwrap();
@@ -683,14 +688,8 @@ mod tests {
         assert_eq!(view.messages.len(), 3);
         assert_eq!(view.messages[0].role, MessageRole::Developer);
         assert_eq!(view.messages[1].role, MessageRole::Assistant);
-        assert_eq!(
-            view.messages[1].tool_calls,
-            Some(vec![tool_call]),
-            "assistant tool_calls should be preserved"
-        );
         assert_eq!(view.messages[2].role, MessageRole::Tool);
-        assert_eq!(view.messages[2].tool_call_id.as_deref(), Some("call-1"));
-        assert_eq!(view.messages[2].content, "fn main() {}");
+        assert_eq!(message_text(&view.messages[2]), "fn main() {}");
     }
 
     #[tokio::test]

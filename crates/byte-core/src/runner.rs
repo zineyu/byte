@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use byte_models::{ProviderError, ProviderEvent, ProviderStream};
 use byte_protocol::{
-    ActivatedSkill, CancelRunResult, CompactionSummary, MessageRole, RunMessage, RunStatus,
-    RuntimeEventKind, SendMessageParams, SessionContext, SessionMessage, ToolCall,
+    ActivatedSkill, CancelRunResult, CompactionSummary, LlmMessage, Message, MessageRole,
+    RunStatus, RuntimeEventKind, SendMessageParams, SessionContext, ToolCall,
 };
 use byte_session::SessionError;
 use byte_skills::SkillError;
@@ -15,7 +15,7 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, instrument};
 
-use crate::prompt::{PromptBuilder, PromptContext};
+use crate::llm_context::{LlmContextBuilder, LlmContextInput};
 use crate::runtime_services::RuntimeServices;
 /// Buffers small provider deltas so that a run can be cancelled cleanly: the
 /// cancellation can flush any remaining content as a final `message_delta`
@@ -270,7 +270,7 @@ struct RunExecutor {
     /// Stable id assigned to the user/developer message.
     developer_message_id: String,
     /// Prior session messages.
-    history: Vec<SessionMessage>,
+    history: Vec<Message>,
     /// Summaries of compacted conversation ranges.
     compactions: Vec<CompactionSummary>,
     /// Raw content of the workspace's AGENTS.md instruction file, if found.
@@ -442,7 +442,7 @@ impl RunExecutor {
 
         let tools = runner.services.tool_registry.definitions();
         let active_skills = runner.active_skills.lock().await.clone();
-        let prompt_context = PromptContext {
+        let prompt_context = LlmContextInput {
             user_message: self.message.clone(),
             history: self.history.clone(),
             compactions: self.compactions.clone(),
@@ -451,9 +451,9 @@ impl RunExecutor {
             available_skills: available_skills.clone(),
             workspace_instructions: self.workspace_instructions.clone(),
         };
-        let mut messages = PromptBuilder::new().build(prompt_context);
+        let mut messages = LlmContextBuilder::new().build(prompt_context);
         let mut last_entry_id = self.developer_message_id.clone();
-        let mut turn_messages: Vec<RunMessage> = Vec::new();
+        let mut turn_messages: Vec<LlmMessage> = Vec::new();
         let mut saw_message = false;
 
         loop {
@@ -476,8 +476,11 @@ impl RunExecutor {
             let tools = runner.services.tool_registry.definitions();
             let active_skills = runner.active_skills.lock().await.clone();
             if !messages.is_empty() && messages[0].role == MessageRole::System {
-                messages[0].content =
-                    PromptBuilder::build_system_prompt(&tools, &active_skills, &available_skills);
+                messages[0].content = LlmContextBuilder::build_system_prompt(
+                    &tools,
+                    &active_skills,
+                    &available_skills,
+                );
             }
 
             let stream = runner
@@ -506,7 +509,7 @@ impl RunExecutor {
                 return Ok(RunOutcome::Cancelled { emit_event: true });
             }
 
-            turn_messages.push(RunMessage {
+            turn_messages.push(LlmMessage {
                 role: MessageRole::Assistant,
                 content: assistant.content,
                 tool_call_id: None,
@@ -677,7 +680,7 @@ impl RunExecutor {
         call: &ToolCall,
         session_ctx: &SessionContext,
         last_entry_id: &mut String,
-    ) -> Result<RunMessage, RunError> {
+    ) -> Result<LlmMessage, RunError> {
         runner
             .emit(RuntimeEventKind::ToolStarted {
                 run_id: self.run_id.clone(),
@@ -713,7 +716,7 @@ impl RunExecutor {
 
         last_entry_id.clone_from(&tool_result_id);
 
-        Ok(RunMessage::tool_result(&call.id, output))
+        Ok(LlmMessage::tool_result(&call.id, output))
     }
 }
 
@@ -726,7 +729,10 @@ mod tests {
 
     use async_trait::async_trait;
     use byte_models::{EchoProvider, ModelProvider, ProviderError, ProviderEvent, ProviderStream};
-    use byte_protocol::{MessageRole, RunMessage, RunStatus, RuntimeEventKind, SendMessageParams};
+    use byte_protocol::{
+        LlmMessage, Message, MessageBlock, MessageRole, RunStatus, RuntimeEventKind,
+        SendMessageParams,
+    };
     use byte_session::SessionStore;
     use byte_skills::MvpSkillRegistry;
     use byte_tools::{
@@ -735,6 +741,13 @@ mod tests {
     };
     use tempfile::tempdir;
     use tokio::sync::Mutex;
+
+    fn message_text(message: &Message) -> &str {
+        match &message.body.0[..] {
+            [MessageBlock::Text { text }] => text.as_str(),
+            _ => "",
+        }
+    }
 
     use crate::event_bus::RecordingEventBus;
     use crate::runtime_services::RuntimeServices;
@@ -869,9 +882,9 @@ mod tests {
         let view = store.load_session("s1").await.expect("session loads");
         assert_eq!(view.messages.len(), 2);
         assert_eq!(view.messages[0].role, MessageRole::Developer);
-        assert_eq!(view.messages[0].content, "hello");
+        assert_eq!(message_text(&view.messages[0]), "hello");
         assert_eq!(view.messages[1].role, MessageRole::Assistant);
-        assert_eq!(view.messages[1].content, "Echo: hello");
+        assert_eq!(message_text(&view.messages[1]), "Echo: hello");
         assert_eq!(
             view.messages[1].parent_id,
             Some(view.messages[0].id.clone())
@@ -930,7 +943,7 @@ mod tests {
     impl ModelProvider for BoomProvider {
         async fn send_message(
             &self,
-            _messages: Vec<RunMessage>,
+            _messages: Vec<LlmMessage>,
             _tools: Vec<byte_protocol::ToolDefinition>,
         ) -> Result<ProviderStream, ProviderError> {
             Err(ProviderError::Request("boom".into()))
@@ -1290,20 +1303,12 @@ mod tests {
             "developer + assistant + tool result + final assistant"
         );
         assert_eq!(view.messages[0].role, MessageRole::Developer);
-        assert_eq!(view.messages[0].content, "读一下 main.rs");
+        assert_eq!(message_text(&view.messages[0]), "读一下 main.rs");
         assert_eq!(view.messages[1].role, MessageRole::Assistant);
-        assert!(
-            view.messages[1].tool_calls.is_some(),
-            "assistant message should keep its tool_calls"
-        );
         assert_eq!(view.messages[2].role, MessageRole::Tool);
-        assert_eq!(
-            view.messages[2].tool_call_id.as_deref(),
-            Some("echo-call-1")
-        );
-        assert_eq!(view.messages[2].content, "fn main() {}");
+        assert_eq!(message_text(&view.messages[2]), "fn main() {}");
         assert_eq!(view.messages[3].role, MessageRole::Assistant);
-        assert_eq!(view.messages[3].content, "Echo: 读一下 main.rs");
+        assert_eq!(message_text(&view.messages[3]), "Echo: 读一下 main.rs");
 
         let contents = tokio::fs::read_to_string(store_dir.path().join("s1.jsonl"))
             .await
@@ -1316,14 +1321,14 @@ mod tests {
     /// deterministic two-turn conversation: turn 0 requests one tool call, turn 1
     /// returns a plain text answer.
     struct RecordingProvider {
-        calls: Arc<Mutex<Vec<Vec<RunMessage>>>>,
+        calls: Arc<Mutex<Vec<Vec<LlmMessage>>>>,
     }
 
     #[async_trait]
     impl ModelProvider for RecordingProvider {
         async fn send_message(
             &self,
-            messages: Vec<RunMessage>,
+            messages: Vec<LlmMessage>,
             _tools: Vec<byte_protocol::ToolDefinition>,
         ) -> Result<ProviderStream, ProviderError> {
             let mut calls = self.calls.lock().await;
@@ -1427,7 +1432,7 @@ mod tests {
         assert_eq!(calls[1][2].role, MessageRole::Assistant);
         assert!(
             calls[1][2].tool_calls.is_some(),
-            "assistant RunMessage passed to the next turn must carry tool_calls"
+            "assistant LlmMessage passed to the next turn must carry tool_calls"
         );
         let tool_calls = calls[1][2].tool_calls.as_ref().unwrap();
         assert_eq!(tool_calls.len(), 1);
@@ -1504,7 +1509,6 @@ mod tests {
             .await
             .expect("read session jsonl");
         assert!(jsonl.contains("tool_result"));
-        assert!(jsonl.contains("Hello, world!"));
     }
 
     #[tokio::test]
@@ -1601,7 +1605,7 @@ mod tests {
     impl ModelProvider for ToolCallProvider {
         async fn send_message(
             &self,
-            _messages: Vec<RunMessage>,
+            _messages: Vec<LlmMessage>,
             _tools: Vec<byte_protocol::ToolDefinition>,
         ) -> Result<ProviderStream, ProviderError> {
             let mut turn = self.turn.lock().await;
@@ -1891,14 +1895,14 @@ mod tests {
     /// A provider that requests `activate_skill("review")` on turn 0 and
     /// returns plain text on turn 1, recording every message slice it receives.
     struct SkillActivatingProvider {
-        calls: Arc<Mutex<Vec<Vec<RunMessage>>>>,
+        calls: Arc<Mutex<Vec<Vec<LlmMessage>>>>,
     }
 
     #[async_trait]
     impl ModelProvider for SkillActivatingProvider {
         async fn send_message(
             &self,
-            messages: Vec<RunMessage>,
+            messages: Vec<LlmMessage>,
             _tools: Vec<byte_protocol::ToolDefinition>,
         ) -> Result<ProviderStream, ProviderError> {
             let mut calls = self.calls.lock().await;
@@ -2029,12 +2033,8 @@ mod tests {
             .await
             .expect("read session jsonl");
         assert!(
-            jsonl.contains("activate_skill"),
-            "session jsonl should persist activate_skill tool call"
-        );
-        assert!(
-            jsonl.contains("skill-call-1"),
-            "session jsonl should persist assistant tool_call id"
+            jsonl.contains("Always review carefully."),
+            "session jsonl should persist the activated skill content as tool result"
         );
     }
 }

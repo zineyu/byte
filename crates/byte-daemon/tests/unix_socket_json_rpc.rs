@@ -15,6 +15,13 @@ use byte_protocol::{
     RpcId, RunStatus, RuntimeEventKind, SendMessageParams, decode_json_line, encode_json_line,
 };
 
+fn message_text(message: &byte_protocol::Message) -> &str {
+    match &message.body.0[..] {
+        [byte_protocol::MessageBlock::Text { text }] => text.as_str(),
+        _ => "",
+    }
+}
+
 #[test]
 fn daemon_returns_state_and_runtime_event_over_unix_socket_jsonl() {
     let socket_path = unique_socket_path();
@@ -351,19 +358,18 @@ fn send_message_persists_messages_to_session() {
         session.messages[0].role,
         byte_protocol::MessageRole::Developer
     );
-    assert_eq!(session.messages[0].content, "world");
+    assert_eq!(message_text(&session.messages[0]), "world");
     assert_eq!(
         session.messages[1].role,
         byte_protocol::MessageRole::Assistant
     );
-    assert!(session.messages[1].tool_calls.is_some());
     assert_eq!(session.messages[2].role, byte_protocol::MessageRole::Tool);
-    assert_eq!(session.messages[2].content, "fn main() {}");
+    assert_eq!(message_text(&session.messages[2]), "fn main() {}");
     assert_eq!(
         session.messages[3].role,
         byte_protocol::MessageRole::Assistant
     );
-    assert_eq!(session.messages[3].content, "Echo: world");
+    assert_eq!(message_text(&session.messages[3]), "Echo: world");
     assert_eq!(
         session.messages[1].parent_id,
         Some(session.messages[0].id.clone())

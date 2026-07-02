@@ -70,6 +70,27 @@ _Avoid_: Hidden prompt injection, global instructions
 **Compaction Entry**:
 A visible Session entry containing a summary of older conversation history for continued context construction.
 _Avoid_: Hidden summary cache, overwritten history
+
+**Message History**:
+The complete record of messages and tool actions within a Session, spanning its persisted form, the runtime view, and the LLM context used for a Run.
+_Avoid_: Chat log when tool history matters, raw JSONL.
+
+**Message**:
+A single persisted Session Entry representing a conversation turn or tool result. It has a Message Role and a Message Body.
+_Avoid_: Session entry when the runtime or provider view matters.
+
+**Message Body**:
+The payload of a Message, represented as a list of Message Blocks. It is extensible: MVP supports text and tool-call blocks; future blocks may include images or thinking traces.
+_Avoid_: String when multi-modal or structured content may be needed; Message Content when the new term is used.
+
+**Message Block**:
+A single typed unit inside a Message Body, such as a text segment or a tool call.
+_Avoid_: Message when the unit itself is meant.
+
+**Block Delta**:
+An incremental update to one Message Block during streaming, used to update the runtime view without replacing the whole Message.
+_Avoid_: Message delta when the update targets a block.
+
 ## Example dialogue
 
 Developer: "Open this Code Workspace and explain why the tests fail."

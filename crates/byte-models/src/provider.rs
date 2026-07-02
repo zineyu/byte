@@ -1,7 +1,7 @@
 use std::pin::Pin;
 
 use async_trait::async_trait;
-use byte_protocol::{MessageRole, RunMessage};
+use byte_protocol::{LlmMessage, MessageRole};
 use futures::Stream;
 
 /// A pinned, sendable stream of provider events or errors.
@@ -56,7 +56,7 @@ pub trait ModelProvider: Send + Sync {
     /// calls via `MessageCompleted::tool_calls`.
     async fn send_message(
         &self,
-        messages: Vec<RunMessage>,
+        messages: Vec<LlmMessage>,
         tools: Vec<byte_protocol::ToolDefinition>,
     ) -> Result<ProviderStream, ProviderError>;
 }
@@ -82,7 +82,7 @@ impl Default for EchoProvider {
 impl ModelProvider for EchoProvider {
     async fn send_message(
         &self,
-        messages: Vec<RunMessage>,
+        messages: Vec<LlmMessage>,
         tools: Vec<byte_protocol::ToolDefinition>,
     ) -> Result<ProviderStream, ProviderError> {
         let has_read_file = tools.iter().any(|tool| tool.name == "read_file");
@@ -250,7 +250,7 @@ mod tests {
             chunk_size: 3,
             ..Default::default()
         };
-        let messages = vec![RunMessage::text(MessageRole::Developer, "hello")];
+        let messages = vec![LlmMessage::text(MessageRole::Developer, "hello")];
 
         let stream = provider
             .send_message(messages, vec![])
@@ -325,7 +325,7 @@ mod tests {
     #[tokio::test]
     async fn echo_provider_returns_mock_read_file_tool_call() {
         let provider = EchoProvider::default();
-        let messages = vec![RunMessage::text(MessageRole::Developer, "读一下 main.rs")];
+        let messages = vec![LlmMessage::text(MessageRole::Developer, "读一下 main.rs")];
         let tools = vec![byte_protocol::ToolDefinition {
             name: "read_file".into(),
             description: "Read a file".into(),
@@ -358,8 +358,8 @@ mod tests {
     async fn echo_provider_does_not_loop_tool_calls() {
         let provider = EchoProvider::default();
         let messages = vec![
-            RunMessage::text(MessageRole::Developer, "读一下 main.rs"),
-            RunMessage::tool_result("echo-call-1", "file contents"),
+            LlmMessage::text(MessageRole::Developer, "读一下 main.rs"),
+            LlmMessage::tool_result("echo-call-1", "file contents"),
         ];
         let tools = vec![byte_protocol::ToolDefinition {
             name: "read_file".into(),

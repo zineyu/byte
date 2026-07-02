@@ -32,10 +32,32 @@ _Avoid_: Log line, notification, bus message
 
 ### Message Role
 
-The role of a message inside a Run:
+The role of a message inside a Run or a persisted Session history node:
 
-- `system`: a dynamic, per-run instruction and tool context built by `PromptBuilder`. It is **not** persisted in the Session.
-- `developer`: the human Developer message
-- `assistant`: the model-generated response
+- `system`: a dynamic, per-run instruction and tool context built by `LlmContextBuilder`. It is **not** persisted in the Session.
+- `developer`: the human Developer message.
+- `assistant`: the model-generated response.
+- `tool`: a tool result returned to the model.
+- `summary`: a compacted summary of earlier conversation history, persisted as a visible Session entry.
 
-At the provider adapter boundary, `system` maps to the OpenAI `system` role and `developer` maps to the OpenAI `user` role.
+At the provider adapter boundary, `system` maps to the OpenAI `system` role and `developer` maps to the OpenAI `user` role. `summary` is converted to a `system` message before being sent to the Model Provider.
+
+### Message Body
+
+The content payload of a Message, represented as a list of Message Blocks.
+
+_Avoid_: Message Content when the new term is used.
+
+### Message Block
+
+A single typed unit inside a Message Body, such as a text segment or a tool call. MVP supports `text` and `toolCall` blocks; future blocks may include images or thinking traces.
+
+### Block Delta
+
+An incremental update to one Message Block during streaming, used to update the runtime view without replacing the whole Message. MVP only streams `text` deltas; tool-call blocks are emitted atomically at the end of a message.
+
+### LlmMessage
+
+A message in the LLM context produced by `LlmContextBuilder` and sent to the Model Provider. It shares the same Message Body shape as a persisted Message but may include non-persisted system and summary messages.
+
+_Avoid_: Run Message when the message is for the LLM context.

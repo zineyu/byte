@@ -45,7 +45,7 @@ mod tests {
     #![allow(clippy::expect_used, clippy::unwrap_used)]
 
     use super::*;
-    use byte_protocol::{MessageRole, RunMessage};
+    use byte_protocol::{LlmMessage, MessageRole};
     use futures::StreamExt;
 
     fn dummy_config(provider: &str) -> ModelProviderConfig {
@@ -75,7 +75,7 @@ mod tests {
     async fn creates_echo_provider_that_streams_message() {
         let config = dummy_config("echo");
         let provider = create_provider(config).expect("echo provider should create");
-        let messages = vec![RunMessage::text(MessageRole::Developer, "hello")];
+        let messages = vec![LlmMessage::text(MessageRole::Developer, "hello")];
 
         let events: Vec<_> = provider
             .send_message(messages, vec![])

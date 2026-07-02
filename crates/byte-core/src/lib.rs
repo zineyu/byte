@@ -11,8 +11,8 @@ pub mod activate_skill;
 /// Event bus abstractions used to publish and observe runtime events.
 pub mod event_bus;
 
-/// Prompt construction from session state, tools, and active skills.
-pub mod prompt;
+/// LLM context construction from session state, tools, and active skills.
+pub mod llm_context;
 
 /// Session runner that drives the model/provider conversation loop.
 pub mod runner;

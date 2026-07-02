@@ -42,68 +42,53 @@ pub struct SessionView {
     /// Human-readable warning if the workspace's AGENTS.md exists but could not be read.
     pub workspace_instructions_error: Option<String>,
     /// Messages in the session, in UI order.
-    pub messages: Vec<SessionMessage>,
+    pub messages: Vec<Message>,
     /// Compaction entries in the session.
     pub compactions: Vec<CompactionSummary>,
 }
 
-/// A message inside a `SessionView`.
+/// A persisted message node, also used as the runtime view of a session history node.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, rename_all = "camelCase")]
-pub struct SessionMessage {
+pub struct Message {
     /// Message identifier.
     pub id: String,
     /// Parent message identifier, if any.
     pub parent_id: Option<String>,
     /// Role of the message sender.
     pub role: MessageRole,
-    /// Rendered text content.
-    pub content: String,
-    /// Identifier of the answered tool call, if this is a tool result.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_call_id: Option<String>,
-    /// Tool calls requested by the assistant, if any.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_calls: Option<Vec<crate::ToolCall>>,
+    /// Message body content.
+    pub body: MessageBody,
 }
 
-/// Persisted content of a session message.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SessionMessageContent {
-    /// Role of the message sender.
-    pub role: MessageRole,
-    /// Plain text content, if any.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub text: Option<String>,
-    /// Tool calls requested by the assistant, if any.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_calls: Option<Vec<crate::ToolCall>>,
+/// The body of a [`Message`]: a list of typed blocks.
+///
+/// Serializes as a JSON array because of `#[serde(transparent)]`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(transparent)]
+#[ts(export, rename_all = "camelCase")]
+pub struct MessageBody(pub Vec<MessageBlock>);
+
+impl MessageBody {
+    /// Create a body containing a single text block.
+    pub fn text(content: impl Into<String>) -> Self {
+        Self(vec![MessageBlock::Text {
+            text: content.into(),
+        }])
+    }
 }
 
-impl SessionMessageContent {
-    /// Create a plain text message content.
-    pub fn text(role: MessageRole, content: impl Into<String>) -> Self {
-        Self {
-            role,
-            text: Some(content.into()),
-            tool_calls: None,
-        }
-    }
-
-    /// Create assistant content that includes tool calls.
-    pub fn with_tool_calls(
-        role: MessageRole,
-        content: impl Into<String>,
-        tool_calls: Vec<crate::ToolCall>,
-    ) -> Self {
-        Self {
-            role,
-            text: Some(content.into()),
-            tool_calls: Some(tool_calls),
-        }
-    }
+/// A single block inside a [`MessageBody`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(tag = "type", rename_all = "camelCase")]
+#[ts(export, rename_all = "camelCase")]
+pub enum MessageBlock {
+    /// Plain text content.
+    Text {
+        /// The text value.
+        text: String,
+    },
 }
 
 /// A single persisted record inside a Session JSONL file.
@@ -122,15 +107,11 @@ pub enum SessionEntry {
         created_at: String,
     },
     /// Message record.
-    Message {
-        /// Message identifier.
-        id: String,
-        /// Parent message identifier, if any.
-        parent_id: Option<String>,
-        /// Message content.
-        message: SessionMessageContent,
-    },
+    Message(Message),
     /// Tool result record.
+    ///
+    /// Deprecated in favour of `Message` entries with `role = Tool`; kept for
+    /// migration during Slice 1.
     ToolResult {
         /// Result record identifier.
         id: String,
@@ -142,6 +123,9 @@ pub enum SessionEntry {
         content: String,
     },
     /// Compaction record.
+    ///
+    /// Deprecated in favour of `Message` entries with `role = Summary`; kept
+    /// for migration during Slice 1.
     Compaction {
         /// Compaction entry identifier.
         id: String,
@@ -221,20 +205,31 @@ mod tests {
         let decoded: SessionEntry = decode_json_line(&line).expect("entry decodes");
 
         assert_eq!(decoded, entry);
-        let entry = SessionEntry::Message {
+    }
+
+    #[test]
+    fn message_entry_roundtrips() {
+        let entry = SessionEntry::Message(Message {
             id: "msg-1".into(),
             parent_id: Some("msg-0".into()),
-            message: SessionMessageContent {
-                role: MessageRole::Developer,
-                text: Some("hello".into()),
-                tool_calls: None,
-            },
-        };
+            role: MessageRole::Developer,
+            body: MessageBody::text("hello"),
+        });
 
         let line = serde_json::to_string(&entry).expect("entry encodes");
         let decoded: SessionEntry = decode_json_line(&line).expect("entry decodes");
 
         assert_eq!(decoded, entry);
+    }
+
+    #[test]
+    fn message_body_serializes_as_array() {
+        let body = MessageBody::text("hello");
+        let value = serde_json::to_value(&body).expect("body encodes");
+        assert_eq!(
+            value,
+            serde_json::json!([{ "type": "text", "text": "hello" }])
+        );
     }
 
     #[test]
@@ -244,13 +239,11 @@ mod tests {
             workspace: "/home/dev/project".into(),
             workspace_instructions: Some("follow these instructions".into()),
             workspace_instructions_error: None,
-            messages: vec![SessionMessage {
+            messages: vec![Message {
                 id: "msg-1".into(),
                 parent_id: None,
                 role: MessageRole::Assistant,
-                content: "hi".into(),
-                tool_call_id: None,
-                tool_calls: None,
+                body: MessageBody::text("hi"),
             }],
             compactions: vec![CompactionSummary {
                 id: "compact-1".into(),
@@ -277,24 +270,6 @@ mod tests {
         let decoded: SessionSummary = serde_json::from_value(value).expect("summary decodes");
 
         assert_eq!(decoded, summary);
-    }
-
-    #[test]
-    fn message_content_with_tool_calls_roundtrips() {
-        let content = SessionMessageContent::with_tool_calls(
-            MessageRole::Assistant,
-            String::new(),
-            vec![crate::ToolCall {
-                id: "call-1".into(),
-                name: "read_file".into(),
-                arguments: serde_json::json!({"path": "src/main.rs"}),
-            }],
-        );
-
-        let line = serde_json::to_string(&content).expect("content encodes");
-        let decoded: SessionMessageContent = decode_json_line(&line).expect("content decodes");
-
-        assert_eq!(decoded, content);
     }
 
     #[test]

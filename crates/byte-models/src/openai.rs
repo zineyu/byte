@@ -11,7 +11,7 @@ use async_openai::types::chat::{
     CreateChatCompletionRequestArgs, FunctionCall, FunctionObject,
 };
 use async_trait::async_trait;
-use byte_protocol::{MessageRole, RunMessage, ToolCall};
+use byte_protocol::{LlmMessage, MessageRole, ToolCall};
 
 use crate::config::ModelProviderConfig;
 use crate::provider::{ModelProvider, ProviderError, ProviderEvent, ProviderStream};
@@ -50,7 +50,7 @@ impl ModelProvider for OpenAiCompatibleProvider {
     #[allow(deprecated)]
     async fn send_message(
         &self,
-        messages: Vec<RunMessage>,
+        messages: Vec<LlmMessage>,
         tools: Vec<byte_protocol::ToolDefinition>,
     ) -> Result<ProviderStream, ProviderError> {
         let chat_messages: Vec<ChatCompletionRequestMessage> = messages

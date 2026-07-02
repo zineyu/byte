@@ -20,8 +20,7 @@ use byte_core::session_manager::SessionManager;
 use byte_models::{ModelProvider, ProviderError, ProviderStream, create_provider, load_config};
 #[cfg(unix)]
 use byte_protocol::{
-    JsonRpcRequest, JsonRpcResponse, RunMessage, RuntimeEventKind, decode_json_line,
-    encode_json_line,
+    JsonRpcRequest, JsonRpcResponse, RuntimeEventKind, decode_json_line, encode_json_line,
 };
 #[cfg(unix)]
 use byte_session::SessionStore;
@@ -263,7 +262,7 @@ impl LazyConfigProvider {
 impl ModelProvider for LazyConfigProvider {
     async fn send_message(
         &self,
-        messages: Vec<RunMessage>,
+        messages: Vec<byte_protocol::LlmMessage>,
         tools: Vec<byte_protocol::ToolDefinition>,
     ) -> Result<ProviderStream, ProviderError> {
         let provider = {

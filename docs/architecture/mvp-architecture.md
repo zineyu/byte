@@ -39,7 +39,7 @@ Rust Agent Daemon
   ├─ RpcServer
   ├─ SessionRunner
   ├─ RuntimeEventBus
-  ├─ PromptBuilder
+  ├─ LlmContextBuilder
   ├─ OpenAiCompatibleProvider
   ├─ ToolRegistry
   ├─ SkillRegistry
@@ -61,7 +61,7 @@ Pi also separates tool definition, tool execution, and active-tool selection. By
 /
 ├── Cargo.toml              # Rust workspace root
 ├── crates/
-│   ├── byte-core/          # SessionRunner, PromptBuilder, SessionManager, RuntimeServices
+│   ├── byte-core/          # SessionRunner, LlmContextBuilder, SessionManager, RuntimeServices
 │   ├── byte-protocol/      # JSON-RPC commands, responses, RuntimeEvent, SessionView,
 │   │                       # ToolDefinition, ToolCall, ToolResult, SkillEntry,
 │   │                       # SkillDefinition, ActivatedSkill
@@ -123,7 +123,7 @@ Owns the conversation loop for one session:
 
 Constraint: one active run per session. A run can be cancelled. The daemon may later support multiple sessions, but session-internal execution remains serial.
 
-### PromptBuilder
+### LlmContextBuilder
 
 Builds context from:
 
@@ -143,7 +143,7 @@ MVP implements only `OpenAiCompatibleProvider`, but keeps a trait boundary:
 trait ModelProvider {
     async fn send_message(
         &self,
-        messages: Vec<RunMessage>,
+        messages: Vec<LlmMessage>,
         tools: Vec<ToolDefinition>,
     ) -> Result<ProviderStream, ProviderError>;
 }
@@ -169,7 +169,7 @@ The `SkillRegistry` trait and `MvpSkillRegistry` implementation live in `byte-sk
 
 ### `activate_skill`
 
-`activate_skill` is implemented in `byte-core` as `ActivateSkillTool` and dynamically registered by each `SessionRunner` via `SessionToolRegistry`. It holds a reference to the shared `SkillRegistry` and appends activated skills to the per-session `active_skills` list, so `PromptBuilder` can inject them into subsequent runs.
+`activate_skill` is implemented in `byte-core` as `ActivateSkillTool` and dynamically registered by each `SessionRunner` via `SessionToolRegistry`. It holds a reference to the shared `SkillRegistry` and appends activated skills to the per-session `active_skills` list, so `LlmContextBuilder` can inject them into subsequent runs.
 
 Placing `activate_skill` in `byte-core` avoids making `byte-tools` depend on `byte-skills` and keeps the special tool close to the session state it mutates.
 
@@ -228,13 +228,17 @@ Responses and runtime events share the local Unix socket as LF-delimited JSON-RP
 Each session file starts with a header and then append-only entries:
 
 ```json
-{"type":"session","version":1,"id":"...","workspace":"...","created_at":"..."}
-{"type":"message","id":"...","parent_id":null,"message":{...}}
+{"type":"session","version":2,"id":"...","workspace":"...","created_at":"..."}
+{"type":"message","id":"...","parent_id":null,"role":"developer","body":[{"type":"text","text":"..."}]}
 {"type":"tool_result","id":"...","parent_id":"...","tool_call_id":"..."}
 {"type":"compaction","id":"...","parent_id":"...","summary":"..."}
 ```
 
 The active path is resolved by following `parent_id` links. Branching can be implemented by appending a new child to any prior entry without creating a new file.
+
+### Message format
+
+Persisted history nodes are `Message` entries with a `role` and a `body` array of `MessageBlock`s. In the MVP the body contains a single `text` block; later slices will inline `toolCall` blocks directly inside the assistant message body.
 
 ## 10. Skills
 

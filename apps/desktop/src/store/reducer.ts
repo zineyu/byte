@@ -1,4 +1,4 @@
-import type { SessionMessage } from "../generated/SessionMessage";
+import type { Message } from "../generated/Message";
 import type {
   AppState,
   ChatMessage,
@@ -90,7 +90,7 @@ function loadSession(
     sessionId: string;
     workspaceInstructions: string | null;
     workspaceInstructionsError: string | null;
-    messages: SessionMessage[];
+    messages: Message[];
   },
 ): AppState {
   const toolCalls: Record<string, ToolCallState> = {};
@@ -98,43 +98,19 @@ function loadSession(
     .filter(
       (
         message,
-      ): message is SessionMessage & {
+      ): message is Message & {
         role: "developer" | "assistant";
       } => message.role === "developer" || message.role === "assistant",
     )
     .map((message) => {
-      if (message.role === "assistant" && message.toolCalls) {
-        for (const call of message.toolCalls) {
-          toolCalls[call.id] = {
-            toolCallId: call.id,
-            messageId: message.id,
-            runId: "",
-            name: call.name,
-            arguments: call.arguments,
-            status: "running",
-            output: null,
-            error: null,
-          };
-        }
-      }
+      const content = message.body[0]?.text?.text ?? "";
       return {
         id: message.id,
         role: message.role,
-        content: message.content,
+        content,
         status: "completed" as const,
-        toolCalls: message.toolCalls ?? undefined,
       };
     });
-
-  for (const message of session.messages) {
-    if (message.role === "tool" && message.toolCallId) {
-      const state = toolCalls[message.toolCallId];
-      if (state) {
-        state.status = "completed";
-        state.output = message.content;
-      }
-    }
-  }
 
   return {
     ...state,

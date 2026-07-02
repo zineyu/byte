@@ -7,7 +7,7 @@ use std::path::PathBuf;
 /// JSON-RPC protocol version.
 pub const JSON_RPC_VERSION: &str = "2.0";
 /// Wire format version supported by this crate.
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;
 /// JSON-RPC method name used for runtime event notifications.
 pub const RUNTIME_EVENT_METHOD: &str = "runtime_event";
 
@@ -16,8 +16,8 @@ pub mod session;
 /// Re-exported session request/result and view types.
 pub use session::{
     CompactionSummary, DeleteSessionParams, DeleteSessionResult, ListSessionsResult,
-    LoadSessionParams, LoadSessionResult, NewSessionParams, NewSessionResult, SessionEntry,
-    SessionMessage, SessionMessageContent, SessionSummary, SessionView,
+    LoadSessionParams, LoadSessionResult, Message, MessageBlock, MessageBody, NewSessionParams,
+    NewSessionResult, SessionEntry, SessionSummary, SessionView,
 };
 
 /// JSON-RPC request identifier, which may be a number or a string.
@@ -543,9 +543,9 @@ pub enum RuntimeEventKind {
     },
 }
 
-/// A message exchanged during a run.
+/// A message in the LLM context for a single run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RunMessage {
+pub struct LlmMessage {
     /// Role of the message sender.
     pub role: MessageRole,
     /// Text content of the message.
@@ -558,7 +558,7 @@ pub struct RunMessage {
     pub tool_calls: Option<Vec<ToolCall>>,
 }
 
-impl RunMessage {
+impl LlmMessage {
     /// Create a simple text message with the given role.
     pub fn text(role: MessageRole, content: impl Into<String>) -> Self {
         Self {
@@ -983,30 +983,28 @@ mod tests {
     }
 
     #[test]
-    fn run_message_with_tool_call_id_roundtrips() {
-        let message = RunMessage::tool_result("call-1", "contents");
-        let decoded: RunMessage = decode_json_line(&encode_json_line(&message).unwrap()).unwrap();
+    fn llm_message_with_tool_call_id_roundtrips() {
+        let message = LlmMessage::tool_result("call-1", "contents");
+        let decoded: LlmMessage = decode_json_line(&encode_json_line(&message).unwrap()).unwrap();
         assert_eq!(decoded.role, MessageRole::Tool);
         assert_eq!(decoded.tool_call_id, Some("call-1".into()));
         assert_eq!(decoded.content, "contents");
     }
     #[test]
-    fn run_message_without_tool_call_id_roundtrips() {
-        let message = RunMessage::text(MessageRole::Developer, "hello");
-        let decoded: RunMessage = decode_json_line(&encode_json_line(&message).unwrap()).unwrap();
+    fn llm_message_without_tool_call_id_roundtrips() {
+        let message = LlmMessage::text(MessageRole::Developer, "hello");
+        let decoded: LlmMessage = decode_json_line(&encode_json_line(&message).unwrap()).unwrap();
         assert_eq!(decoded.role, MessageRole::Developer);
         assert_eq!(decoded.tool_call_id, None);
         assert_eq!(decoded.content, "hello");
     }
 
     #[test]
-    fn session_message_content_text_roundtrips() {
-        let content = SessionMessageContent::text(MessageRole::Assistant, "hello");
-        let decoded: SessionMessageContent =
-            decode_json_line(&encode_json_line(&content).unwrap()).unwrap();
-        assert_eq!(decoded.role, MessageRole::Assistant);
-        assert_eq!(decoded.text, Some("hello".into()));
-        assert_eq!(decoded.tool_calls, None);
+    fn message_body_text_roundtrips() {
+        let body = MessageBody::text("hello");
+        let decoded: MessageBody = decode_json_line(&encode_json_line(&body).unwrap()).unwrap();
+        assert_eq!(decoded.0.len(), 1);
+        assert!(matches!(decoded.0[0], MessageBlock::Text { ref text } if text == "hello"));
     }
 
     #[test]

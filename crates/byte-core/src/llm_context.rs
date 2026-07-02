@@ -1,16 +1,16 @@
 use byte_protocol::{
-    ActivatedSkill, CompactionSummary, MessageRole, RunMessage, SessionMessage, SkillEntry,
-    ToolDefinition,
+    ActivatedSkill, CompactionSummary, LlmMessage, Message, MessageBlock, MessageBody, MessageRole,
+    SkillEntry, ToolDefinition,
 };
 use std::fmt::Write;
 
-/// Context supplied to `PromptBuilder` for a single run.
+/// Context supplied to `LlmContextBuilder` for a single run.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PromptContext {
+pub struct LlmContextInput {
     /// The current user message for this run.
     pub user_message: String,
     /// Prior messages in the session, in chronological order.
-    pub history: Vec<SessionMessage>,
+    pub history: Vec<Message>,
     /// Summaries of compacted conversation ranges.
     pub compactions: Vec<CompactionSummary>,
     /// Tool definitions available to the model for this run.
@@ -23,9 +23,9 @@ pub struct PromptContext {
     pub workspace_instructions: Option<String>,
 }
 
-impl PromptContext {
-    /// Create a prompt context with no history, compactions, tools, skills,
-    /// active skills, or workspace instructions.
+impl LlmContextInput {
+    /// Create a context with no history, compactions, tools, skills, active
+    /// skills, or workspace instructions.
     pub fn new(user_message: impl Into<String>) -> Self {
         Self {
             user_message: user_message.into(),
@@ -39,23 +39,23 @@ impl PromptContext {
     }
 }
 
-/// Builds the prompt messages for a model run.
+/// Builds the LLM context messages for a model run.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct PromptBuilder;
+pub struct LlmContextBuilder;
 
-impl PromptBuilder {
-    /// Create a new prompt builder.
+impl LlmContextBuilder {
+    /// Create a new context builder.
     #[must_use]
     pub const fn new() -> Self {
         Self
     }
 
-    /// Build the full list of `RunMessage`s for the provider.
+    /// Build the full list of [`LlmMessage`]s for the provider.
     #[must_use]
-    pub fn build(&self, context: PromptContext) -> Vec<RunMessage> {
+    pub fn build(&self, context: LlmContextInput) -> Vec<LlmMessage> {
         let mut messages = Vec::new();
 
-        messages.push(RunMessage {
+        messages.push(LlmMessage {
             role: MessageRole::System,
             content: Self::build_system_prompt(
                 &context.tools,
@@ -70,7 +70,7 @@ impl PromptBuilder {
         // are visible to the model without being merged into the main system
         // prompt or persisted history.
         if let Some(instructions) = &context.workspace_instructions {
-            messages.push(RunMessage {
+            messages.push(LlmMessage {
                 role: MessageRole::System,
                 content: instructions.clone(),
                 tool_call_id: None,
@@ -81,7 +81,7 @@ impl PromptBuilder {
         // Add compaction summaries as system reminders so they remain visible
         // without polluting the persisted message history.
         for compaction in &context.compactions {
-            messages.push(RunMessage {
+            messages.push(LlmMessage {
                 role: MessageRole::System,
                 content: format!(
                     "Earlier conversation summary ({}): {}",
@@ -94,16 +94,16 @@ impl PromptBuilder {
 
         // Add persisted history.
         for message in &context.history {
-            messages.push(RunMessage {
+            messages.push(LlmMessage {
                 role: message.role,
-                content: message.content.clone(),
-                tool_call_id: message.tool_call_id.clone(),
-                tool_calls: message.tool_calls.clone(),
+                content: body_text(&message.body),
+                tool_call_id: None,
+                tool_calls: None,
             });
         }
 
         // Add current user message.
-        messages.push(RunMessage {
+        messages.push(LlmMessage {
             role: MessageRole::Developer,
             content: context.user_message,
             tool_call_id: None,
@@ -161,17 +161,34 @@ impl PromptBuilder {
     }
 }
 
+/// Extracts the text from a single-text-block [`MessageBody`].
+fn body_text(body: &MessageBody) -> String {
+    match &body.0[..] {
+        [MessageBlock::Text { text }] => text.clone(),
+        _ => String::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::expect_used, clippy::unwrap_used, unused_results)]
 
     use super::*;
-    use byte_protocol::SessionMessage;
+    use byte_protocol::Message;
+
+    fn message_text(role: MessageRole, content: &str) -> Message {
+        Message {
+            id: "m1".into(),
+            parent_id: None,
+            role,
+            body: MessageBody::text(content),
+        }
+    }
 
     #[test]
     fn builder_includes_registered_tools() {
-        let builder = PromptBuilder::new();
-        let context = PromptContext {
+        let builder = LlmContextBuilder::new();
+        let context = LlmContextInput {
             user_message: "hello".into(),
             history: vec![],
             compactions: vec![],
@@ -195,17 +212,10 @@ mod tests {
 
     #[test]
     fn builder_appends_history_and_compactions() {
-        let builder = PromptBuilder::new();
-        let context = PromptContext {
+        let builder = LlmContextBuilder::new();
+        let context = LlmContextInput {
             user_message: "current".into(),
-            history: vec![SessionMessage {
-                id: "m1".into(),
-                parent_id: None,
-                role: MessageRole::Developer,
-                content: "past".into(),
-                tool_call_id: None,
-                tool_calls: None,
-            }],
+            history: vec![message_text(MessageRole::Developer, "past")],
             compactions: vec![CompactionSummary {
                 id: "c1".into(),
                 parent_id: "m1".into(),
@@ -230,8 +240,8 @@ mod tests {
 
     #[test]
     fn builder_includes_available_skills_for_activation() {
-        let builder = PromptBuilder::new();
-        let context = PromptContext {
+        let builder = LlmContextBuilder::new();
+        let context = LlmContextInput {
             user_message: "hello".into(),
             history: vec![],
             compactions: vec![],
@@ -261,8 +271,8 @@ mod tests {
 
     #[test]
     fn builder_lists_only_inactive_available_skills() {
-        let builder = PromptBuilder::new();
-        let context = PromptContext {
+        let builder = LlmContextBuilder::new();
+        let context = LlmContextInput {
             user_message: "hello".into(),
             history: vec![],
             compactions: vec![],
@@ -295,8 +305,8 @@ mod tests {
 
     #[test]
     fn builder_injects_workspace_instructions_as_system_message() {
-        let builder = PromptBuilder::new();
-        let context = PromptContext {
+        let builder = LlmContextBuilder::new();
+        let context = LlmContextInput {
             user_message: "hello".into(),
             history: vec![],
             compactions: vec![],

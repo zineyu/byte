@@ -34,7 +34,7 @@ issue #19 要求补齐 `byte-tools`、`byte-skills` 与 `byte-core` crate 及 re
 - **`activate_skill` 在 `byte-core` 实现并动态注册**
   - `activate_skill` 作为特殊工具，由 `byte-core` 的 `ActivateSkillTool` 实现。
   - 每个 `SessionRunner` 通过 `SessionToolRegistry` 将 `ActivateSkillTool` 动态包装到基础 `MvpToolRegistry` 之上，注入本会话的 `active_skills` 状态，而不修改共享的基础 registry。
-  - `ActivateSkillTool` 持有 `Arc<dyn SkillRegistry>`，调用 `SkillRegistry::activate` 后将结果追加到 `SessionRunner` 的内存 `active_skills` 列表，供后续 Run 的 `PromptBuilder` 注入上下文。
+  - `ActivateSkillTool` 持有 `Arc<dyn SkillRegistry>`，调用 `SkillRegistry::activate` 后将结果追加到 `SessionRunner` 的内存 `active_skills` 列表，供后续 Run 的 `LlmContextBuilder` 注入上下文。
 
 - **`RuntimeServices` 在 `byte-core` 聚合依赖**
   - `byte-core` 引入 `RuntimeServices`，聚合 `provider`、`store`、`event_bus`、`tool_registry`、`skill_registry`。
