@@ -93,6 +93,42 @@ pub enum MessageBlock {
     ToolCall(ToolCall),
 }
 
+/// A block-level delta used during streaming to update a single [`MessageBlock`]
+/// without replacing the whole [`MessageBody`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(tag = "type", rename_all = "camelCase")]
+#[ts(export, rename_all = "camelCase")]
+pub enum BlockDelta {
+    /// Incremental plain text update.
+    TextDelta {
+        /// The text fragment to append.
+        delta: String,
+    },
+    /// Incremental tool-call update (reserved for future streaming).
+    ToolCallDelta {
+        /// Optional tool-call identifier fragment.
+        id: Option<String>,
+        /// Optional tool name fragment.
+        name: Option<String>,
+        /// Optional arguments JSON fragment.
+        arguments_delta: Option<String>,
+    },
+}
+
+impl From<String> for BlockDelta {
+    fn from(delta: String) -> Self {
+        Self::TextDelta { delta }
+    }
+}
+
+impl From<&str> for BlockDelta {
+    fn from(delta: &str) -> Self {
+        Self::TextDelta {
+            delta: delta.to_owned(),
+        }
+    }
+}
+
 /// A single persisted record inside a Session JSONL file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]

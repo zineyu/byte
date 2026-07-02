@@ -4,9 +4,9 @@ use std::time::Duration;
 
 use byte_models::{ProviderError, ProviderEvent, ProviderStream};
 use byte_protocol::{
-    ActivatedSkill, CancelRunResult, CompactionSummary, LlmMessage, Message, MessageBlock,
-    MessageBody, MessageRole, RunStatus, RuntimeEventKind, SendMessageParams, SessionContext,
-    ToolCall,
+    ActivatedSkill, BlockDelta, CancelRunResult, CompactionSummary, LlmMessage, Message,
+    MessageBlock, MessageBody, MessageRole, RunStatus, RuntimeEventKind, SendMessageParams,
+    SessionContext, ToolCall,
 };
 use byte_session::SessionError;
 use byte_skills::SkillError;
@@ -544,7 +544,8 @@ impl RunExecutor {
                             runner.emit(RuntimeEventKind::MessageDelta {
                                 run_id: self.run_id.clone(),
                                 message_id: id.clone(),
-                                delta: flush,
+                                block_index: 0,
+                                delta: BlockDelta::TextDelta { delta: flush },
                             }).await;
                         }
                         runner.emit(RuntimeEventKind::RunCancelled {
@@ -618,7 +619,8 @@ impl RunExecutor {
                             .emit(RuntimeEventKind::MessageDelta {
                                 run_id: self.run_id.clone(),
                                 message_id: id,
-                                delta: flush,
+                                block_index: 0,
+                                delta: BlockDelta::TextDelta { delta: flush },
                             })
                             .await;
                     }
@@ -634,7 +636,8 @@ impl RunExecutor {
                             .emit(RuntimeEventKind::MessageDelta {
                                 run_id: self.run_id.clone(),
                                 message_id: id.clone(),
-                                delta: flush,
+                                block_index: 0,
+                                delta: BlockDelta::TextDelta { delta: flush },
                             })
                             .await;
                     }
@@ -648,12 +651,20 @@ impl RunExecutor {
                         }
                     }
                     let body = MessageBody(blocks);
+                    let completed_body = calls.as_ref().map(|calls| {
+                        MessageBody(
+                            calls
+                                .iter()
+                                .map(|call| MessageBlock::ToolCall(call.clone()))
+                                .collect(),
+                        )
+                    });
 
                     runner
                         .emit(RuntimeEventKind::message_completed(
                             self.run_id.clone(),
                             id.clone(),
-                            Some(body.clone()),
+                            completed_body.clone(),
                         ))
                         .await;
 
@@ -744,8 +755,8 @@ mod tests {
     use async_trait::async_trait;
     use byte_models::{EchoProvider, ModelProvider, ProviderError, ProviderEvent, ProviderStream};
     use byte_protocol::{
-        LlmMessage, Message, MessageBlock, MessageBody, MessageRole, RunStatus, RuntimeEventKind,
-        SendMessageParams,
+        BlockDelta, LlmMessage, Message, MessageBlock, MessageBody, MessageRole, RunStatus,
+        RuntimeEventKind, SendMessageParams,
     };
     use byte_session::SessionStore;
     use byte_skills::MvpSkillRegistry;
@@ -888,7 +899,10 @@ mod tests {
         let deltas: Vec<String> = events
             .iter()
             .filter_map(|event| match &event.kind {
-                RuntimeEventKind::MessageDelta { delta, .. } => Some(delta.clone()),
+                RuntimeEventKind::MessageDelta {
+                    delta: BlockDelta::TextDelta { delta },
+                    ..
+                } => Some(delta.clone()),
                 _ => None,
             })
             .collect();
@@ -956,7 +970,9 @@ mod tests {
             .iter()
             .filter_map(|event| match &event.kind {
                 RuntimeEventKind::MessageDelta {
-                    delta, run_id: rid, ..
+                    delta: BlockDelta::TextDelta { delta },
+                    run_id: rid,
+                    ..
                 } if rid == &run_id => Some(delta.clone()),
                 _ => None,
             })
@@ -1310,7 +1326,7 @@ mod tests {
                     run_id: rid,
                     body: Some(MessageBody(blocks)),
                     ..
-                } if rid == &run_id && blocks.iter().any(|b| matches!(b, MessageBlock::ToolCall(_)))
+                } if rid == &run_id && blocks.iter().all(|b| matches!(b, MessageBlock::ToolCall(_)))
             ),
             "third event should be message_completed with tool_calls"
         );
@@ -1333,9 +1349,9 @@ mod tests {
                 &run_event_kinds[6],
                 RuntimeEventKind::MessageCompleted {
                     run_id: rid,
-                    body: Some(MessageBody(blocks)),
+                    body: None,
                     ..
-                } if rid == &run_id && blocks.iter().all(|b| !matches!(b, MessageBlock::ToolCall(_)))
+                } if rid == &run_id
             ),
             "seventh event should be message_completed without tool_calls"
         );
@@ -1547,13 +1563,12 @@ mod tests {
 
         assert_eq!(
             body.0.len(),
-            2,
-            "body should contain one text block and one tool-call block"
+            1,
+            "body should contain the tool-call block(s) to append"
         );
-        assert!(matches!(body.0[0], MessageBlock::Text { .. }));
         assert!(
-            matches!(body.0[1], MessageBlock::ToolCall(ref call) if call.id == "echo-call-1" && call.name == "read_file"),
-            "second block should be the read_file tool call"
+            matches!(body.0[0], MessageBlock::ToolCall(ref call) if call.id == "echo-call-1" && call.name == "read_file"),
+            "block should be the read_file tool call"
         );
 
         let view = store.load_session("s1").await.expect("session loads");
@@ -1563,8 +1578,14 @@ mod tests {
             .find(|message| message.role == MessageRole::Assistant)
             .expect("assistant message should be persisted");
         assert_eq!(
-            assistant.body, body,
-            "persisted assistant body should match MessageCompleted body"
+            assistant.body.0.len(),
+            2,
+            "persisted assistant body should contain one text block and one tool-call block"
+        );
+        assert!(matches!(assistant.body.0[0], MessageBlock::Text { .. }));
+        assert!(
+            matches!(assistant.body.0[1], MessageBlock::ToolCall(ref call) if call.id == "echo-call-1" && call.name == "read_file"),
+            "second persisted block should be the read_file tool call"
         );
     }
 

@@ -54,7 +54,12 @@ A single typed unit inside a Message Body, such as a text segment or a tool call
 
 ### Block Delta
 
-An incremental update to one Message Block during streaming, used to update the runtime view without replacing the whole Message. MVP only streams `text` deltas; tool-call blocks are emitted atomically at the end of a message.
+An incremental update to one Message Block during streaming, used to update the runtime view without replacing the whole Message. Expressed as a tagged union:
+
+- `TextDelta { delta: String }` — the MVP streaming delta; appends text to a `Text` block.
+- `ToolCallDelta { id?, name?, argumentsDelta? }` — reserved for future tool-call streaming; not emitted by the MVP provider.
+
+MVP only streams `TextDelta` at `block_index: 0`; tool-call blocks are emitted atomically at the end of a message via `MessageCompleted`.
 
 ### LlmMessage
 

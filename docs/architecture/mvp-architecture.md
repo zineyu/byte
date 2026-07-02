@@ -194,7 +194,7 @@ run_started
 run_finished
 run_cancelled
 message_started
-message_delta
+message_delta { block_index, delta: BlockDelta }
 message_completed
 tool_started
 tool_finished
@@ -203,6 +203,8 @@ compaction_started
 compaction_finished
 error
 ```
+
+`message_delta` targets a single block inside a message body. In the MVP only `TextDelta` is streamed; `ToolCall` blocks are appended atomically when `message_completed` arrives.
 
 Events drive the React store reducer. Persisted session entries remain the source of recovery; runtime events are not the only state store.
 

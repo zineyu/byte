@@ -18,6 +18,18 @@ export type MessageBlock =
 
 export type MessageBody = Array<MessageBlock>;
 
+// ts-rs emits an externally-tagged shape for BlockDelta, but the wire format
+// is internally tagged (Rust: #[serde(tag = "type", rename_all = "camelCase")]).
+// Use the runtime-correct discriminated union at frontend boundaries.
+export type BlockDelta =
+  | { type: "textDelta"; delta: string }
+  | {
+      type: "toolCallDelta";
+      id: string | null;
+      name: string | null;
+      argumentsDelta: string | null;
+    };
+
 export type Message = Omit<GeneratedMessage, "body"> & {
   body: MessageBody;
 };
@@ -49,7 +61,9 @@ type RuntimeEventVariant<E> = E extends { sequence: number } & infer U
       ? {
           [K in keyof U1]: K extends "message_completed"
             ? { type: K } & Omit<U1[K], "body"> & { body: MessageBody | null }
-            : { type: K } & U1[K];
+            : K extends "message_delta"
+              ? { type: K } & Omit<U1[K], "delta"> & { delta: BlockDelta }
+              : { type: K } & U1[K];
         }[keyof U1]
       : never
     : never

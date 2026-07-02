@@ -190,22 +190,40 @@ function applyRuntimeEvent(state: AppState, event: RuntimeEvent): AppState {
             id: event.message_id,
             role: "assistant",
             content: "",
-            body: [],
+            body: [{ type: "text", text: "" }],
             status: "streaming",
           },
         ],
       };
     }
-    case "message_delta":
+    case "message_delta": {
+      if (event.delta.type !== "textDelta") {
+        return { ...state, events };
+      }
+      const textDelta = event.delta.delta;
       return {
         ...state,
         events,
-        messages: state.messages.map((message) =>
-          message.id === event.message_id
-            ? { ...message, content: message.content + event.delta }
-            : message,
-        ),
+        messages: state.messages.map((message) => {
+          if (message.id !== event.message_id) return message;
+          const newBody = [...message.body];
+          const block = newBody[event.block_index];
+          if (block?.type === "text") {
+            newBody[event.block_index] = {
+              ...block,
+              text: block.text + textDelta,
+            };
+          } else if (event.block_index === 0 && message.body.length === 0) {
+            newBody.push({ type: "text", text: textDelta });
+          }
+          return {
+            ...message,
+            content: message.content + textDelta,
+            body: newBody,
+          };
+        }),
       };
+    }
     case "message_completed": {
       const completedBody = event.body as MessageBody | null;
       const toolCallsFromBody =
@@ -227,20 +245,20 @@ function applyRuntimeEvent(state: AppState, event: RuntimeEvent): AppState {
       return {
         ...state,
         events,
-        messages: state.messages.map((message) =>
-          message.id === event.message_id
-            ? {
-                ...message,
-                status: "completed" as const,
-                ...(completedBody
-                  ? {
-                      content: getMessageBodyText(completedBody),
-                      body: completedBody,
-                    }
-                  : {}),
-              }
-            : message,
-        ),
+        messages: state.messages.map((message) => {
+          if (message.id !== event.message_id) return message;
+          const newBody = completedBody
+            ? [...message.body, ...completedBody]
+            : message.body;
+          return {
+            ...message,
+            status: "completed" as const,
+            content: completedBody
+              ? message.content + getMessageBodyText(completedBody)
+              : message.content,
+            body: newBody,
+          };
+        }),
         toolCalls: {
           ...state.toolCalls,
           ...toolCallsFromBody,

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { initialState } from "./initialState";
 import { reducer } from "./reducer";
-import type { RuntimeEvent, SessionView } from "./types";
+import type { BlockDelta, RuntimeEvent, SessionView } from "./types";
 
 const readyDaemonEvent: RuntimeEvent = {
   sequence: 1,
@@ -80,14 +80,16 @@ describe("runtime event reducer", () => {
         type: "message_delta",
         run_id: runId,
         message_id: messageId,
-        delta: "Hello",
+        block_index: 0,
+        delta: { type: "textDelta", delta: "Hello" } satisfies BlockDelta,
       },
       {
         sequence: 5,
         type: "message_delta",
         run_id: runId,
         message_id: messageId,
-        delta: " world",
+        block_index: 0,
+        delta: { type: "textDelta", delta: " world" } satisfies BlockDelta,
       },
       {
         sequence: 6,
@@ -115,7 +117,7 @@ describe("runtime event reducer", () => {
       id: messageId,
       role: "assistant",
       content: "Hello world",
-      body: [],
+      body: [{ type: "text", text: "Hello world" }],
       status: "completed",
     });
     expect(final.events.map((event) => event.type)).toEqual([
@@ -159,7 +161,8 @@ describe("runtime event reducer", () => {
         type: "message_delta",
         run_id: runId,
         message_id: messageId,
-        delta: "partial",
+        block_index: 0,
+        delta: { type: "textDelta", delta: "partial" } satisfies BlockDelta,
       },
     });
     const afterFinish = reducer(afterDelta, {
@@ -343,7 +346,8 @@ describe("runtime event reducer", () => {
         type: "message_delta" as const,
         run_id: runId,
         message_id: messageId,
-        delta: "partial",
+        block_index: 0,
+        delta: { type: "textDelta", delta: "partial" } satisfies BlockDelta,
       },
     ].reduce(
       (state, event, index) =>
@@ -393,7 +397,6 @@ describe("runtime event reducer", () => {
         run_id: runId,
         message_id: messageId,
         body: [
-          { type: "text", text: "" },
           {
             type: "toolCall",
             id: toolCallId,

@@ -33,7 +33,14 @@ function makeEvent(
         role: "assistant",
       };
     case "message_delta":
-      return { ...base, type, run_id: "r1", message_id: "m1", delta: "hi" };
+      return {
+        ...base,
+        type,
+        run_id: "r1",
+        message_id: "m1",
+        block_index: 0,
+        delta: { type: "textDelta", delta: "hi" },
+      };
     case "message_completed":
       return {
         ...base,

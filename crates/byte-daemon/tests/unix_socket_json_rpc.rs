@@ -10,7 +10,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use byte_protocol::{
-    CancelRunParams, DaemonState, DeleteSessionParams, JsonRpcMessage, JsonRpcRequest,
+    BlockDelta, CancelRunParams, DaemonState, DeleteSessionParams, JsonRpcMessage, JsonRpcRequest,
     ListSessionsResult, LoadSessionParams, LoadSessionResult, NewSessionParams, NewSessionResult,
     RpcId, RunStatus, RuntimeEventKind, SendMessageParams, decode_json_line, encode_json_line,
 };
@@ -241,7 +241,10 @@ fn send_message_with_echo_provider_streams_assistant_message() {
                         assert_eq!(role, byte_protocol::MessageRole::Assistant);
                         saw_message_started = true;
                     }
-                    RuntimeEventKind::MessageDelta { delta, .. } => {
+                    RuntimeEventKind::MessageDelta {
+                        delta: BlockDelta::TextDelta { delta },
+                        ..
+                    } => {
                         assert!(!delta.is_empty());
                         saw_delta = true;
                     }

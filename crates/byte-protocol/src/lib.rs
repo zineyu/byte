@@ -7,7 +7,7 @@ use std::path::PathBuf;
 /// JSON-RPC protocol version.
 pub const JSON_RPC_VERSION: &str = "2.0";
 /// Wire format version supported by this crate.
-pub const PROTOCOL_VERSION: u16 = 4;
+pub const PROTOCOL_VERSION: u16 = 5;
 /// JSON-RPC method name used for runtime event notifications.
 pub const RUNTIME_EVENT_METHOD: &str = "runtime_event";
 
@@ -15,7 +15,7 @@ pub const RUNTIME_EVENT_METHOD: &str = "runtime_event";
 pub mod session;
 /// Re-exported session request/result and view types.
 pub use session::{
-    CompactionSummary, DeleteSessionParams, DeleteSessionResult, ListSessionsResult,
+    BlockDelta, CompactionSummary, DeleteSessionParams, DeleteSessionResult, ListSessionsResult,
     LoadSessionParams, LoadSessionResult, Message, MessageBlock, MessageBody, NewSessionParams,
     NewSessionResult, SessionEntry, SessionSummary, SessionView,
 };
@@ -371,15 +371,17 @@ impl RuntimeEventKind {
         }
     }
 
-    /// A content delta was produced for a message.
+    /// A block delta was produced for a message.
     pub fn message_delta(
         run_id: impl Into<String>,
         message_id: impl Into<String>,
-        delta: impl Into<String>,
+        block_index: usize,
+        delta: impl Into<BlockDelta>,
     ) -> Self {
         Self::MessageDelta {
             run_id: run_id.into(),
             message_id: message_id.into(),
+            block_index,
             delta: delta.into(),
         }
     }
@@ -490,14 +492,16 @@ pub enum RuntimeEventKind {
         /// Role of the message being generated.
         role: MessageRole,
     },
-    /// Message content delta.
+    /// Message block delta.
     MessageDelta {
         /// Run identifier.
         run_id: String,
         /// Message identifier.
         message_id: String,
-        /// Incremental text content.
-        delta: String,
+        /// Index of the block inside the message body that this delta targets.
+        block_index: usize,
+        /// Incremental block update.
+        delta: BlockDelta,
     },
     /// Message generation completed.
     MessageCompleted {
@@ -798,11 +802,11 @@ mod tests {
             },
             RuntimeEvent {
                 sequence: 4,
-                kind: RuntimeEventKind::message_delta(run_id, message_id, "Hello"),
+                kind: RuntimeEventKind::message_delta(run_id, message_id, 0, "Hello"),
             },
             RuntimeEvent {
                 sequence: 5,
-                kind: RuntimeEventKind::message_delta(run_id, message_id, " world"),
+                kind: RuntimeEventKind::message_delta(run_id, message_id, 0, " world"),
             },
             RuntimeEvent {
                 sequence: 6,
