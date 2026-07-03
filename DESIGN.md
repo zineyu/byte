@@ -201,7 +201,19 @@ components:
   drawer:
     backgroundColor: "{colors.background}"
   sidebar:
+    backgroundColor: "{colors.background-subtle}"
+  brand-header:
+    textColor: "{colors.text-primary}"
+    typography: "{typography.headline}"
+  mode-tab:
+    backgroundColor: "transparent"
+    textColor: "{colors.text-secondary}"
+    rounded: "{rounded.pill}"
+  mode-tab-active:
     backgroundColor: "{colors.background}"
+    textColor: "{colors.text-primary}"
+  mode-tab-hover:
+    textColor: "{colors.text-body}"
   error-banner:
     backgroundColor: "{colors.error-subtle}"
     textColor: "{colors.error-text}"
@@ -268,11 +280,11 @@ All UI text uses Inter or the system sans-serif stack for clarity. Code snippets
 
 The application uses a three-column grid with generous whitespace:
 
-1. **Left sidebar** (240px): brand header, top mode tabs (Chat / Work), grouped navigation, session list, and footer connection status. The sidebar uses the subtle background (`#f9fafb`) to recede from the main white canvas, relying on spacing and subtle hover states to create hierarchy.
+1. **Left sidebar** (240px): brand header with the Sparkles icon and "Byte" title, top mode tabs (`Chat` / `Work`), a scrollable tab panel (session list under `Chat`, workspace info under `Work`), grouped navigation (`运行时`, `设置`), and footer connection status. The sidebar uses the subtle background (`#f9fafb`) to recede from the main white canvas, relying on spacing and subtle hover states to create hierarchy.
 2. **Main area** (flexible): centered empty-state hero with a large rounded input card, or a chat conversation stream when messages exist.
 3. **Right drawer** (360px, collapsible): runtime events and settings, fixed to viewport height and scrolling independently.
 
-On medium screens (≤900px) the sidebar narrows to 200px and the right drawer becomes a fixed overlay. On small screens (≤680px) the sidebar collapses to a top bar, hiding session lists and footer, and the right drawer becomes full-width.
+On medium screens (≤900px) the sidebar narrows to 200px and the right drawer becomes a fixed overlay. On small screens (≤680px) the sidebar collapses to a top bar, hiding session lists, mode tabs, and footer, and the right drawer becomes full-width.
 
 The layout favors centered, contained content over full-bleed surfaces. The empty state anchors the input card in the center of the viewport with plenty of surrounding space.
 
@@ -304,13 +316,17 @@ Radius is used to make the interface feel friendly and approachable. Cards are s
 
 A large, softly rounded surface for composing messages. It uses a white background, 28px radius, a very light border (`#e8eaed`), and a gentle shadow. The footer is separated by a light border and holds tool actions on the left and the mode badge + circular send button on the right. The textarea is transparent, borderless, and auto-growing. On focus the border shifts to `#d1d5db` and the shadow deepens.
 
+### Brand header
+
+The brand header sits at the top of the left sidebar and contains the Sparkles icon and the "Byte" wordmark. The icon uses the accent blue to mark the agent identity; the wordmark uses the headline typography and primary text color. It is compact and unobtrusive, acting as a persistent anchor without visually competing with the content below.
+
 ### Mode tabs
 
-At the top of the sidebar, a compact segmented control switches between views (e.g., Chat / Work). The active tab uses a soft gray background with dark text; inactive tabs use muted text. The style is pill-like but restrained.
+At the top of the sidebar, a compact segmented control switches between the `Chat` and `Work` sidebar views. The active tab uses a white background with dark text; inactive tabs use muted text on a transparent background. The container is pill-shaped with a subtle hover gray background. Focus rings use the accent blue outline.
 
 ### Navigation
 
-Sidebar navigation items are full-width buttons with a 10px radius. Default state uses transparent background with secondary text; hover uses the hover gray; active uses the hover gray with primary text. Primary actions (new chat, open workspace) are outlined with light borders to sit cleanly against the white sidebar. Section labels (e.g., Project, Tasks) use small, muted uppercase text to group items without heavy separators.
+Sidebar navigation items are full-width buttons with a 10px radius. Default state uses transparent background with secondary text; hover uses the hover gray; active uses the hover gray with primary text. Primary actions (`新对话` in Chat, `打开工作区` in Work) are outlined with light borders to sit cleanly against the sidebar. The `运行时` and `设置` items live in a grouped navigation block at the bottom of the sidebar above the footer. Section labels (e.g., Project, Tasks) use small, muted uppercase text to group items without heavy separators.
 
 ### Hero empty state
 

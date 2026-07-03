@@ -63,6 +63,7 @@ export default function App() {
   const [input, setInput] = useState("");
   const [showSettings, setShowSettings] = useState(false);
   const [showRuntimeEvents, setShowRuntimeEvents] = useState(false);
+  const [sidebarMode, setSidebarMode] = useState<"chat" | "work">("chat");
   const initialLoadDoneRef = useRef(false);
 
   const {
@@ -79,6 +80,12 @@ export default function App() {
   } = state;
 
   const timelineItems = buildTimelineItems(messages);
+
+  const currentSession = useMemo(
+    () => sessions.find((session) => session.sessionId === currentSessionId),
+    [sessions, currentSessionId],
+  );
+  const currentWorkspace = currentSession?.workspace ?? null;
 
   const refreshDaemonState = useCallback(async () => {
     setLoadState("loading");
@@ -299,64 +306,129 @@ export default function App() {
   return (
     <main className="app-shell">
       <aside className="left-sidebar" aria-label="主导航">
-        <div className="sidebar-header">
+        <div className="sidebar-brand">
+          <span className="sidebar-brand-icon" aria-hidden="true">
+            <Sparkles size={20} strokeWidth={2} />
+          </span>
+          <span className="sidebar-brand-title">Byte</span>
+        </div>
+
+        <div
+          className="sidebar-mode-tabs"
+          role="tablist"
+          aria-label="侧边栏模式"
+        >
           <button
             type="button"
-            className="nav-item new-chat-item"
-            onClick={() => void handleNewChat()}
+            role="tab"
+            aria-selected={sidebarMode === "chat"}
+            className={`mode-tab ${sidebarMode === "chat" ? "active" : ""}`}
+            onClick={() => setSidebarMode("chat")}
           >
-            <span className="nav-item-icon" aria-hidden="true">
-              <Plus size={16} strokeWidth={2} />
-            </span>
-            新对话
+            Chat
           </button>
           <button
             type="button"
-            className="nav-item open-workspace-item"
-            onClick={() => void handleOpenWorkspace()}
+            role="tab"
+            aria-selected={sidebarMode === "work"}
+            className={`mode-tab ${sidebarMode === "work" ? "active" : ""}`}
+            onClick={() => setSidebarMode("work")}
           >
-            <span className="nav-item-icon" aria-hidden="true">
-              <FolderOpen size={16} strokeWidth={2} />
-            </span>
-            打开工作区
+            Work
           </button>
         </div>
 
-        <nav className="session-list" aria-label="会话列表">
-          {sessions.length === 0 ? (
-            <p className="session-list-empty">暂无会话</p>
-          ) : (
-            sessions.map((session) => (
-              <div
-                key={session.sessionId}
-                className={`nav-item session-item ${currentSessionId === session.sessionId ? "active" : ""}`}
+        <div className="sidebar-tab-content" role="tabpanel">
+          {sidebarMode === "chat" ? (
+            <>
+              <button
+                type="button"
+                className="nav-item new-chat-item"
+                onClick={() => void handleNewChat()}
               >
-                <button
-                  type="button"
-                  className="session-row"
-                  onClick={() => void handleSelectSession(session.sessionId)}
-                  title={session.workspace ?? session.sessionId}
-                >
-                  <span className="nav-item-icon" aria-hidden="true">
-                    <MessageSquare size={14} strokeWidth={2} />
-                  </span>
-                  <span className="session-item-title">
-                    {sessionTitle(session)}
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  className="session-delete"
-                  onClick={() => void handleDeleteSession(session.sessionId)}
-                  aria-label="删除会话"
-                  title="删除会话"
-                >
-                  <Trash2 size={14} strokeWidth={2} />
-                </button>
-              </div>
-            ))
+                <span className="nav-item-icon" aria-hidden="true">
+                  <Plus size={16} strokeWidth={2} />
+                </span>
+                新对话
+              </button>
+              <nav className="session-list" aria-label="会话列表">
+                {sessions.length === 0 ? (
+                  <p className="session-list-empty">暂无会话</p>
+                ) : (
+                  sessions.map((session) => (
+                    <div
+                      key={session.sessionId}
+                      className={`nav-item session-item ${
+                        currentSessionId === session.sessionId ? "active" : ""
+                      }`}
+                    >
+                      <button
+                        type="button"
+                        className="session-row"
+                        onClick={() =>
+                          void handleSelectSession(session.sessionId)
+                        }
+                        title={session.workspace ?? session.sessionId}
+                      >
+                        <span className="nav-item-icon" aria-hidden="true">
+                          <MessageSquare size={14} strokeWidth={2} />
+                        </span>
+                        <span className="session-item-title">
+                          {sessionTitle(session)}
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        className="session-delete"
+                        onClick={() =>
+                          void handleDeleteSession(session.sessionId)
+                        }
+                        aria-label="删除会话"
+                        title="删除会话"
+                      >
+                        <Trash2 size={14} strokeWidth={2} />
+                      </button>
+                    </div>
+                  ))
+                )}
+              </nav>
+            </>
+          ) : (
+            <div className="work-panel">
+              <button
+                type="button"
+                className="nav-item open-workspace-item"
+                onClick={() => void handleOpenWorkspace()}
+              >
+                <span className="nav-item-icon" aria-hidden="true">
+                  <FolderOpen size={16} strokeWidth={2} />
+                </span>
+                打开工作区
+              </button>
+              {currentSessionId ? (
+                <>
+                  <div className="work-panel-info">
+                    <div className="work-panel-label">当前工作区</div>
+                    <div
+                      className="work-panel-path"
+                      title={currentWorkspace ?? "未设置"}
+                    >
+                      {currentWorkspace && currentSession
+                        ? sessionTitle(currentSession)
+                        : "未设置"}
+                    </div>
+                  </div>
+                  <WorkspaceInstructionsCard
+                    instructions={workspaceInstructions}
+                    error={workspaceInstructionsError}
+                  />
+                </>
+              ) : (
+                <p className="work-panel-empty">选择一个会话以查看工作区</p>
+              )}
+            </div>
           )}
-        </nav>
+        </div>
 
         <nav className="nav-menu" aria-label="运行时">
           <button
