@@ -111,7 +111,7 @@ describe("buildTimelineItems", () => {
     });
   });
 
-  it("inserts tool_call items after the assistant message that requested them", () => {
+  it("keeps assistant messages with tool calls as message items", () => {
     const messages: ChatMessage[] = [
       {
         id: "m1",
@@ -133,12 +133,11 @@ describe("buildTimelineItems", () => {
 
     const items = buildTimelineItems(messages);
 
-    expect(items).toHaveLength(2);
-    expect(items[0].type).toBe("message");
-    expect(items[1]).toEqual({
-      type: "tool_call",
-      id: "tool-tc1",
-      toolCallId: "tc1",
+    expect(items).toHaveLength(1);
+    expect(items[0]).toEqual({
+      type: "message",
+      id: "m1",
+      message: messages[0],
     });
   });
 
@@ -183,14 +182,8 @@ describe("buildTimelineItems", () => {
     expect(items.map((item) => item.type)).toEqual([
       "message",
       "message",
-      "tool_call",
       "message",
     ]);
-    expect(items[2]).toEqual({
-      type: "tool_call",
-      id: "tool-tc1",
-      toolCallId: "tc1",
-    });
   });
 
   it("renders summary messages as distinct summary items", () => {
@@ -265,20 +258,15 @@ describe("buildTimelineItems", () => {
 
     const items = buildTimelineItems(messages);
 
-    expect(items.map((item) => item.type)).toEqual(["message", "tool_call"]);
+    expect(items.map((item) => item.type)).toEqual(["message"]);
     expect(items[0]).toEqual({
       type: "message",
       id: "m1",
       message: messages[0],
     });
-    expect(items[1]).toEqual({
-      type: "tool_call",
-      id: "tool-tc1",
-      toolCallId: "tc1",
-    });
   });
 
-  it("renders assistant messages with only tool calls as cards without an empty bubble", () => {
+  it("keeps assistant messages that contain only tool calls as message items", () => {
     const messages: ChatMessage[] = [
       {
         id: "m1",
@@ -299,11 +287,11 @@ describe("buildTimelineItems", () => {
 
     const items = buildTimelineItems(messages);
 
-    expect(items.map((item) => item.type)).toEqual(["tool_call"]);
+    expect(items.map((item) => item.type)).toEqual(["message"]);
     expect(items[0]).toEqual({
-      type: "tool_call",
-      id: "tool-tc1",
-      toolCallId: "tc1",
+      type: "message",
+      id: "m1",
+      message: messages[0],
     });
   });
 });

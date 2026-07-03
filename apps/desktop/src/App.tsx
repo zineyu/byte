@@ -28,6 +28,7 @@ import {
   type RuntimeEvent,
   type RuntimeEventLogEntry,
 } from "./store";
+import { getMessageBodyToolCalls } from "./store/types";
 
 function sessionTitle(session: SessionSummary): string {
   if (session.workspace) {
@@ -549,7 +550,7 @@ export default function App() {
                   );
                 }
 
-                return item.type === "message" ? (
+                return (
                   <div
                     key={item.id}
                     className={`chat-message chat-message--${item.message.role}`}
@@ -566,6 +567,15 @@ export default function App() {
                         content={item.message.content}
                         status={item.message.status}
                       />
+                      {item.message.role === "assistant" &&
+                        getMessageBodyToolCalls(item.message.body).map(
+                          (call) => (
+                            <ToolCallCard
+                              key={call.id}
+                              toolCall={toolCalls[call.id]}
+                            />
+                          ),
+                        )}
                       {item.message.status === "error" && (
                         <div className="chat-message__error" role="alert">
                           {item.message.error ?? "出错了"}
@@ -581,11 +591,6 @@ export default function App() {
                       )}
                     </div>
                   </div>
-                ) : (
-                  <ToolCallCard
-                    key={item.id}
-                    toolCall={toolCalls[item.toolCallId]}
-                  />
                 );
               })}
             </div>

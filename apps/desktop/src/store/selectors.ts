@@ -1,5 +1,4 @@
 import type { ChatMessage, RuntimeEventLogEntry, TimelineItem } from "./types";
-import { getMessageBodyToolCalls } from "./types";
 
 export type EventGroup = {
   event: RuntimeEventLogEntry;
@@ -42,29 +41,7 @@ export function buildTimelineItems(messages: ChatMessage[]): TimelineItem[] {
     if (message.role === "tool") {
       continue;
     }
-    // Assistant messages that contain only tool calls (no text) should be
-    // represented entirely by their tool_call cards, not as an empty bubble.
-    const hasText = message.content.trim().length > 0;
-    if (message.role === "assistant" && !hasText) {
-      for (const call of getMessageBodyToolCalls(message.body)) {
-        items.push({
-          type: "tool_call",
-          id: `tool-${call.id}`,
-          toolCallId: call.id,
-        });
-      }
-      continue;
-    }
     items.push({ type: "message", id: message.id, message });
-    if (message.role === "assistant") {
-      for (const call of getMessageBodyToolCalls(message.body)) {
-        items.push({
-          type: "tool_call",
-          id: `tool-${call.id}`,
-          toolCallId: call.id,
-        });
-      }
-    }
   }
   return items;
 }

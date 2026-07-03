@@ -144,16 +144,7 @@ export type TimelineSummaryItem = {
   message: ChatMessage;
 };
 
-export type TimelineToolCallItem = {
-  type: "tool_call";
-  id: string;
-  toolCallId: string;
-};
-
-export type TimelineItem =
-  | TimelineMessageItem
-  | TimelineSummaryItem
-  | TimelineToolCallItem;
+export type TimelineItem = TimelineMessageItem | TimelineSummaryItem;
 
 export type StoreAction =
   | { type: "runtime_event"; event: RuntimeEvent }
