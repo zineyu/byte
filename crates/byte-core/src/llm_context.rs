@@ -89,7 +89,7 @@ impl LlmContextBuilder {
                 messages.push(LlmMessage {
                     role: message.role,
                     body: message.body.clone(),
-                    tool_call_id: None,
+                    tool_call_id: message.tool_call_id.clone(),
                 });
             }
         }
@@ -174,6 +174,7 @@ mod tests {
             id: "m1".into(),
             parent_id: None,
             role,
+            tool_call_id: None,
             body: MessageBody::text(content),
         }
     }
@@ -213,6 +214,7 @@ mod tests {
                     id: "s1".into(),
                     parent_id: Some("m1".into()),
                     role: MessageRole::Summary,
+                    tool_call_id: None,
                     body: MessageBody::text("old topic"),
                 },
             ],
@@ -231,6 +233,30 @@ mod tests {
         assert_eq!(body_text(&messages[2].body), "past");
         assert_eq!(messages[3].role, MessageRole::Developer);
         assert_eq!(body_text(&messages[3].body), "current");
+    }
+
+    #[test]
+    fn builder_preserves_tool_call_id_for_tool_messages() {
+        let builder = LlmContextBuilder::new();
+        let context = LlmContextInput {
+            user_message: "current".into(),
+            history: vec![Message {
+                id: "m2".into(),
+                parent_id: Some("m1".into()),
+                role: MessageRole::Tool,
+                tool_call_id: Some("call-1".into()),
+                body: MessageBody::text("tool output"),
+            }],
+            tools: vec![],
+            active_skills: vec![],
+            available_skills: vec![],
+            workspace_instructions: None,
+        };
+        let messages = builder.build(context);
+
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[1].role, MessageRole::Tool);
+        assert_eq!(messages[1].tool_call_id, Some("call-1".into()));
     }
 
     #[test]

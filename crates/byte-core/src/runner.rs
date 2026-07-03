@@ -155,6 +155,7 @@ impl SessionRunner {
                 parent_id.as_deref(),
                 MessageRole::Developer,
                 MessageBody::text(&params.message),
+                None,
             )
             .await
         {
@@ -556,6 +557,7 @@ impl RunExecutor {
                                     Some(last_entry_id),
                                     MessageRole::Assistant,
                                     MessageBody::text(&state.assistant_content),
+                                    None,
                                 )
                                 .await?;
                             last_entry_id.clone_from(id);
@@ -690,6 +692,7 @@ impl RunExecutor {
                             Some(last_entry_id),
                             MessageRole::Assistant,
                             body,
+                            None,
                         )
                         .await?;
 
@@ -749,6 +752,7 @@ impl RunExecutor {
                 Some(last_entry_id),
                 MessageRole::Tool,
                 MessageBody::text(&output),
+                Some(&call.id),
             )
             .await?;
 
@@ -1411,6 +1415,7 @@ mod tests {
         assert_eq!(message_text(&view.messages[0]), "读一下 main.rs");
         assert_eq!(view.messages[1].role, MessageRole::Assistant);
         assert_eq!(view.messages[2].role, MessageRole::Tool);
+        assert_eq!(view.messages[2].tool_call_id, Some("echo-call-1".into()));
         assert_eq!(message_text(&view.messages[2]), "fn main() {}");
         assert_eq!(view.messages[3].role, MessageRole::Assistant);
         assert_eq!(message_text(&view.messages[3]), "Echo: 读一下 main.rs");

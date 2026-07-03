@@ -130,6 +130,7 @@ impl SessionStore {
         parent_id: Option<&str>,
         role: MessageRole,
         body: MessageBody,
+        tool_call_id: Option<&str>,
     ) -> Result<String, SessionError> {
         let path = self.session_path(session_id)?;
         let id = id.map_or_else(|| uuid::Uuid::new_v4().to_string(), ToOwned::to_owned);
@@ -137,6 +138,7 @@ impl SessionStore {
             id: id.clone(),
             parent_id: parent_id.map(ToOwned::to_owned),
             role,
+            tool_call_id: tool_call_id.map(ToOwned::to_owned),
             body,
         });
         self.write_line(&path, &entry).await?;
@@ -493,6 +495,7 @@ mod tests {
                 None,
                 MessageRole::Developer,
                 MessageBody::text("hello"),
+                None,
             )
             .await
             .expect("append first");
@@ -504,6 +507,7 @@ mod tests {
                 Some(&first_id),
                 MessageRole::Assistant,
                 MessageBody::text("hi"),
+                None,
             )
             .await
             .expect("append second");
@@ -521,6 +525,7 @@ mod tests {
                 id,
                 parent_id: Some(parent),
                 role: MessageRole::Assistant,
+                tool_call_id: None,
                 ..
             }) if id == &second_id && parent == &first_id
         ));
@@ -540,6 +545,7 @@ mod tests {
                 None,
                 MessageRole::Developer,
                 MessageBody::text("hello"),
+                None,
             )
             .await
             .unwrap();
@@ -550,6 +556,7 @@ mod tests {
                 Some(&first_id),
                 MessageRole::Assistant,
                 MessageBody::text("hi"),
+                None,
             )
             .await
             .unwrap();
@@ -579,6 +586,7 @@ mod tests {
                 None,
                 MessageRole::Developer,
                 MessageBody::text("read main.rs"),
+                None,
             )
             .await
             .unwrap();
@@ -589,6 +597,7 @@ mod tests {
                 Some(&dev_id),
                 MessageRole::Assistant,
                 MessageBody::text(""),
+                None,
             )
             .await
             .unwrap();
@@ -599,6 +608,7 @@ mod tests {
                 Some(&assistant_id),
                 MessageRole::Tool,
                 MessageBody::text("fn main() {}"),
+                Some("tc-1"),
             )
             .await
             .unwrap();
@@ -608,6 +618,7 @@ mod tests {
         assert_eq!(view.messages[0].role, MessageRole::Developer);
         assert_eq!(view.messages[1].role, MessageRole::Assistant);
         assert_eq!(view.messages[2].role, MessageRole::Tool);
+        assert_eq!(view.messages[2].tool_call_id, Some("tc-1".to_string()));
         assert_eq!(message_text(&view.messages[2]), "fn main() {}");
     }
 
@@ -657,6 +668,7 @@ mod tests {
                 None,
                 MessageRole::Developer,
                 MessageBody::text("hello"),
+                None,
             )
             .await
             .unwrap();
@@ -667,6 +679,7 @@ mod tests {
                 Some(&first_id),
                 MessageRole::Assistant,
                 MessageBody::text("hi"),
+                None,
             )
             .await
             .unwrap();
@@ -677,6 +690,7 @@ mod tests {
             id: summary_id.into(),
             parent_id: Some(second_id.clone()),
             role: MessageRole::Summary,
+            tool_call_id: None,
             body: MessageBody::text("assistant message compacted"),
         });
         let path = store.session_path("session-1").unwrap();

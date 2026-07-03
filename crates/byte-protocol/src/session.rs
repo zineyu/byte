@@ -43,6 +43,9 @@ pub struct Message {
     pub parent_id: Option<String>,
     /// Role of the message sender.
     pub role: MessageRole,
+    /// Identifier of the tool call this message answers, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
     /// Message body content.
     pub body: MessageBody,
 }
@@ -210,6 +213,7 @@ mod tests {
             id: "msg-1".into(),
             parent_id: Some("msg-0".into()),
             role: MessageRole::Developer,
+            tool_call_id: None,
             body: MessageBody::text("hello"),
         });
 
@@ -241,12 +245,14 @@ mod tests {
                     id: "msg-1".into(),
                     parent_id: None,
                     role: MessageRole::Assistant,
+                    tool_call_id: None,
                     body: MessageBody::text("hi"),
                 },
                 Message {
                     id: "msg-2".into(),
                     parent_id: Some("msg-1".into()),
                     role: MessageRole::Summary,
+                    tool_call_id: None,
                     body: MessageBody::text("summary text"),
                 },
             ],

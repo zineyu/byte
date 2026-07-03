@@ -30,8 +30,9 @@ export type BlockDelta =
       argumentsDelta: string | null;
     };
 
-export type Message = Omit<GeneratedMessage, "body"> & {
+export type Message = Omit<GeneratedMessage, "body" | "toolCallId"> & {
   body: MessageBody;
+  toolCallId?: string | null;
 };
 
 export type SessionView = Omit<GeneratedSessionView, "messages"> & {

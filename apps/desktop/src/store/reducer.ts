@@ -122,7 +122,9 @@ function loadSession(
     });
 
   // Snapshot messages are already completed; seed any tool calls referenced in
-  // assistant bodies so they render as completed instead of "running".
+  // assistant bodies so they render as completed instead of "running". Then
+  // backfill outputs from persisted role="tool" messages so the cards display
+  // the actual result instead of "no output".
   const toolCalls: Record<string, ToolCallState> = {};
   for (const message of messages) {
     if (message.role !== "assistant") continue;
@@ -137,6 +139,14 @@ function loadSession(
         output: null,
         error: null,
       };
+    }
+  }
+  for (const message of session.messages) {
+    if (message.role !== "tool") continue;
+    const output = getMessageBodyText(message.body);
+    const toolCallId = message.toolCallId;
+    if (toolCallId && toolCalls[toolCallId]) {
+      toolCalls[toolCallId].output = output;
     }
   }
 
