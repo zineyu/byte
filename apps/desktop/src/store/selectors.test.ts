@@ -277,6 +277,35 @@ describe("buildTimelineItems", () => {
       toolCallId: "tc1",
     });
   });
+
+  it("renders assistant messages with only tool calls as cards without an empty bubble", () => {
+    const messages: ChatMessage[] = [
+      {
+        id: "m1",
+        role: "assistant",
+        content: "",
+        status: "completed",
+        timestamp: null,
+        body: [
+          {
+            type: "toolCall",
+            id: "tc1",
+            name: "grep",
+            arguments: { pattern: "foo" },
+          },
+        ],
+      },
+    ];
+
+    const items = buildTimelineItems(messages);
+
+    expect(items.map((item) => item.type)).toEqual(["tool_call"]);
+    expect(items[0]).toEqual({
+      type: "tool_call",
+      id: "tool-tc1",
+      toolCallId: "tc1",
+    });
+  });
 });
 
 describe("groupEvents", () => {
