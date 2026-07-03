@@ -16,8 +16,10 @@ colors:
   accent: "#3b82f6"
   accent-subtle: "#eff6ff"
   accent-soft: "#dbeafe"
+  accent-text: "#1e3a8a"
   success: "#22c55e"
   success-soft: "#d1fae5"
+  success-text: "#14532d"
   error: "#ef4444"
   error-soft: "#fee2e2"
   error-subtle: "#fef2f2"
@@ -164,6 +166,33 @@ components:
     backgroundColor: "{colors.error-subtle}"
     textColor: "{colors.error}"
     rounded: "{rounded.md}"
+  tool-avatar:
+    backgroundColor: "{colors.accent-subtle}"
+    textColor: "{colors.accent-text}"
+    rounded: "{rounded.pill}"
+    size: "1.75rem"
+  tool-avatar-completed:
+    backgroundColor: "{colors.success-soft}"
+    textColor: "{colors.success-text}"
+  tool-avatar-running:
+    backgroundColor: "{colors.accent-subtle}"
+    textColor: "{colors.accent-text}"
+  tool-avatar-error:
+    backgroundColor: "{colors.error-subtle}"
+    textColor: "{colors.error-text}"
+  tool-status-badge:
+    backgroundColor: "{colors.background-subtle}"
+    textColor: "{colors.text-body}"
+    rounded: "{rounded.pill}"
+  tool-status-badge-completed:
+    backgroundColor: "{colors.success-soft}"
+    textColor: "{colors.success-text}"
+  tool-status-badge-running:
+    backgroundColor: "{colors.accent-subtle}"
+    textColor: "{colors.accent-text}"
+  tool-status-badge-error:
+    backgroundColor: "{colors.error-subtle}"
+    textColor: "{colors.error-text}"
   markdown-body:
     textColor: "{colors.text-body}"
     typography: "{typography.body-chat}"
@@ -259,7 +288,9 @@ The palette is almost monochromatic, letting the content breathe. Color is used 
 - **Text Secondary (#6b7280):** Captions, metadata, placeholder text, and muted labels.
 - **Text Muted (#9ca3af):** Disabled controls and subtle hints.
 - **Accent (#3b82f6):** Agent mode badges, Beta Preview labels, active tool-call states, and the developer avatar. The single source of interactive color.
+- **Accent Text (#1e3a8a):** Darker blue variant for accessible text on light blue surfaces, such as tool avatars and running status badges.
 - **Success (#22c55e):** Online connection indicator, successful tool-call status, and assistant avatar accents.
+- **Success Text (#14532d):** Darker green variant for accessible text on light green surfaces, such as completed status badges.
 - **Error (#ef4444):** Offline indicator, deletion hover, and error banners.
 - **Warning (#b45309):** Summary/compaction entries, paired with a warm cream background to separate them from normal chat turns.
 
@@ -341,7 +372,7 @@ Messages are arranged horizontally with an avatar and a rounded bubble. Develope
 
 ### Tool call cards
 
-Rendered inline in the chat timeline, tool call cards are compact gray cards with a monospace tool name, status icon, and expandable output. Running states turn light blue with a `#93c5fd` border; error states turn light red with a `#fca5a5` border. Output blocks are white with a `#e8eaed` border and use monospace text.
+Rendered inline in the chat timeline, tool call cards are compact gray cards with a circular tool avatar tinted by status, a monospace tool-call signature, and a pill-shaped status badge (`已完成` / `运行中` / `失败`). Running states turn light blue with a `#93c5fd` border; error states turn light red with a `#fca5a5` border. Output blocks are white with a `#e8eaed` border and use monospace text. Directory listings render as a bordered white list with file/folder icons, a path caption header, and row separators; long lists scroll internally.
 
 ### Status badges and connection
 

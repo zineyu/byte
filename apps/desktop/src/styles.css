@@ -1370,14 +1370,73 @@ textarea {
 .tool-call-header {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.75rem;
   font-size: 0.8125rem;
   color: #374151;
 }
 
+.tool-call-avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 50%;
+  background: #eff6ff;
+  color: #1e3a8a;
+}
+
+.tool-call-avatar--running {
+  background: #eff6ff;
+  color: #1e3a8a;
+}
+
+.tool-call-avatar--completed {
+  background: #d1fae5;
+  color: #14532d;
+}
+
+.tool-call-avatar--error {
+  background: #fef2f2;
+  color: #991b1b;
+}
+
 .tool-call-name {
   flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.tool-call-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex-shrink: 0;
+  padding: 0.15rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  background: #f2f3f5;
+  color: #374151;
+}
+
+.tool-call-status-badge--running {
+  background: #eff6ff;
+  color: #1e3a8a;
+}
+
+.tool-call-status-badge--completed {
+  background: #d1fae5;
+  color: #14532d;
+}
+
+.tool-call-status-badge--error {
+  background: #fef2f2;
+  color: #991b1b;
 }
 
 .tool-call-spinner {
@@ -1413,7 +1472,44 @@ textarea {
 }
 
 .tool-call-body {
-  margin-top: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.tool-call-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.25rem;
+  padding-bottom: 0.25rem;
+  border-bottom: 1px solid #e5e7eb;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #4b5563;
+}
+
+.tool-call-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 200px;
+  overflow-y: auto;
+  background: #ffffff;
+  border: 1px solid #e8eaed;
+  border-radius: 8px;
+}
+
+.tool-call-list-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0.5rem;
+  font-size: 0.8125rem;
+  color: #374151;
+  border-bottom: 1px solid #f1f3f4;
+}
+
+.tool-call-list-item:last-child {
+  border-bottom: none;
 }
 
 .tool-call-empty {
@@ -1450,23 +1546,6 @@ textarea {
   overflow-x: auto;
   white-space: pre-wrap;
   word-break: break-word;
-}
-
-.tool-call-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-}
-
-.tool-call-list-item {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-size: 0.8125rem;
-  color: #374151;
 }
 
 .tool-call-grep-matches {

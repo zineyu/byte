@@ -20,8 +20,22 @@ export function ToolCallCard({ toolCall }: ToolCallCardProps) {
     return (
       <div className="tool-call-card tool-call-card--loading">
         <div className="tool-call-header">
-          <Loader2 size={14} className="tool-call-spinner" aria-hidden="true" />
+          <div className="tool-call-avatar tool-call-avatar--running">
+            <Loader2
+              size={14}
+              className="tool-call-spinner"
+              aria-hidden="true"
+            />
+          </div>
           <span className="tool-call-name">工具</span>
+          <span className="tool-call-status-badge tool-call-status-badge--running">
+            <Loader2
+              size={12}
+              className="tool-call-status-spinner"
+              aria-hidden="true"
+            />
+            运行中
+          </span>
         </div>
       </div>
     );
@@ -35,11 +49,11 @@ export function ToolCallCard({ toolCall }: ToolCallCardProps) {
       className={`tool-call-card ${isRunning ? "tool-call-card--running" : ""} ${isError ? "tool-call-card--error" : ""}`}
     >
       <div className="tool-call-header">
-        <ToolIcon name={toolCall.name} status={toolCall.status} />
+        <ToolAvatar name={toolCall.name} status={toolCall.status} />
         <span className="tool-call-name">
           {argumentSummary(toolCall.name, toolCall.arguments)}
         </span>
-        <StatusIcon status={toolCall.status} />
+        <StatusBadge status={toolCall.status} />
       </div>
       {toolCall.status === "completed" && (
         <div className="tool-call-body">
@@ -60,64 +74,53 @@ export function ToolCallCard({ toolCall }: ToolCallCardProps) {
   );
 }
 
-function ToolIcon({
+function ToolAvatar({
   name,
   status,
 }: {
   name: string;
   status: ToolCallState["status"];
 }) {
-  const isRunning = status === "running";
-  if (name === "read_file") {
-    return (
-      <File
-        size={14}
-        className={isRunning ? "tool-call-spinner" : ""}
-        aria-hidden="true"
-      />
-    );
-  }
-  if (name === "list_directory") {
-    return (
-      <Folder
-        size={14}
-        className={isRunning ? "tool-call-spinner" : ""}
-        aria-hidden="true"
-      />
-    );
-  }
-  if (name === "grep") {
-    return (
-      <FileSearch
-        size={14}
-        className={isRunning ? "tool-call-spinner" : ""}
-        aria-hidden="true"
-      />
-    );
-  }
-  if (name === "find_files") {
-    return (
-      <Search
-        size={14}
-        className={isRunning ? "tool-call-spinner" : ""}
-        aria-hidden="true"
-      />
-    );
-  }
+  const modifier =
+    status === "running"
+      ? "running"
+      : status === "error"
+        ? "error"
+        : "completed";
   return (
-    <Search
-      size={14}
-      className={isRunning ? "tool-call-spinner" : ""}
-      aria-hidden="true"
-    />
+    <div className={`tool-call-avatar tool-call-avatar--${modifier}`}>
+      <ToolIcon name={name} />
+    </div>
   );
 }
+
+function ToolIcon({ name }: { name: string }) {
+  if (name === "read_file") {
+    return <File size={14} aria-hidden="true" />;
+  }
+  if (name === "list_directory") {
+    return <Folder size={14} aria-hidden="true" />;
+  }
+  if (name === "grep") {
+    return <FileSearch size={14} aria-hidden="true" />;
+  }
+  if (name === "find_files") {
+    return <Search size={14} aria-hidden="true" />;
+  }
+  return <Search size={14} aria-hidden="true" />;
+}
+
+const STATUS_LABELS: Record<ToolCallState["status"], string> = {
+  running: "运行中",
+  completed: "已完成",
+  error: "失败",
+};
 
 function StatusIcon({ status }: { status: ToolCallState["status"] }) {
   if (status === "running") {
     return (
       <Loader2
-        size={14}
+        size={12}
         className="tool-call-status-spinner"
         aria-hidden="true"
       />
@@ -126,7 +129,7 @@ function StatusIcon({ status }: { status: ToolCallState["status"] }) {
   if (status === "error") {
     return (
       <XCircle
-        size={14}
+        size={12}
         className="tool-call-status-error"
         aria-hidden="true"
       />
@@ -134,10 +137,21 @@ function StatusIcon({ status }: { status: ToolCallState["status"] }) {
   }
   return (
     <CheckCircle2
-      size={14}
+      size={12}
       className="tool-call-status-done"
       aria-hidden="true"
     />
+  );
+}
+
+function StatusBadge({ status }: { status: ToolCallState["status"] }) {
+  return (
+    <span
+      className={`tool-call-status-badge tool-call-status-badge--${status}`}
+    >
+      <StatusIcon status={status} />
+      {STATUS_LABELS[status]}
+    </span>
   );
 }
 
@@ -195,25 +209,32 @@ function ToolOutput({
 
   if (name === "list_directory") {
     const entries = parseJsonArray(output);
+    const path = getArgumentString(arguments_, "path") ?? ".";
     return (
-      <ul className="tool-call-list">
-        {entries.map((entry, index) => {
-          const nameValue =
-            typeof entry === "object" && entry !== null ? entry.name : entry;
-          const typeValue =
-            typeof entry === "object" && entry !== null ? entry.type : "file";
-          return (
-            <li key={index} className="tool-call-list-item">
-              {typeValue === "directory" ? (
-                <Folder size={14} aria-hidden="true" />
-              ) : (
-                <File size={14} aria-hidden="true" />
-              )}
-              <span>{String(nameValue ?? "")}</span>
-            </li>
-          );
-        })}
-      </ul>
+      <>
+        <div className="tool-call-list-header">
+          <span>{path}</span>
+          <span>{entries.length} 项</span>
+        </div>
+        <ul className="tool-call-list">
+          {entries.map((entry, index) => {
+            const nameValue =
+              typeof entry === "object" && entry !== null ? entry.name : entry;
+            const typeValue =
+              typeof entry === "object" && entry !== null ? entry.type : "file";
+            return (
+              <li key={index} className="tool-call-list-item">
+                {typeValue === "directory" ? (
+                  <Folder size={14} aria-hidden="true" />
+                ) : (
+                  <File size={14} aria-hidden="true" />
+                )}
+                <span>{String(nameValue ?? "")}</span>
+              </li>
+            );
+          })}
+        </ul>
+      </>
     );
   }
 
