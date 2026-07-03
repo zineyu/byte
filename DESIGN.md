@@ -149,6 +149,9 @@ components:
     backgroundColor: "{colors.warning-subtle}"
     textColor: "{colors.warning-text}"
     rounded: "{rounded.md}"
+  message-timestamp:
+    textColor: "{colors.text-secondary}"
+    typography: "{typography.small}"
   tool-call-card:
     backgroundColor: "{colors.background-subtle}"
     textColor: "{colors.text-body}"
@@ -314,7 +317,7 @@ Radius is used to make the interface feel friendly and approachable. Cards are s
 
 ### Input card
 
-A large, softly rounded surface for composing messages. It uses a white background, 28px radius, a very light border (`#e8eaed`), and a gentle shadow. The footer is separated by a light border and holds tool actions on the left and the mode badge + circular send button on the right. The textarea is transparent, borderless, and auto-growing. On focus the border shifts to `#d1d5db` and the shadow deepens.
+A large, softly rounded surface for composing messages. It uses a white background, 28px radius, a very light border (`#e8eaed`), and a gentle shadow. The footer is separated by a light border and holds tool actions on the left and the mode badge + circular send button on the right. The textarea is transparent, borderless, and auto-growing up to roughly eight lines; beyond that it scrolls internally. On focus the border shifts to `#d1d5db` and the shadow deepens.
 
 ### Brand header
 
@@ -334,7 +337,7 @@ A centered, spacious composition: a brand icon above a large display headline, a
 
 ### Chat messages
 
-Messages are arranged horizontally with an avatar and a rounded bubble. Developer and assistant messages both use the subtle gray background (`#f9fafb`), differentiated by avatar tint rather than bubble color. The developer avatar uses the accent blue; the assistant avatar uses success green. Summary/compact entries are full-width cards with warm warning tones and a `#fde68a` border.
+Messages are arranged horizontally with an avatar and a rounded bubble. Developer and assistant messages both use the subtle gray background (`#f9fafb`), differentiated by avatar tint rather than bubble color. The developer avatar uses the accent blue; the assistant avatar uses success green. Each completed message shows a small timestamp below its bubble in the secondary text color, right-aligned for the developer and left-aligned for the assistant. Summary/compact entries are full-width cards with warm warning tones, a `#fde68a` border, and a header row that separates the "会话摘要" label from its timestamp.
 
 ### Tool call cards
 

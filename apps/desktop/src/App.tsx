@@ -532,7 +532,15 @@ export default function App() {
                       </div>
                       <div className="chat-message__body">
                         <div className="chat-message__summary-header">
-                          会话摘要
+                          <span>会话摘要</span>
+                          {item.message.timestamp && (
+                            <time
+                              className="chat-message__timestamp"
+                              dateTime={item.message.timestamp}
+                            >
+                              {formatMessageTimestamp(item.message.timestamp)}
+                            </time>
+                          )}
                         </div>
                         <div className="chat-message__content chat-message__content--summary">
                           {item.message.content}
@@ -565,6 +573,14 @@ export default function App() {
                         <div className="chat-message__error" role="alert">
                           {item.message.error ?? "出错了"}
                         </div>
+                      )}
+                      {item.message.timestamp && (
+                        <time
+                          className="chat-message__timestamp"
+                          dateTime={item.message.timestamp}
+                        >
+                          {formatMessageTimestamp(item.message.timestamp)}
+                        </time>
                       )}
                     </div>
                   </div>
@@ -737,6 +753,16 @@ function formatTime(date: Date): string {
   });
 }
 
+function formatMessageTimestamp(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const date = new Date(iso);
+  return date.toLocaleTimeString("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
+
 function getEventDetails(event: RuntimeEventLogEntry): React.ReactNode {
   const base = event as RuntimeEvent;
   switch (base.type) {
@@ -892,9 +918,22 @@ function InputField({
   isConnected: boolean;
   disabled?: boolean;
 }) {
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    const computed = window.getComputedStyle(el);
+    const lineHeight = parseFloat(computed.lineHeight) || 24;
+    const maxHeight = lineHeight * 8;
+    el.style.height = `${Math.min(el.scrollHeight, maxHeight)}px`;
+  }, [input]);
+
   return (
     <>
       <textarea
+        ref={textareaRef}
         className="input-card-textarea"
         placeholder={disabled ? "请先选择一个会话" : "输入消息…"}
         value={input}

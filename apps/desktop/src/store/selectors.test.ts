@@ -83,6 +83,7 @@ describe("buildTimelineItems", () => {
         role: "developer",
         content: "hi",
         status: "completed",
+        timestamp: null,
         body: [{ type: "text", text: "hi" }],
       },
       {
@@ -90,6 +91,7 @@ describe("buildTimelineItems", () => {
         role: "assistant",
         content: "hello",
         status: "completed",
+        timestamp: null,
         body: [{ type: "text", text: "hello" }],
       },
     ];
@@ -116,6 +118,7 @@ describe("buildTimelineItems", () => {
         role: "assistant",
         content: "I'll search",
         status: "completed",
+        timestamp: null,
         body: [
           { type: "text", text: "I'll search" },
           {
@@ -146,6 +149,7 @@ describe("buildTimelineItems", () => {
         role: "developer",
         content: "a",
         status: "completed",
+        timestamp: null,
         body: [{ type: "text", text: "a" }],
       },
       {
@@ -153,6 +157,7 @@ describe("buildTimelineItems", () => {
         role: "assistant",
         content: "b",
         status: "completed",
+        timestamp: null,
         body: [
           { type: "text", text: "b" },
           {
@@ -168,6 +173,7 @@ describe("buildTimelineItems", () => {
         role: "assistant",
         content: "c",
         status: "completed",
+        timestamp: null,
         body: [{ type: "text", text: "c" }],
       },
     ];
@@ -194,6 +200,7 @@ describe("buildTimelineItems", () => {
         role: "developer",
         content: "hi",
         status: "completed",
+        timestamp: null,
         body: [{ type: "text", text: "hi" }],
       },
       {
@@ -201,6 +208,7 @@ describe("buildTimelineItems", () => {
         role: "summary",
         content: "earlier discussion summary",
         status: "completed",
+        timestamp: null,
         body: [{ type: "text", text: "earlier discussion summary" }],
       },
       {
@@ -208,6 +216,7 @@ describe("buildTimelineItems", () => {
         role: "assistant",
         content: "hello",
         status: "completed",
+        timestamp: null,
         body: [{ type: "text", text: "hello" }],
       },
     ];

@@ -84,6 +84,7 @@ export type ChatMessage = {
   body: MessageBody;
   status: "streaming" | "completed" | "error";
   error?: string;
+  timestamp: string | null;
 };
 
 export function getMessageBodyText(body: MessageBody): string {

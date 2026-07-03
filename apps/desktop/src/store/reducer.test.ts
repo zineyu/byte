@@ -113,7 +113,7 @@ describe("runtime event reducer", () => {
 
     expect(final.runState).toEqual({ runId: null, isSending: false });
     expect(final.messages).toHaveLength(1);
-    expect(final.messages[0]).toEqual({
+    expect(final.messages[0]).toMatchObject({
       id: messageId,
       role: "assistant",
       content: "Hello world",
@@ -237,6 +237,7 @@ describe("runtime event reducer", () => {
         content: "Hello",
         body: [{ type: "text", text: "Hello" }],
         status: "completed",
+        timestamp: null,
       },
       {
         id: "msg-2",
@@ -244,6 +245,7 @@ describe("runtime event reducer", () => {
         content: "Hi there",
         body: [{ type: "text", text: "Hi there" }],
         status: "completed",
+        timestamp: null,
       },
     ]);
   });
@@ -296,6 +298,7 @@ describe("runtime event reducer", () => {
         content: "Hello",
         body: [{ type: "text", text: "Hello" }],
         status: "completed",
+        timestamp: expect.any(String),
       },
     ]);
   });

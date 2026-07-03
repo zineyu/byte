@@ -63,6 +63,7 @@ export function reducer(state: AppState, action: StoreAction): AppState {
             content: action.content,
             body: [{ type: "text", text: action.content }],
             status: "completed" as const,
+            timestamp: new Date().toISOString(),
           },
         ],
       };
@@ -117,6 +118,7 @@ function loadSession(
         content,
         body: message.body,
         status: "completed" as const,
+        timestamp: null,
       };
     });
 
@@ -193,6 +195,7 @@ function applyRuntimeEvent(state: AppState, event: RuntimeEvent): AppState {
             content: "",
             body: [{ type: "text", text: "" }],
             status: "streaming",
+            timestamp: new Date().toISOString(),
           },
         ],
       };
@@ -254,6 +257,7 @@ function applyRuntimeEvent(state: AppState, event: RuntimeEvent): AppState {
           return {
             ...message,
             status: "completed" as const,
+            timestamp: message.timestamp ?? new Date().toISOString(),
             content: completedBody
               ? message.content + getMessageBodyText(completedBody)
               : message.content,
