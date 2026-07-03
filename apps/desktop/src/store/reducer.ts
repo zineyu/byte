@@ -97,7 +97,6 @@ function loadSession(
     messages: Message[];
   },
 ): AppState {
-  const toolCalls: Record<string, ToolCallState> = {};
   const messages: ChatMessage[] = session.messages
     .filter(
       (
@@ -121,6 +120,25 @@ function loadSession(
         timestamp: null,
       };
     });
+
+  // Snapshot messages are already completed; seed any tool calls referenced in
+  // assistant bodies so they render as completed instead of "running".
+  const toolCalls: Record<string, ToolCallState> = {};
+  for (const message of messages) {
+    if (message.role !== "assistant") continue;
+    for (const block of getMessageBodyToolCalls(message.body)) {
+      toolCalls[block.id] = {
+        toolCallId: block.id,
+        messageId: message.id,
+        runId: "",
+        name: block.name,
+        arguments: block.arguments,
+        status: "completed",
+        output: null,
+        error: null,
+      };
+    }
+  }
 
   return {
     ...state,

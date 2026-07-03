@@ -533,6 +533,50 @@ describe("runtime event reducer", () => {
     expect(next.toolCalls).toEqual({});
   });
 
+  it("seeds toolCalls from assistant tool-call blocks when loading a session snapshot", () => {
+    const session: SessionView = {
+      sessionId: "session-tool-calls",
+      workspace: "/workspace",
+      workspaceInstructions: null,
+      workspaceInstructionsError: null,
+      messages: [
+        {
+          id: "msg-1",
+          parentId: null,
+          role: "developer",
+          body: [{ type: "text", text: "analyze" }],
+        },
+        {
+          id: "msg-2",
+          parentId: "msg-1",
+          role: "assistant",
+          body: [
+            { type: "text", text: "reading files" },
+            {
+              type: "toolCall",
+              id: "tc-1",
+              name: "read_file",
+              arguments: { path: "a.md" },
+            },
+          ],
+        },
+      ],
+    };
+
+    const next = reducer(initialState, { type: "load_session", session });
+
+    expect(next.toolCalls["tc-1"]).toMatchObject({
+      toolCallId: "tc-1",
+      messageId: "msg-2",
+      runId: "",
+      name: "read_file",
+      arguments: { path: "a.md" },
+      status: "completed",
+      output: null,
+      error: null,
+    });
+  });
+
   it("resets toolCalls on reset_session", () => {
     const withTool = reducer(initialState, {
       type: "runtime_event",
