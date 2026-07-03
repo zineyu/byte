@@ -3,15 +3,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
   ArrowUp,
-  Bot,
-  FileText,
   FolderOpen,
   MessageSquare,
   Plus,
   Settings,
   Sparkles,
   Trash2,
-  User,
   X,
   Zap,
 } from "lucide-react";
@@ -527,9 +524,6 @@ export default function App() {
                       key={item.id}
                       className="chat-message chat-message--summary"
                     >
-                      <div className="chat-message__avatar" aria-hidden="true">
-                        <FileText size={16} strokeWidth={2} />
-                      </div>
                       <div className="chat-message__body">
                         <div className="chat-message__summary-header">
                           <span>会话摘要</span>
@@ -555,27 +549,11 @@ export default function App() {
                     key={item.id}
                     className={`chat-message chat-message--${item.message.role}`}
                   >
-                    <div className="chat-message__avatar" aria-hidden="true">
-                      {item.message.role === "developer" ? (
-                        <User size={16} strokeWidth={2} />
-                      ) : (
-                        <Bot size={18} strokeWidth={2} />
-                      )}
-                    </div>
                     <div className="chat-message__body">
                       <MarkdownMessage
                         content={item.message.content}
                         status={item.message.status}
                       />
-                      {item.message.role === "assistant" &&
-                        getMessageBodyToolCalls(item.message.body).map(
-                          (call) => (
-                            <ToolCallCard
-                              key={call.id}
-                              toolCall={toolCalls[call.id]}
-                            />
-                          ),
-                        )}
                       {item.message.status === "error" && (
                         <div className="chat-message__error" role="alert">
                           {item.message.error ?? "出错了"}
@@ -590,6 +568,12 @@ export default function App() {
                         </time>
                       )}
                     </div>
+                    {item.message.role === "assistant" &&
+                      getMessageBodyToolCalls(item.message.body).map((call) => (
+                        <div key={call.id} className="chat-message__tool-call">
+                          <ToolCallCard toolCall={toolCalls[call.id]} />
+                        </div>
+                      ))}
                   </div>
                 );
               })}

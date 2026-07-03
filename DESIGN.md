@@ -15,7 +15,6 @@ colors:
   text-muted: "#9ca3af"
   accent: "#3b82f6"
   accent-subtle: "#eff6ff"
-  accent-soft: "#dbeafe"
   accent-text: "#1e3a8a"
   success: "#22c55e"
   success-soft: "#d1fae5"
@@ -24,8 +23,6 @@ colors:
   error-soft: "#fee2e2"
   error-subtle: "#fef2f2"
   error-text: "#991b1b"
-  warning: "#b45309"
-  warning-soft: "#fef3c7"
   warning-subtle: "#fffbeb"
   warning-text: "#78350f"
 typography:
@@ -124,29 +121,14 @@ components:
   placeholder:
     textColor: "{colors.text-muted}"
     typography: "{typography.body}"
-  developer-avatar:
-    backgroundColor: "{colors.accent-soft}"
-    textColor: "{colors.accent}"
-    rounded: "{rounded.pill}"
-    size: "2rem"
-  assistant-avatar:
-    backgroundColor: "{colors.success-soft}"
-    textColor: "{colors.success}"
-    rounded: "{rounded.pill}"
-    size: "2rem"
-  summary-avatar:
-    backgroundColor: "{colors.warning-soft}"
-    textColor: "{colors.warning}"
-    rounded: "{rounded.pill}"
-    size: "2rem"
   message-developer:
     backgroundColor: "{colors.background-subtle}"
     textColor: "{colors.text-body}"
     rounded: "{rounded.lg}"
   message-assistant:
-    backgroundColor: "{colors.background-subtle}"
+    backgroundColor: "{colors.background}"
     textColor: "{colors.text-body}"
-    rounded: "{rounded.lg}"
+    rounded: "0"
   message-summary:
     backgroundColor: "{colors.warning-subtle}"
     textColor: "{colors.warning-text}"
@@ -166,20 +148,6 @@ components:
     backgroundColor: "{colors.error-subtle}"
     textColor: "{colors.error}"
     rounded: "{rounded.md}"
-  tool-avatar:
-    backgroundColor: "{colors.accent-subtle}"
-    textColor: "{colors.accent-text}"
-    rounded: "{rounded.pill}"
-    size: "1.75rem"
-  tool-avatar-completed:
-    backgroundColor: "{colors.success-soft}"
-    textColor: "{colors.success-text}"
-  tool-avatar-running:
-    backgroundColor: "{colors.accent-subtle}"
-    textColor: "{colors.accent-text}"
-  tool-avatar-error:
-    backgroundColor: "{colors.error-subtle}"
-    textColor: "{colors.error-text}"
   tool-status-badge:
     backgroundColor: "{colors.background-subtle}"
     textColor: "{colors.text-body}"
@@ -281,18 +249,18 @@ The palette is almost monochromatic, letting the content breathe. Color is used 
 - **Primary (#1a1a1a):** Near-black for the primary action button, brand authority, and key text. A softer dark than pure black.
 - **Primary Hover (#333333):** Slightly lighter neutral for hovered primary surfaces.
 - **Background (#ffffff):** Clean white for the main canvas, cards, and drawers.
-- **Background Subtle (#f9fafb):** Soft gray for assistant message bubbles, tool cards, status badges, and hovered list rows.
+- **Background Subtle (#f9fafb):** Soft gray for user message bubbles, tool cards, status badges, and hovered list rows.
 - **Background Hover (#f2f3f5):** Hover states for navigation items, session rows, and neutral buttons.
 - **Text Primary (#111827):** Strong headings, hero title, and active navigation.
 - **Text Body (#1f2937):** Default body and message text.
 - **Text Secondary (#6b7280):** Captions, metadata, placeholder text, and muted labels.
 - **Text Muted (#9ca3af):** Disabled controls and subtle hints.
-- **Accent (#3b82f6):** Agent mode badges, Beta Preview labels, active tool-call states, and the developer avatar. The single source of interactive color.
+- **Accent (#3b82f6):** Agent mode badges, Beta Preview labels, and active tool-call states. The single source of interactive color.
 - **Accent Text (#1e3a8a):** Darker blue variant for accessible text on light blue surfaces, such as tool avatars and running status badges.
-- **Success (#22c55e):** Online connection indicator, successful tool-call status, and assistant avatar accents.
+- **Success (#22c55e):** Online connection indicator and successful tool-call status.
 - **Success Text (#14532d):** Darker green variant for accessible text on light green surfaces, such as completed status badges.
 - **Error (#ef4444):** Offline indicator, deletion hover, and error banners.
-- **Warning (#b45309):** Summary/compaction entries, paired with a warm cream background to separate them from normal chat turns.
+- **Warning Text (#78350f) / Warning Subtle (#fffbeb):** Summary/compaction entries, paired with a warm cream background to separate them from normal chat turns.
 
 Borders are rendered with light grays: `#e8eaed` for most cards and inputs, `#f1f3f4` for subtle separators inside the sidebar, and `#d1d5db` for focused inputs.
 
@@ -334,7 +302,7 @@ No heavy shadows, gradients, or material layers. Depth is created through typogr
 
 ## Shapes
 
-- **Pill (999px):** Status badges, mode badges, Beta Preview badge, send button, and avatar backgrounds.
+- **Pill (999px):** Status badges, mode badges, Beta Preview badge, send button, and tool status badges.
 - **2x Large (28px):** Main input card border radius. The largest, most prominent radius in the interface.
 - **Large (18px):** Chat message bubbles and workspace-instruction cards.
 - **Medium (14px):** Summary cards and tool call cards.
@@ -368,11 +336,11 @@ A centered, spacious composition: a brand icon above a large display headline, a
 
 ### Chat messages
 
-Messages are arranged horizontally with an avatar and a rounded bubble. Developer and assistant messages both use the subtle gray background (`#f9fafb`), differentiated by avatar tint rather than bubble color. The developer avatar uses the accent blue; the assistant avatar uses success green. Each completed message shows a small timestamp below its bubble in the secondary text color, right-aligned for the developer and left-aligned for the assistant. Summary/compact entries are full-width cards with warm warning tones, a `#fde68a` border, and a header row that separates the "会话摘要" label from its timestamp.
+Messages are arranged without avatars to keep the stream clean. Developer messages are rendered as right-aligned rounded bubbles using the subtle gray background (`#f9fafb`) with an 18px radius, capped at 75% of the chat width so they feel like outgoing chat bubbles. Assistant messages are rendered as plain left-aligned text with no bubble background or padding, letting the content read like a document on the white chat canvas. Each completed message shows a small timestamp below its content in the secondary text color, right-aligned for the developer and left-aligned for the assistant. Summary/compact entries are full-width cards with warm warning tones, a `#fde68a` border, and a header row that separates the "会话摘要" label from its timestamp.
 
 ### Tool call cards
 
-Rendered inline in the chat timeline, tool call cards are compact gray cards with a circular tool avatar tinted by status, a monospace tool-call signature, and a pill-shaped status badge (`已完成` / `运行中` / `失败`). Running states turn light blue with a `#93c5fd` border; error states turn light red with a `#fca5a5` border. Output blocks are white with a `#e8eaed` border and use monospace text. Directory listings render as a bordered white list with file/folder icons, a path caption header, and row separators; long lists scroll internally.
+Rendered below the assistant message body, tool call cards are centered in the chat area with a max-width of 80%. They use a soft gray card surface (`#f9fafb`) with a subtle `#f1f3f4` border and an 18px radius. The header row shows a plain tool-type icon, the monospace tool-call signature, and a pill-shaped status badge on the right (`运行中` / `已完成` / `失败`). Running states shift to a light blue background with a `#bfdbfe` border; error states shift to a light red background with a `#fecaca` border. Tool output is rendered inside a clean white nested surface with a light `#e8eaed` border and a 12px radius — directory listings show a path caption and item count above the list, file contents show a caption header above a pre block, and grep results show monospace match lines. Directory and file list items carry a muted icon and a generous row padding to stay scannable. Long lists scroll internally.
 
 ### Status badges and connection
 

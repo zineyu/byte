@@ -1,6 +1,5 @@
 import {
   AlertCircle,
-  CheckCircle2,
   File,
   FileSearch,
   Folder,
@@ -20,20 +19,9 @@ export function ToolCallCard({ toolCall }: ToolCallCardProps) {
     return (
       <div className="tool-call-card tool-call-card--loading">
         <div className="tool-call-header">
-          <div className="tool-call-avatar tool-call-avatar--running">
-            <Loader2
-              size={14}
-              className="tool-call-spinner"
-              aria-hidden="true"
-            />
-          </div>
+          <Loader2 size={16} className="tool-call-spinner" aria-hidden="true" />
           <span className="tool-call-name">工具</span>
           <span className="tool-call-status-badge tool-call-status-badge--running">
-            <Loader2
-              size={12}
-              className="tool-call-status-spinner"
-              aria-hidden="true"
-            />
             运行中
           </span>
         </div>
@@ -49,7 +37,7 @@ export function ToolCallCard({ toolCall }: ToolCallCardProps) {
       className={`tool-call-card ${isRunning ? "tool-call-card--running" : ""} ${isError ? "tool-call-card--error" : ""}`}
     >
       <div className="tool-call-header">
-        <ToolAvatar name={toolCall.name} status={toolCall.status} />
+        <ToolIcon name={toolCall.name} />
         <span className="tool-call-name">
           {argumentSummary(toolCall.name, toolCall.arguments)}
         </span>
@@ -70,26 +58,6 @@ export function ToolCallCard({ toolCall }: ToolCallCardProps) {
           <span>{toolCall.error ?? "工具执行失败"}</span>
         </div>
       )}
-    </div>
-  );
-}
-
-function ToolAvatar({
-  name,
-  status,
-}: {
-  name: string;
-  status: ToolCallState["status"];
-}) {
-  const modifier =
-    status === "running"
-      ? "running"
-      : status === "error"
-        ? "error"
-        : "completed";
-  return (
-    <div className={`tool-call-avatar tool-call-avatar--${modifier}`}>
-      <ToolIcon name={name} />
     </div>
   );
 }
@@ -116,40 +84,25 @@ const STATUS_LABELS: Record<ToolCallState["status"], string> = {
   error: "失败",
 };
 
-function StatusIcon({ status }: { status: ToolCallState["status"] }) {
-  if (status === "running") {
-    return (
-      <Loader2
-        size={12}
-        className="tool-call-status-spinner"
-        aria-hidden="true"
-      />
-    );
-  }
-  if (status === "error") {
-    return (
-      <XCircle
-        size={12}
-        className="tool-call-status-error"
-        aria-hidden="true"
-      />
-    );
-  }
-  return (
-    <CheckCircle2
-      size={12}
-      className="tool-call-status-done"
-      aria-hidden="true"
-    />
-  );
-}
-
 function StatusBadge({ status }: { status: ToolCallState["status"] }) {
   return (
     <span
       className={`tool-call-status-badge tool-call-status-badge--${status}`}
     >
-      <StatusIcon status={status} />
+      {status === "running" && (
+        <Loader2
+          size={12}
+          className="tool-call-status-spinner"
+          aria-hidden="true"
+        />
+      )}
+      {status === "error" && (
+        <XCircle
+          size={12}
+          className="tool-call-status-error"
+          aria-hidden="true"
+        />
+      )}
       {STATUS_LABELS[status]}
     </span>
   );
