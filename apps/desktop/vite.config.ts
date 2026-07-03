@@ -10,7 +10,8 @@ export default defineConfig({
     strictPort: true,
   },
   test: {
-    environment: "node",
+    environment: "happy-dom",
     globals: true,
+    setupFiles: "./src/test/setup.ts",
   },
 });

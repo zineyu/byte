@@ -19,6 +19,7 @@ import type { DaemonConnectionView } from "./generated/DaemonConnectionView";
 import type { SessionSummary } from "./generated/SessionSummary";
 import type { SessionView } from "./generated/SessionView";
 import { open } from "@tauri-apps/plugin-dialog";
+import { MarkdownMessage } from "./MarkdownMessage";
 import { ToolCallCard } from "./ToolCallCard";
 import {
   useByteStore,
@@ -467,13 +468,10 @@ export default function App() {
                       )}
                     </div>
                     <div className="chat-message__body">
-                      <div className="chat-message__content">
-                        {item.message.content ||
-                          (item.message.status === "streaming" ? "…" : "")}
-                        {item.message.status === "streaming" && (
-                          <span className="chat-cursor" aria-hidden="true" />
-                        )}
-                      </div>
+                      <MarkdownMessage
+                        content={item.message.content}
+                        status={item.message.status}
+                      />
                       {item.message.status === "error" && (
                         <div className="chat-message__error" role="alert">
                           {item.message.error ?? "出错了"}

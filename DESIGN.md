@@ -161,6 +161,39 @@ components:
     backgroundColor: "{colors.error-subtle}"
     textColor: "{colors.error}"
     rounded: "{rounded.md}"
+  markdown-body:
+    textColor: "{colors.text-body}"
+    typography: "{typography.body-chat}"
+  markdown-heading:
+    textColor: "{colors.text-primary}"
+    typography: "{typography.headline}"
+  markdown-link:
+    textColor: "{colors.accent}"
+  markdown-inline-code:
+    backgroundColor: "{colors.background-hover}"
+    textColor: "{colors.text-body}"
+    typography: "{typography.code}"
+    rounded: "6px"
+  markdown-blockquote:
+    backgroundColor: "{colors.accent-subtle}"
+    textColor: "{colors.text-body}"
+    typography: "{typography.body}"
+  markdown-image:
+    backgroundColor: "{colors.background}"
+    textColor: "{colors.text-body}"
+    rounded: "{rounded.md}"
+  markdown-code-block:
+    backgroundColor: "{colors.background}"
+    textColor: "{colors.text-body}"
+    rounded: "{rounded.md}"
+  markdown-code-block-header:
+    backgroundColor: "{colors.background-subtle}"
+    textColor: "{colors.text-secondary}"
+    typography: "{typography.small}"
+  markdown-code-block-body:
+    backgroundColor: "{colors.background}"
+    textColor: "{colors.text-body}"
+    typography: "{typography.code}"
   status-badge:
     backgroundColor: "{colors.background-subtle}"
     textColor: "{colors.text-body}"
@@ -294,6 +327,19 @@ Rendered inline in the chat timeline, tool call cards are compact gray cards wit
 ### Status badges and connection
 
 Connection status uses a small dot (green for online, red for offline) beside a label. Status badges in the drawer are pill-shaped with a light border and bold value text. Mode badges (Agent, Ask, Beta Preview) use the accent subtle background with the accent text color.
+
+### Rendered Markdown body
+
+Developer and assistant messages are rendered as Markdown once a message has finished streaming. The rendered body uses the `.markdown-body` scope, which overrides the default browser Markdown styles to match the design system:
+
+- Paragraphs, lists, and headings inherit the chat body typography (`body-chat`) and use the `text-body` color; headings use `text-primary` and the headline weight.
+- Links use the accent blue and are opened in a new tab with safe `rel` attributes.
+- Inline code uses the code typography and a subtle gray background (`background-hover`) with a 6px radius.
+- Fenced code blocks are wrapped in a card with a header showing the language label and a copy button. The header uses the subtle background (`background-subtle`) and secondary text; the body uses the code typography and a white background. Syntax highlighting uses a minimal Prism token palette derived from the existing color tokens.
+- Blockquotes use a soft accent left border and the accent-subtle background.
+- Images are allowed and rendered at max-width 100% with the medium radius so they stay within the message bubble.
+
+During streaming, the message remains plain text with `white-space: pre-wrap` and a blinking cursor; Markdown rendering is only applied after the message is completed.
 
 ## Do's and Don'ts
 
