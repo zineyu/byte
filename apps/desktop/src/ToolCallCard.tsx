@@ -1,5 +1,6 @@
 import {
   AlertCircle,
+  ChevronDown,
   File,
   FileSearch,
   Folder,
@@ -7,6 +8,7 @@ import {
   Search,
   XCircle,
 } from "lucide-react";
+import { useState } from "react";
 import type { JsonValue } from "./generated/serde_json/JsonValue";
 import type { ToolCallState } from "./store";
 
@@ -31,6 +33,7 @@ export function ToolCallCard({ toolCall }: ToolCallCardProps) {
 
   const isRunning = toolCall.status === "running";
   const isError = toolCall.status === "error";
+  const [isExpanded, setIsExpanded] = useState(false);
 
   return (
     <div
@@ -42,8 +45,21 @@ export function ToolCallCard({ toolCall }: ToolCallCardProps) {
           {argumentSummary(toolCall.name, toolCall.arguments)}
         </span>
         <StatusBadge status={toolCall.status} />
+        <button
+          type="button"
+          className="tool-call-toggle"
+          aria-expanded={isExpanded}
+          aria-label={isExpanded ? "折叠" : "展开"}
+          onClick={() => setIsExpanded((prev) => !prev)}
+        >
+          <ChevronDown
+            size={16}
+            className={`tool-call-toggle__icon ${isExpanded ? "tool-call-toggle__icon--expanded" : ""}`}
+            aria-hidden="true"
+          />
+        </button>
       </div>
-      {toolCall.status === "completed" && (
+      {isExpanded && toolCall.status === "completed" && (
         <div className="tool-call-body">
           <ToolOutput
             name={toolCall.name}
@@ -52,7 +68,7 @@ export function ToolCallCard({ toolCall }: ToolCallCardProps) {
           />
         </div>
       )}
-      {isError && (
+      {isExpanded && isError && (
         <div className="tool-call-error" role="alert">
           <AlertCircle size={14} aria-hidden="true" />
           <span>{toolCall.error ?? "工具执行失败"}</span>

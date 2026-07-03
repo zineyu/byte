@@ -1,4 +1,5 @@
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import { ToolCallCard } from "./ToolCallCard";
 import type { ToolCallState } from "./store";
@@ -17,6 +18,11 @@ function buildToolCall(
   } as ToolCallState;
 }
 
+async function expandToolCard() {
+  const toggle = screen.getByRole("button", { name: "展开" });
+  await userEvent.click(toggle);
+}
+
 describe("ToolCallCard", () => {
   it("renders a loading state with a running status badge", () => {
     render(<ToolCallCard toolCall={undefined} />);
@@ -24,7 +30,21 @@ describe("ToolCallCard", () => {
     expect(screen.getByText("运行中")).toBeInTheDocument();
   });
 
-  it("renders a completed list_directory result with a path header and entries", () => {
+  it("collapses output by default", () => {
+    const toolCall = buildToolCall({
+      name: "list_directory",
+      arguments: { path: "." },
+      output: JSON.stringify([{ name: "src", type: "directory" }]),
+    });
+
+    render(<ToolCallCard toolCall={toolCall} />);
+
+    expect(screen.getByText('list_directory(path: ".")')).toBeInTheDocument();
+    expect(screen.getByText("已完成")).toBeInTheDocument();
+    expect(screen.queryByText("src")).not.toBeInTheDocument();
+  });
+
+  it("renders a completed list_directory result with a path header and entries", async () => {
     const toolCall = buildToolCall({
       name: "list_directory",
       arguments: { path: "." },
@@ -35,6 +55,7 @@ describe("ToolCallCard", () => {
     });
 
     render(<ToolCallCard toolCall={toolCall} />);
+    await expandToolCard();
 
     expect(screen.getByText('list_directory(path: ".")')).toBeInTheDocument();
     expect(screen.getByText("已完成")).toBeInTheDocument();
@@ -44,7 +65,7 @@ describe("ToolCallCard", () => {
     expect(screen.getByText("package.json")).toBeInTheDocument();
   });
 
-  it("renders an error state with a failure badge and message", () => {
+  it("renders an error state with a failure badge and message", async () => {
     const toolCall = buildToolCall({
       name: "read_file",
       arguments: { path: "missing.txt" },
@@ -54,12 +75,13 @@ describe("ToolCallCard", () => {
     });
 
     render(<ToolCallCard toolCall={toolCall} />);
+    await expandToolCard();
 
     expect(screen.getByText("失败")).toBeInTheDocument();
     expect(screen.getByText("not found")).toBeInTheDocument();
   });
 
-  it("renders a read_file output with a file header and pre block", () => {
+  it("renders a read_file output with a file header and pre block", async () => {
     const toolCall = buildToolCall({
       name: "read_file",
       arguments: { path: "README.md" },
@@ -67,12 +89,13 @@ describe("ToolCallCard", () => {
     });
 
     render(<ToolCallCard toolCall={toolCall} />);
+    await expandToolCard();
 
     expect(screen.getByText("README.md")).toBeInTheDocument();
     expect(screen.getByText("# Hello")).toBeInTheDocument();
   });
 
-  it("renders generic tool output as a pre block", () => {
+  it("renders generic tool output as a pre block", async () => {
     const toolCall = buildToolCall({
       name: "custom_tool",
       arguments: {},
@@ -80,6 +103,7 @@ describe("ToolCallCard", () => {
     });
 
     render(<ToolCallCard toolCall={toolCall} />);
+    await expandToolCard();
 
     expect(screen.getByText("raw output")).toBeInTheDocument();
   });

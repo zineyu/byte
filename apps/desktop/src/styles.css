@@ -633,14 +633,14 @@ textarea {
   display: flex;
   flex-direction: column;
   gap: 1.5rem;
-  max-width: 800px;
   width: 100%;
-  margin: 0 auto;
 }
 
 .chat-message {
   display: flex;
   width: 100%;
+  max-width: 800px;
+  margin: 0 auto;
 }
 
 .chat-message--developer {
@@ -971,7 +971,6 @@ textarea {
 }
 
 .chat-message--summary {
-  align-self: stretch;
   flex-direction: column;
 }
 
@@ -1344,7 +1343,7 @@ textarea {
 /* Tool call cards rendered inline in the chat timeline. */
 .tool-call-card {
   margin: 0.5rem auto;
-  padding: 1rem;
+  padding: 6px;
   border-radius: 18px;
   background: #f9fafb;
   border: 1px solid #f1f3f4;
@@ -1364,7 +1363,7 @@ textarea {
 .tool-call-header {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
+  gap: 0.6rem;
   font-size: 0.875rem;
   color: #374151;
 }
@@ -1373,6 +1372,37 @@ textarea {
 .tool-call-header > .lucide {
   color: #6b7280;
   flex-shrink: 0;
+}
+
+.tool-call-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 1.25rem;
+  height: 1.25rem;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #6b7280;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
+}
+
+.tool-call-toggle:hover {
+  background: #f2f3f5;
+  color: #374151;
+}
+
+.tool-call-toggle__icon {
+  transition: transform 0.2s ease;
+}
+
+.tool-call-toggle__icon--expanded {
+  transform: rotate(180deg);
 }
 
 .tool-call-name {
@@ -1389,7 +1419,7 @@ textarea {
   align-items: center;
   gap: 0.25rem;
   flex-shrink: 0;
-  padding: 0.25rem 0.6rem;
+  padding: 0.2rem 0.5rem;
   border-radius: 999px;
   font-size: 0.75rem;
   font-weight: 600;

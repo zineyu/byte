@@ -334,13 +334,15 @@ Sidebar navigation items are full-width buttons with a 10px radius. Default stat
 
 A centered, spacious composition: a brand icon above a large display headline, a small Beta Preview badge beneath the headline, and the input card below. The icon is friendly and colorful, but the rest of the state remains neutral.
 
+The chat stream itself is a full-width scroll container so its scrollbar sits at the far right of the main area, while individual messages stay centered within an 800px reading column.
+
 ### Chat messages
 
 Messages are arranged without avatars to keep the stream clean. Developer messages are rendered as right-aligned rounded bubbles using the subtle gray background (`#f9fafb`) with an 18px radius, capped at 75% of the chat width so they feel like outgoing chat bubbles. Assistant messages are rendered as plain left-aligned text with no bubble background or padding, letting the content read like a document on the white chat canvas. Each completed message shows a small timestamp below its content in the secondary text color, right-aligned for the developer and left-aligned for the assistant. Summary/compact entries are full-width cards with warm warning tones, a `#fde68a` border, and a header row that separates the "会话摘要" label from its timestamp.
 
 ### Tool call cards
 
-Rendered below the assistant message body, tool call cards are centered in the chat area with a max-width of 80%. They use a soft gray card surface (`#f9fafb`) with a subtle `#f1f3f4` border and an 18px radius. The header row shows a plain tool-type icon, the monospace tool-call signature, and a pill-shaped status badge on the right (`运行中` / `已完成` / `失败`). Running states shift to a light blue background with a `#bfdbfe` border; error states shift to a light red background with a `#fecaca` border. Tool output is rendered inside a clean white nested surface with a light `#e8eaed` border and a 12px radius — directory listings show a path caption and item count above the list, file contents show a caption header above a pre block, and grep results show monospace match lines. Directory and file list items carry a muted icon and a generous row padding to stay scannable. Long lists scroll internally.
+Rendered below the assistant message body, tool call cards are centered in the chat area with a max-width of 80%. They use a soft gray card surface (`#f9fafb`) with a subtle `#f1f3f4` border and an 18px radius. By default the body is collapsed so only the header row is visible: a plain tool-type icon, the monospace tool-call signature, a pill-shaped status badge on the right (`运行中` / `已完成` / `失败`), and a chevron toggle. Clicking the toggle expands the card to reveal the tool output. Running states shift to a light blue background with a `#bfdbfe` border; error states shift to a light red background with a `#fecaca` border. Tool output is rendered inside a clean white nested surface with a light `#e8eaed` border and a 12px radius — directory listings show a path caption and item count above the list, file contents show a caption header above a pre block, and grep results show monospace match lines. Directory and file list items carry a muted icon and a generous row padding to stay scannable. Long lists scroll internally.
 
 ### Status badges and connection
 
