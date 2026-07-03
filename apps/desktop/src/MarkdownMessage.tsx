@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import ReactMarkdown from "react-markdown";
-import rehypeSanitize from "rehype-sanitize";
+import remarkGfm from "remark-gfm";
+import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import { PrismLight as SyntaxHighlighter } from "react-syntax-highlighter";
 import bash from "react-syntax-highlighter/dist/esm/languages/prism/bash";
 import javascript from "react-syntax-highlighter/dist/esm/languages/prism/javascript";
@@ -36,6 +37,27 @@ export type MarkdownMessageProps = {
   status: "streaming" | "completed" | "error";
 };
 
+const sanitizeSchema = {
+  ...defaultSchema,
+  tagNames: [
+    ...(defaultSchema.tagNames ?? []),
+    "table",
+    "thead",
+    "tbody",
+    "tr",
+    "th",
+    "td",
+    "del",
+    "input",
+  ],
+  attributes: {
+    ...defaultSchema.attributes,
+    th: ["align"],
+    td: ["align"],
+    input: ["type", "checked", "disabled"],
+  },
+};
+
 export function MarkdownMessage({ content, status }: MarkdownMessageProps) {
   const isMarkdownReady = status === "completed";
 
@@ -43,7 +65,8 @@ export function MarkdownMessage({ content, status }: MarkdownMessageProps) {
     return (
       <div className="chat-message__content markdown-body">
         <ReactMarkdown
-          rehypePlugins={[rehypeSanitize]}
+          remarkPlugins={[remarkGfm]}
+          rehypePlugins={[[rehypeSanitize, sanitizeSchema]]}
           components={{
             a: ({ node: _node, ...props }) => (
               <a {...props} target="_blank" rel="noreferrer noopener" />

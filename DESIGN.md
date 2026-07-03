@@ -268,7 +268,7 @@ All UI text uses Inter or the system sans-serif stack for clarity. Code snippets
 
 The application uses a three-column grid with generous whitespace:
 
-1. **Left sidebar** (240px): brand header, top mode tabs (Chat / Work), grouped navigation, session list, and footer connection status. The sidebar is white, relying on spacing and subtle hover states rather than background color to create hierarchy.
+1. **Left sidebar** (240px): brand header, top mode tabs (Chat / Work), grouped navigation, session list, and footer connection status. The sidebar uses the subtle background (`#f9fafb`) to recede from the main white canvas, relying on spacing and subtle hover states to create hierarchy.
 2. **Main area** (flexible): centered empty-state hero with a large rounded input card, or a chat conversation stream when messages exist.
 3. **Right drawer** (360px, collapsible): runtime events and settings, fixed to viewport height and scrolling independently.
 
@@ -328,6 +328,10 @@ Rendered inline in the chat timeline, tool call cards are compact gray cards wit
 
 Connection status uses a small dot (green for online, red for offline) beside a label. Status badges in the drawer are pill-shaped with a light border and bold value text. Mode badges (Agent, Ask, Beta Preview) use the accent subtle background with the accent text color.
 
+### Runtime events panel
+
+The right drawer contains a collapsible **运行时事件** panel alongside **设置**. Events are timestamped, tagged by type, and displayed as compact cards using the subtle background (`#f9fafb`) and light border (`#e8eaed`). Consecutive `state_changed` events with the same daemon status are collapsed into a single card with a counter (e.g., `×3`). Error events use the error-subtle background and error-text color. Long tool output is rendered in a monospace pre block with a max-height and overflow. The panel scrolls independently within the drawer.
+
 ### Rendered Markdown body
 
 Developer and assistant messages are rendered as Markdown once a message has finished streaming. The rendered body uses the `.markdown-body` scope, which overrides the default browser Markdown styles to match the design system:
@@ -337,6 +341,8 @@ Developer and assistant messages are rendered as Markdown once a message has fin
 - Inline code uses the code typography and a subtle gray background (`background-hover`) with a 6px radius.
 - Fenced code blocks are wrapped in a card with a header showing the language label and a copy button. The header uses the subtle background (`background-subtle`) and secondary text; the body uses the code typography and a white background. Syntax highlighting uses a minimal Prism token palette derived from the existing color tokens.
 - Blockquotes use a soft accent left border and the accent-subtle background.
+- Tables (GitHub-Flavored Markdown) render with a full-width layout, light borders (`#e8eaed`), a subtle header background (`#f9fafb`), and alternating row backgrounds. Wide tables scroll horizontally within the message bubble if needed.
+- Task lists and strikethrough text use the standard GFM rendering, with checkboxes shown as disabled and strikethrough text using the muted text color.
 - Images are allowed and rendered at max-width 100% with the medium radius so they stay within the message bubble.
 
 During streaming, the message remains plain text with `white-space: pre-wrap` and a blinking cursor; Markdown rendering is only applied after the message is completed.

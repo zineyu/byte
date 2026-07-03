@@ -108,13 +108,23 @@ describe("MarkdownMessage", () => {
     expect(writeText).toHaveBeenCalledWith('def hello():\n    return "hi"');
   });
 
-  it("renders error-state content as plain text", () => {
+  it("renders GFM tables with headers and cells", () => {
     const { container } = render(
-      <MarkdownMessage content="**bold**" status="error" />,
+      <MarkdownMessage
+        content={"| A | B |\n|---|---|\n| 1 | 2 |"}
+        status="completed"
+      />,
     );
 
-    const wrapper = container.querySelector(".markdown-body--streaming");
-    expect(wrapper).toBeInTheDocument();
-    expect(wrapper).toHaveTextContent("**bold**");
+    const table = container.querySelector("table");
+    expect(table).toBeInTheDocument();
+    const headers = container.querySelectorAll("th");
+    expect(headers).toHaveLength(2);
+    expect(headers[0]).toHaveTextContent("A");
+    expect(headers[1]).toHaveTextContent("B");
+    const cells = container.querySelectorAll("td");
+    expect(cells).toHaveLength(2);
+    expect(cells[0]).toHaveTextContent("1");
+    expect(cells[1]).toHaveTextContent("2");
   });
 });

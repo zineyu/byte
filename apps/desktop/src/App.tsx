@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -14,6 +14,7 @@ import {
   User,
   Wrench,
   X,
+  Zap,
 } from "lucide-react";
 import type { DaemonConnectionView } from "./generated/DaemonConnectionView";
 import type { SessionSummary } from "./generated/SessionSummary";
@@ -26,6 +27,7 @@ import {
   buildTimelineItems,
   type ChatRunState,
   type RuntimeEvent,
+  type RuntimeEventLogEntry,
 } from "./store";
 
 function sessionTitle(session: SessionSummary): string {
@@ -60,6 +62,7 @@ export default function App() {
 
   const [input, setInput] = useState("");
   const [showSettings, setShowSettings] = useState(false);
+  const [showRuntimeEvents, setShowRuntimeEvents] = useState(false);
   const initialLoadDoneRef = useRef(false);
 
   const {
@@ -72,6 +75,7 @@ export default function App() {
     runState,
     workspaceInstructions,
     workspaceInstructionsError,
+    events,
   } = state;
 
   const timelineItems = buildTimelineItems(messages);
@@ -354,6 +358,32 @@ export default function App() {
           )}
         </nav>
 
+        <nav className="nav-menu" aria-label="运行时">
+          <button
+            type="button"
+            className={`nav-item ${showRuntimeEvents ? "active" : ""}`}
+            onClick={() => setShowRuntimeEvents((current) => !current)}
+          >
+            <span className="nav-item-icon" aria-hidden="true">
+              <Zap size={16} strokeWidth={2} />
+            </span>
+            运行时
+          </button>
+        </nav>
+
+        <nav className="nav-menu nav-menu--bottom" aria-label="设置">
+          <button
+            type="button"
+            className={`nav-item ${showSettings ? "active" : ""}`}
+            onClick={() => setShowSettings((current) => !current)}
+          >
+            <span className="nav-item-icon" aria-hidden="true">
+              <Settings size={16} strokeWidth={2} />
+            </span>
+            设置
+          </button>
+        </nav>
+
         <div className="nav-footer">
           <div className="connection-row">
             <span
@@ -376,19 +406,6 @@ export default function App() {
             {loadState === "loading" ? "检查中…" : "刷新状态"}
           </button>
         </div>
-
-        <nav className="nav-menu nav-menu--bottom">
-          <button
-            type="button"
-            className={`nav-item ${showSettings ? "active" : ""}`}
-            onClick={() => setShowSettings((current) => !current)}
-          >
-            <span className="nav-item-icon" aria-hidden="true">
-              <Settings size={16} strokeWidth={2} />
-            </span>
-            设置
-          </button>
-        </nav>
       </aside>
 
       <section className="main-area">
@@ -502,14 +519,23 @@ export default function App() {
         )}
       </section>
 
-      {showSettings && (
+      {(showRuntimeEvents || showSettings) && (
         <aside className="right-drawer" aria-label="右侧面板">
           <div className="drawer-header">
-            <h3>设置</h3>
+            <h3>
+              {showRuntimeEvents && showSettings
+                ? "运行时与设置"
+                : showRuntimeEvents
+                  ? "运行时事件"
+                  : "设置"}
+            </h3>
             <button
               type="button"
               className="drawer-close"
-              onClick={() => setShowSettings(false)}
+              onClick={() => {
+                setShowRuntimeEvents(false);
+                setShowSettings(false);
+              }}
               aria-label="关闭"
             >
               <X size={18} strokeWidth={2} />
@@ -517,40 +543,239 @@ export default function App() {
           </div>
 
           <div className="drawer-body">
-            <p className="settings-placeholder">
-              模型与连接设置由本地配置文件管理：
-              <br />
-              <code>~/.config/byte/config.toml</code>
-            </p>
-            {connection.state && (
-              <dl className="status-badges">
-                <div>
-                  <dt>状态</dt>
-                  <dd>
-                    {connection.state.status === "ready"
-                      ? "就绪"
-                      : connection.state.status}
-                  </dd>
-                </div>
-                <div>
-                  <dt>版本</dt>
-                  <dd>{connection.state.daemon_version}</dd>
-                </div>
-                <div>
-                  <dt>协议</dt>
-                  <dd>{connection.state.protocol_version}</dd>
-                </div>
-              </dl>
-            )}
-            {connection.error && (
-              <div className="drawer-error" role="alert">
-                {connection.error}
+            {showRuntimeEvents && <RuntimeEventsPanel events={events} />}
+            {showSettings && (
+              <div className="drawer-panel">
+                <p className="settings-placeholder">
+                  模型与连接设置由本地配置文件管理：
+                  <br />
+                  <code>~/.config/byte/config.toml</code>
+                </p>
+                {connection.state && (
+                  <dl className="status-badges">
+                    <div>
+                      <dt>状态</dt>
+                      <dd>
+                        {connection.state.status === "ready"
+                          ? "就绪"
+                          : connection.state.status}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>版本</dt>
+                      <dd>{connection.state.daemon_version}</dd>
+                    </div>
+                    <div>
+                      <dt>协议</dt>
+                      <dd>{connection.state.protocol_version}</dd>
+                    </div>
+                  </dl>
+                )}
+                {connection.error && (
+                  <div className="drawer-error" role="alert">
+                    {connection.error}
+                  </div>
+                )}
               </div>
             )}
           </div>
         </aside>
       )}
     </main>
+  );
+}
+
+type CollapsedEventItem =
+  | { kind: "raw"; event: RuntimeEventLogEntry }
+  | {
+      kind: "state_changed_group";
+      status: string;
+      receivedAt: Date;
+      count: number;
+    };
+
+function collapseEvents(events: RuntimeEventLogEntry[]): CollapsedEventItem[] {
+  const result: CollapsedEventItem[] = [];
+  let current: CollapsedEventItem | null = null;
+
+  for (const event of events) {
+    if (event.type === "state_changed") {
+      const status = event.state.status;
+      if (
+        current?.kind === "state_changed_group" &&
+        current.status === status
+      ) {
+        current.count += 1;
+      } else {
+        if (current) result.push(current);
+        current = {
+          kind: "state_changed_group",
+          status,
+          receivedAt: event.receivedAt,
+          count: 1,
+        };
+      }
+    } else {
+      if (current) result.push(current);
+      current = { kind: "raw", event };
+    }
+  }
+  if (current) result.push(current);
+  return result;
+}
+
+function eventLabel(event: RuntimeEventLogEntry): string {
+  const base = event as RuntimeEvent;
+  switch (base.type) {
+    case "daemon_started":
+      return "Daemon 启动";
+    case "state_changed":
+      return "状态变更";
+    case "error":
+      return "错误";
+    case "run_started":
+      return "运行开始";
+    case "run_finished":
+      return "运行结束";
+    case "message_started":
+      return "消息开始";
+    case "message_delta":
+      return "消息增量";
+    case "message_completed":
+      return "消息完成";
+    case "tool_started":
+      return "工具开始";
+    case "tool_finished":
+      return "工具结束";
+    case "run_cancelled":
+      return "运行取消";
+    case "session_changed":
+      return "会话变更";
+    default:
+      return (base as RuntimeEvent).type;
+  }
+}
+
+function formatTime(date: Date): string {
+  return date.toLocaleTimeString("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+}
+
+function getEventDetails(event: RuntimeEventLogEntry): React.ReactNode {
+  const base = event as RuntimeEvent;
+  switch (base.type) {
+    case "daemon_started":
+    case "state_changed":
+      return `status: ${base.state.status}`;
+    case "error":
+      return base.message;
+    case "run_started":
+      return `run ${base.run_id.slice(0, 8)}`;
+    case "run_finished":
+      return `status: ${base.status}${base.error ? ` · ${base.error}` : ""}`;
+    case "message_started":
+      return `role: ${base.role}`;
+    case "message_delta":
+      return `block ${base.block_index}`;
+    case "message_completed":
+      return `message ${base.message_id.slice(0, 8)}`;
+    case "tool_started":
+      return base.name;
+    case "tool_finished": {
+      const output = base.is_error
+        ? (base.output ?? "工具出错")
+        : (base.output ?? "");
+      if (output.includes("\n")) {
+        return <pre>{output}</pre>;
+      }
+      return output;
+    }
+    case "run_cancelled":
+      return `run ${base.run_id.slice(0, 8)}`;
+    case "session_changed":
+      return `action: ${base.action}`;
+    default:
+      return null;
+  }
+}
+
+function isErrorEvent(event: RuntimeEventLogEntry): boolean {
+  const base = event as RuntimeEvent;
+  if (base.type === "error") return true;
+  if (base.type === "tool_finished" && base.is_error) return true;
+  if (base.type === "run_finished" && base.status === "failed") return true;
+  return false;
+}
+
+function RuntimeEventsPanel({ events }: { events: RuntimeEventLogEntry[] }) {
+  const collapsed = useMemo(() => collapseEvents(events), [events]);
+
+  if (events.length === 0) {
+    return (
+      <div className="drawer-panel">
+        <div className="runtime-events-empty">暂无运行时事件</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="drawer-panel">
+      <div className="runtime-events-header">
+        <span className="runtime-events-title">运行时事件</span>
+        <span className="runtime-events-count">{events.length} 条</span>
+      </div>
+      <ul className="runtime-events-list">
+        {collapsed.map((item, index) => {
+          if (item.kind === "state_changed_group") {
+            return (
+              <li
+                key={`group-${index}`}
+                className="runtime-event-item runtime-event-item--collapsed"
+              >
+                <div className="runtime-event-meta">
+                  <span className="runtime-event-badge">状态变更</span>
+                  <span className="runtime-event-time">
+                    {formatTime(item.receivedAt)}
+                  </span>
+                </div>
+                <div className="runtime-event-body">
+                  <span className="runtime-event-status">{item.status}</span>
+                  {item.count > 1 && (
+                    <span className="runtime-event-count">×{item.count}</span>
+                  )}
+                </div>
+              </li>
+            );
+          }
+
+          const event = item.event;
+          const isError = isErrorEvent(event);
+
+          return (
+            <li
+              key={`event-${event.sequence}-${index}`}
+              className={`runtime-event-item ${isError ? "runtime-event-item--error" : ""}`}
+            >
+              <div className="runtime-event-meta">
+                <span
+                  className={`runtime-event-badge runtime-event-badge--${event.type}`}
+                >
+                  {eventLabel(event)}
+                </span>
+                <span className="runtime-event-time">
+                  {formatTime(event.receivedAt)}
+                </span>
+              </div>
+              <div className="runtime-event-body">{getEventDetails(event)}</div>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
   );
 }
 
