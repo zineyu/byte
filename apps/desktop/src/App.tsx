@@ -12,7 +12,6 @@ import {
   Sparkles,
   Trash2,
   User,
-  Wrench,
   X,
   Zap,
 } from "lucide-react";
@@ -558,8 +557,6 @@ export default function App() {
                     <div className="chat-message__avatar" aria-hidden="true">
                       {item.message.role === "developer" ? (
                         <User size={16} strokeWidth={2} />
-                      ) : item.message.role === "tool" ? (
-                        <Wrench size={16} strokeWidth={2} />
                       ) : (
                         <Bot size={18} strokeWidth={2} />
                       )}

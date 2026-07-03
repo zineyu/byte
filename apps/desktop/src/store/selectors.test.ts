@@ -234,6 +234,49 @@ describe("buildTimelineItems", () => {
       message: messages[1],
     });
   });
+
+  it("omits tool role messages from the timeline", () => {
+    const messages: ChatMessage[] = [
+      {
+        id: "m1",
+        role: "assistant",
+        content: "searching",
+        status: "completed",
+        timestamp: null,
+        body: [
+          { type: "text", text: "searching" },
+          {
+            type: "toolCall",
+            id: "tc1",
+            name: "grep",
+            arguments: { pattern: "foo" },
+          },
+        ],
+      },
+      {
+        id: "m2",
+        role: "tool",
+        content: "results",
+        status: "completed",
+        timestamp: null,
+        body: [{ type: "text", text: "results" }],
+      },
+    ];
+
+    const items = buildTimelineItems(messages);
+
+    expect(items.map((item) => item.type)).toEqual(["message", "tool_call"]);
+    expect(items[0]).toEqual({
+      type: "message",
+      id: "m1",
+      message: messages[0],
+    });
+    expect(items[1]).toEqual({
+      type: "tool_call",
+      id: "tool-tc1",
+      toolCallId: "tc1",
+    });
+  });
 });
 
 describe("groupEvents", () => {

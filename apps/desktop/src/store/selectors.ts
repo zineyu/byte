@@ -37,6 +37,11 @@ export function buildTimelineItems(messages: ChatMessage[]): TimelineItem[] {
       items.push({ type: "summary", id: message.id, message });
       continue;
     }
+    // Tool result messages are visualized through their corresponding tool
+    // call cards, not as standalone timeline entries.
+    if (message.role === "tool") {
+      continue;
+    }
     items.push({ type: "message", id: message.id, message });
     if (message.role === "assistant") {
       for (const call of getMessageBodyToolCalls(message.body)) {
