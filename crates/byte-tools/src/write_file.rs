@@ -3,7 +3,7 @@ use byte_protocol::{SessionContext, ToolCall};
 use std::path::Path;
 use tokio_util::sync::CancellationToken;
 
-use crate::{Tool, ToolError, resolve_tool_path};
+use crate::{Tool, ToolError, resolve_tool_path, unified_diff};
 
 /// A tool that creates or overwrites a file relative to the workspace root.
 #[derive(Debug, Clone, Copy)]
@@ -86,6 +86,14 @@ impl Tool for WriteFileTool {
             }
         }
 
+        // Capture original content for the diff before the file is overwritten.
+        // If the existing file is too large to diff, skip reading it so the
+        // memory footprint stays bounded; the write itself still proceeds.
+        let original_content = match tokio::fs::metadata(&path).await {
+            Ok(meta) if meta.len() > MAX_SIZE as u64 => None,
+            _ => tokio::fs::read_to_string(&path).await.ok(),
+        };
+
         // Write to a temporary file in the same directory and atomically rename
         // it over the target. If the rename fails the original file remains intact.
         let parent = path.parent().unwrap_or_else(|| Path::new("."));
@@ -132,10 +140,13 @@ impl Tool for WriteFileTool {
             )));
         }
 
+        let diff = unified_diff(&path, original_content.as_deref(), content);
+
         Ok(format!(
-            "wrote {} bytes to {}",
+            "wrote {} bytes to {}\n\n{}",
             content.len(),
-            path.display()
+            path.display(),
+            diff
         ))
     }
 }
@@ -174,16 +185,13 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(
-            result,
-            format!(
-                "wrote 13 bytes to {}",
-                temp.path().join("hello.txt").display()
-            )
-        );
-        let content = tokio::fs::read_to_string(temp.path().join("hello.txt"))
-            .await
-            .unwrap();
+        let path = temp.path().join("hello.txt");
+        assert!(result.starts_with("wrote 13 bytes to"));
+        assert!(result.contains(&path.display().to_string()));
+        assert!(result.contains("--- /dev/null"));
+        assert!(result.contains(&format!("+++ {}", path.display())));
+        assert!(result.contains("+Hello, world!"));
+        let content = tokio::fs::read_to_string(&path).await.unwrap();
         assert_eq!(content, "Hello, world!");
     }
 
@@ -198,7 +206,7 @@ mod tests {
             workspace_root: temp.path().to_path_buf(),
         };
 
-        WriteFileTool
+        let result = WriteFileTool
             .invoke(
                 &call("hello.txt", "new content"),
                 &ctx,
@@ -206,6 +214,41 @@ mod tests {
             )
             .await
             .unwrap();
+
+        assert!(result.starts_with("wrote 11 bytes to"));
+        assert!(result.contains("---"));
+        assert!(result.contains("-old content"));
+        assert!(result.contains("+new content"));
+        let content = tokio::fs::read_to_string(&path).await.unwrap();
+        assert_eq!(content, "new content");
+    }
+
+    #[tokio::test]
+    async fn skips_diff_for_oversized_existing_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("huge.txt");
+        // Existing file is larger than the 1 MiB diff cap.
+        let oversized = "x".repeat(1024 * 1024 + 1);
+        tokio::fs::write(&path, &oversized).await.unwrap();
+
+        let ctx = SessionContext {
+            session_id: None,
+            workspace_root: temp.path().to_path_buf(),
+        };
+
+        let result = WriteFileTool
+            .invoke(
+                &call("huge.txt", "new content"),
+                &ctx,
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        assert!(result.starts_with("wrote 11 bytes to"));
+        // Without the original content, the diff is treated as a new file.
+        assert!(result.contains("--- /dev/null"));
+        assert!(!result.contains("-xxxx"));
 
         let content = tokio::fs::read_to_string(&path).await.unwrap();
         assert_eq!(content, "new content");

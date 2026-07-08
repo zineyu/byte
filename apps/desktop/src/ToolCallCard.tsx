@@ -2,6 +2,8 @@ import {
   AlertCircle,
   ChevronDown,
   File,
+  FilePenLine,
+  FilePlus,
   FileSearch,
   Folder,
   Loader2,
@@ -90,6 +92,12 @@ function ToolIcon({ name }: { name: string }) {
   }
   if (name === "find_files") {
     return <Search size={14} aria-hidden="true" />;
+  }
+  if (name === "apply_patch") {
+    return <FilePenLine size={14} aria-hidden="true" />;
+  }
+  if (name === "write_file") {
+    return <FilePlus size={14} aria-hidden="true" />;
   }
   return <Search size={14} aria-hidden="true" />;
 }
@@ -248,6 +256,10 @@ function ToolOutput({
     );
   }
 
+  if (name === "apply_patch" || name === "write_file") {
+    return <DiffView output={output} />;
+  }
+
   return <pre className="tool-call-pre">{output}</pre>;
 }
 
@@ -294,4 +306,44 @@ function parseGrepOutput(output: string): {
   } catch {
     return { matches: [], warnings: [] };
   }
+}
+
+type DiffLineType =
+  | "summary"
+  | "header"
+  | "hunk"
+  | "delete"
+  | "insert"
+  | "context";
+
+function classifyDiffLine(line: string): DiffLineType {
+  if (line.startsWith("---")) return "header";
+  if (line.startsWith("+++")) return "header";
+  if (line.startsWith("@@")) return "hunk";
+  if (line.startsWith("-")) return "delete";
+  if (line.startsWith("+")) return "insert";
+  return "context";
+}
+
+function DiffView({ output }: { output: string }) {
+  const lines = output.split("\n");
+  let diffStarted = false;
+  return (
+    <div className="tool-call-diff">
+      {lines.map((line, index) => {
+        if (!diffStarted && line.startsWith("--- ")) {
+          diffStarted = true;
+        }
+        const lineType = diffStarted ? classifyDiffLine(line) : "summary";
+        return (
+          <div
+            key={index}
+            className={`tool-call-diff-line tool-call-diff-line--${lineType}`}
+          >
+            <pre>{line}</pre>
+          </div>
+        );
+      })}
+    </div>
+  );
 }

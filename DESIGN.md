@@ -161,6 +161,27 @@ components:
   tool-status-badge-error:
     backgroundColor: "{colors.error-subtle}"
     textColor: "{colors.error-text}"
+  tool-call-diff:
+    backgroundColor: "{colors.background}"
+    textColor: "{colors.text-body}"
+    rounded: "12px"
+    typography: "{typography.code}"
+  tool-call-diff-line-summary:
+    backgroundColor: "{colors.background-subtle}"
+    textColor: "{colors.text-secondary}"
+  tool-call-diff-line-header:
+    textColor: "{colors.text-secondary}"
+  tool-call-diff-line-hunk:
+    backgroundColor: "{colors.background-hover}"
+    textColor: "{colors.text-body}"
+  tool-call-diff-line-delete:
+    backgroundColor: "{colors.error-soft}"
+    textColor: "{colors.error-text}"
+  tool-call-diff-line-insert:
+    backgroundColor: "{colors.success-soft}"
+    textColor: "{colors.success-text}"
+  tool-call-diff-line-context:
+    textColor: "{colors.text-body}"
   markdown-body:
     textColor: "{colors.text-body}"
     typography: "{typography.body-chat}"
@@ -342,7 +363,7 @@ Messages are arranged without avatars to keep the stream clean. Developer messag
 
 ### Tool call cards
 
-Rendered below the assistant message body, tool call cards are centered in the chat area with a max-width of 80%. They use a soft gray card surface (`#f9fafb`) with a subtle `#f1f3f4` border and an 18px radius. By default the body is collapsed so only the header row is visible: a plain tool-type icon, the monospace tool-call signature, a pill-shaped status badge on the right (`运行中` / `已完成` / `失败`), and a chevron toggle. Clicking the toggle expands the card to reveal the tool output. Running states shift to a light blue background with a `#bfdbfe` border; error states shift to a light red background with a `#fecaca` border. Tool output is rendered inside a clean white nested surface with a light `#e8eaed` border and a 12px radius — directory listings show a path caption and item count above the list, file contents show a caption header above a pre block, and grep results show monospace match lines. Directory and file list items carry a muted icon and a generous row padding to stay scannable. Long lists scroll internally.
+Rendered below the assistant message body, tool call cards are centered in the chat area with a max-width of 80%. They use a soft gray card surface (`#f9fafb`) with a subtle `#f1f3f4` border and an 18px radius. By default the body is collapsed so only the header row is visible: a plain tool-type icon, the monospace tool-call signature, a pill-shaped status badge on the right (`运行中` / `已完成` / `失败`), and a chevron toggle. Clicking the toggle expands the card to reveal the tool output. Running states shift to a light blue background with a `#bfdbfe` border; error states shift to a light red background with a `#fecaca` border. Tool output is rendered inside a clean white nested surface with a light `#e8eaed` border and a 12px radius — directory listings show a path caption and item count above the list, file contents show a caption header above a pre block, grep results show monospace match lines, and `apply_patch` / `write_file` results show a unified diff with green insertions, red deletions, and gray context/hunk lines. Directory and file list items carry a muted icon and a generous row padding to stay scannable. Long lists scroll internally.
 
 ### Status badges and connection
 

@@ -95,6 +95,48 @@ describe("ToolCallCard", () => {
     expect(screen.getByText("# Hello")).toBeInTheDocument();
   });
 
+  it("renders a unified diff for apply_patch output", async () => {
+    const toolCall = buildToolCall({
+      name: "apply_patch",
+      arguments: { path: "lib.rs", patch: [{ search: "old", replace: "new" }] },
+      output: [
+        "applied 1 patch(es) to lib.rs",
+        "",
+        "--- lib.rs",
+        "+++ lib.rs",
+        "@@ -1 +1 @@",
+        "-fn old() {}",
+        "+fn new() {}",
+      ].join("\n"),
+    });
+
+    render(<ToolCallCard toolCall={toolCall} />);
+    await expandToolCard();
+
+    expect(screen.getByText("-fn old() {}")).toBeInTheDocument();
+    expect(screen.getByText("+fn new() {}")).toBeInTheDocument();
+  });
+
+  it("renders a unified diff for write_file output", async () => {
+    const toolCall = buildToolCall({
+      name: "write_file",
+      arguments: { path: "hello.txt", content: "Hello, world!" },
+      output: [
+        "wrote 13 bytes to hello.txt",
+        "",
+        "--- /dev/null",
+        "+++ hello.txt",
+        "@@ -0,0 +1 @@",
+        "+Hello, world!",
+      ].join("\n"),
+    });
+
+    render(<ToolCallCard toolCall={toolCall} />);
+    await expandToolCard();
+
+    expect(screen.getByText("+Hello, world!")).toBeInTheDocument();
+  });
+
   it("renders generic tool output as a pre block", async () => {
     const toolCall = buildToolCall({
       name: "custom_tool",

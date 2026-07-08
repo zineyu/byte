@@ -25,6 +25,9 @@ pub mod grep;
 /// List directory entries.
 pub mod list_directory;
 
+/// Diff generation for file-editing tools.
+pub mod diff;
+
 /// Read file contents.
 pub mod read_file;
 
@@ -39,6 +42,9 @@ pub mod write_file;
 
 /// Re-export of [`ApplyPatchTool`].
 pub use apply_patch::ApplyPatchTool;
+
+/// Re-export of [`unified_diff`].
+pub use diff::unified_diff;
 
 /// Re-export of [`FindFilesTool`].
 pub use find_files::FindFilesTool;

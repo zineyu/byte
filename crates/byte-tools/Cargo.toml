@@ -10,6 +10,7 @@ byte-protocol.workspace = true
 glob = "0.3"
 regex = "1"
 serde_json.workspace = true
+similar = "2"
 thiserror.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "process", "time"] }
 tokio-util = "0.7"

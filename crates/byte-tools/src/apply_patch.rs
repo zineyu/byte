@@ -3,7 +3,7 @@ use byte_protocol::{SessionContext, ToolCall};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio_util::sync::CancellationToken;
 
-use crate::{Tool, ToolError, resolve_tool_path};
+use crate::{Tool, ToolError, resolve_tool_path, unified_diff};
 use std::path::Path;
 
 /// A tool that applies multiple search/replace patches to a file.
@@ -97,7 +97,7 @@ impl Tool for ApplyPatchTool {
 
         let content = read_bounded(&mut file, MAX_SIZE, cancel, &path).await?;
 
-        let modified = apply_patches(content, &patches, MAX_SIZE, cancel, &path)?;
+        let modified = apply_patches(content.clone(), &patches, MAX_SIZE, cancel, &path)?;
 
         if modified.len() as u64 > MAX_SIZE {
             return Err(ToolError::new(format!(
@@ -159,10 +159,13 @@ impl Tool for ApplyPatchTool {
             )));
         }
 
+        let diff = unified_diff(&path, Some(&content), &modified);
+
         Ok(format!(
-            "applied {} patch(es) to {}",
+            "applied {} patch(es) to {}\n\n{}",
             patches.len(),
-            path.display()
+            path.display(),
+            diff
         ))
     }
 }
@@ -331,7 +334,11 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(result, format!("applied 1 patch(es) to {}", path.display()));
+        assert!(result.starts_with("applied 1 patch(es) to"));
+        assert!(result.contains(&path.display().to_string()));
+        assert!(result.contains("---"));
+        assert!(result.contains("-fn old() {}"));
+        assert!(result.contains("+fn new() {}"));
         let content = tokio::fs::read_to_string(&path).await.unwrap();
         assert_eq!(content, "fn new() {}");
     }
@@ -499,7 +506,11 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(result, format!("applied 1 patch(es) to {}", path.display()));
+        assert!(result.starts_with("applied 1 patch(es) to"));
+        assert!(result.contains(&path.display().to_string()));
+        assert!(result.contains("---"));
+        assert!(result.contains("-fn old() {}"));
+        assert!(result.contains("+fn new() {}"));
         let content = tokio::fs::read_to_string(&path).await.unwrap();
         assert_eq!(content, "fn new() {}");
 

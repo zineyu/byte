@@ -1583,3 +1583,53 @@ textarea {
   font-size: 0.75rem;
   color: #9ca3af;
 }
+
+.tool-call-diff {
+  background: #ffffff;
+  border: 1px solid #e8eaed;
+  border-radius: 12px;
+  overflow-x: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+.tool-call-diff-line {
+  padding: 0.15rem 0.75rem;
+  white-space: pre;
+}
+
+.tool-call-diff-line pre {
+  margin: 0;
+  font-family: inherit;
+}
+
+.tool-call-diff-line--summary {
+  color: #6b7280;
+  background: #f9fafb;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid #f1f3f4;
+}
+
+.tool-call-diff-line--header {
+  color: #6b7280;
+}
+
+.tool-call-diff-line--hunk {
+  color: #374151;
+  background: #f2f3f5;
+}
+
+.tool-call-diff-line--delete {
+  color: #991b1b;
+  background: #fee2e2;
+}
+
+.tool-call-diff-line--insert {
+  color: #14532d;
+  background: #d1fae5;
+}
+
+.tool-call-diff-line--context {
+  color: #374151;
+}

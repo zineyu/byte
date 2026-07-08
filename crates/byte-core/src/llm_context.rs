@@ -145,7 +145,10 @@ impl LlmContextBuilder {
             }
         }
 
-        prompt.push_str("\nUse the tools when needed.");
+        prompt.push_str("\nUse the tools when needed.\n\nWhen editing files:\n\
+- To modify an existing file, prefer the `apply_patch` tool with search/replace blocks.\n\
+- To create a new file, use the `write_file` tool.\n\
+- Avoid using `write_file` to overwrite existing files unless the change is small or the file is new.");
 
         prompt
     }
