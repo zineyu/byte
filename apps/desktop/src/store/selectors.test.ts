@@ -57,6 +57,14 @@ function makeEvent(
         tool_call_id: "tc1",
         name: "read_file",
       };
+    case "tool_output_delta":
+      return {
+        ...base,
+        type,
+        run_id: "r1",
+        tool_call_id: "tc1",
+        chunk: "output",
+      };
     case "tool_finished":
       return {
         ...base,
@@ -65,6 +73,7 @@ function makeEvent(
         tool_call_id: "tc1",
         output: "ok",
         is_error: false,
+        exit_code: null,
       };
     case "error":
       return { ...base, type, message: "oops", run_id: null };

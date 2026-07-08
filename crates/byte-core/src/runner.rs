@@ -9,7 +9,7 @@ use byte_protocol::{
 };
 use byte_session::SessionError;
 use byte_skills::SkillError;
-use byte_tools::AllowAllPolicy;
+use byte_tools::{AllowAllPolicy, ToolEventSink, ToolOutputEvent, ToolOutputResult};
 use futures::StreamExt;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -17,6 +17,35 @@ use tracing::{debug, error, info, instrument};
 
 use crate::llm_context::{LlmContextBuilder, LlmContextInput};
 use crate::runtime_services::RuntimeServices;
+use async_trait::async_trait;
+
+/// A sink that forwards tool output chunks to the runtime event bus.
+#[derive(Clone)]
+struct RuntimeEventSink {
+    /// Identifier of the run producing the output.
+    run_id: String,
+    /// Identifier of the tool call producing the output.
+    tool_call_id: String,
+    /// Event bus used to emit [`RuntimeEventKind::ToolOutputDelta`] events.
+    bus: Arc<dyn crate::event_bus::RuntimeEventBus>,
+}
+
+#[async_trait]
+impl ToolEventSink for RuntimeEventSink {
+    async fn emit(&self, event: ToolOutputEvent) {
+        match event {
+            ToolOutputEvent::Chunk { chunk } => {
+                self.bus
+                    .emit(RuntimeEventKind::tool_output_delta(
+                        self.run_id.clone(),
+                        self.tool_call_id.clone(),
+                        chunk,
+                    ))
+                    .await;
+            }
+        }
+    }
+}
 /// Buffers small provider deltas so that a run can be cancelled cleanly: the
 /// cancellation can flush any remaining content as a final `message_delta`
 /// before emitting `run_cancelled`.
@@ -724,22 +753,29 @@ impl RunExecutor {
             })
             .await;
 
-        let (output, is_error) = match runner
+        let sink: Arc<dyn ToolEventSink> = Arc::new(RuntimeEventSink {
+            run_id: self.run_id.clone(),
+            tool_call_id: call.id.clone(),
+            bus: Arc::clone(&runner.services.event_bus),
+        });
+
+        let result = match runner
             .services
             .tool_registry
-            .invoke(call, session_ctx, &self.cancel_token)
+            .invoke(call, session_ctx, &self.cancel_token, sink)
             .await
         {
-            Ok(output) => (output, false),
-            Err(error) => (error.to_string(), true),
+            Ok(result) => result,
+            Err(error) => ToolOutputResult::error(error.to_string()),
         };
 
         runner
             .emit(RuntimeEventKind::ToolFinished {
                 run_id: self.run_id.clone(),
                 tool_call_id: call.id.clone(),
-                output: output.clone(),
-                is_error,
+                output: result.output.clone(),
+                is_error: result.is_error,
+                exit_code: result.exit_code,
             })
             .await;
 
@@ -751,14 +787,14 @@ impl RunExecutor {
                 None,
                 Some(last_entry_id),
                 MessageRole::Tool,
-                MessageBody::text(&output),
+                MessageBody::text(&result.output),
                 Some(&call.id),
             )
             .await?;
 
         last_entry_id.clone_from(&tool_result_id);
 
-        Ok(LlmMessage::tool_result(&call.id, output))
+        Ok(LlmMessage::tool_result(&call.id, result.output))
     }
 }
 
@@ -2088,6 +2124,112 @@ mod tests {
             },
         )
         .await;
+    }
+
+    #[tokio::test]
+    async fn run_command_streaming_emits_deltas_and_exit_code() {
+        let bus = Arc::new(RecordingEventBus::new());
+        let store_dir = tempdir().expect("temp dir");
+        let store =
+            Arc::new(SessionStore::new(store_dir.path().to_path_buf()).expect("store creates"));
+        let temp = tempdir().expect("temp dir");
+        let workspace = temp.path().to_path_buf();
+        store
+            .new_session("stream-session", workspace.to_str().unwrap())
+            .await
+            .expect("create session with workspace");
+
+        tokio::fs::write(workspace.join("file.txt"), "hello stream")
+            .await
+            .unwrap();
+
+        let mut registry = MvpToolRegistry::new();
+        registry.register(
+            "run_command".to_string(),
+            Arc::new(RunCommandTool),
+            Arc::new(AllowAllPolicy),
+        );
+        let services = RuntimeServices::new(
+            Arc::new(ToolCallProvider {
+                tool_call: byte_protocol::ToolCall {
+                    id: "stream-call-1".into(),
+                    name: "run_command".into(),
+                    arguments: serde_json::json!({"command": "cat file.txt"}),
+                },
+                turn: Mutex::new(0),
+            }),
+            store.clone(),
+            bus.clone(),
+            Arc::new(registry),
+            Arc::new(MvpSkillRegistry::new()),
+        );
+        let runner = SessionRunner::new(services);
+
+        let run_id = runner
+            .send_message(SendMessageParams {
+                session_id: "stream-session".into(),
+                message: "run command".into(),
+            })
+            .await
+            .expect("send accepted");
+        runner.wait_until_idle().await;
+
+        let events = bus.take_events().await;
+
+        let tool_events: Vec<_> = events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    &event.kind,
+                    RuntimeEventKind::ToolStarted { .. }
+                        | RuntimeEventKind::ToolOutputDelta { .. }
+                        | RuntimeEventKind::ToolFinished { .. }
+                )
+            })
+            .collect();
+
+        assert!(
+            matches!(&tool_events[0].kind, RuntimeEventKind::ToolStarted { tool_call_id, name, .. } if tool_call_id == "stream-call-1" && name == "run_command"),
+            "first tool event should be tool_started for run_command"
+        );
+
+        let deltas: Vec<_> = tool_events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    &event.kind,
+                    RuntimeEventKind::ToolOutputDelta { run_id: rid, tool_call_id, .. } if rid == &run_id && tool_call_id == "stream-call-1"
+                )
+            })
+            .collect();
+        assert!(
+            !deltas.is_empty(),
+            "run_command should emit at least one tool_output_delta event"
+        );
+        let combined = deltas
+            .iter()
+            .map(|event| match &event.kind {
+                RuntimeEventKind::ToolOutputDelta { chunk, .. } => chunk.as_str(),
+                _ => "",
+            })
+            .collect::<String>();
+        assert!(
+            combined.contains("hello stream"),
+            "combined chunks should contain command output"
+        );
+
+        assert!(
+            matches!(
+                &tool_events.last().unwrap().kind,
+                RuntimeEventKind::ToolFinished {
+                    tool_call_id,
+                    is_error: false,
+                    exit_code: Some(0),
+                    ..
+                } if tool_call_id == "stream-call-1"
+            ),
+            "last tool event should be successful ToolFinished with exit code 0"
+        );
     }
 
     /// A provider that requests `activate_skill("review")` on turn 0 and

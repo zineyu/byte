@@ -7,7 +7,7 @@ use std::path::PathBuf;
 /// JSON-RPC protocol version.
 pub const JSON_RPC_VERSION: &str = "2.0";
 /// Wire format version supported by this crate.
-pub const PROTOCOL_VERSION: u16 = 6;
+pub const PROTOCOL_VERSION: u16 = 7;
 /// JSON-RPC method name used for runtime event notifications.
 pub const RUNTIME_EVENT_METHOD: &str = "runtime_event";
 
@@ -415,18 +415,33 @@ impl RuntimeEventKind {
         }
     }
 
-    /// A tool call finished with output and error status.
+    /// A tool call finished with output, error status, and optional exit code.
     pub fn tool_finished(
         run_id: impl Into<String>,
         tool_call_id: impl Into<String>,
         output: impl Into<String>,
         is_error: bool,
+        exit_code: Option<i32>,
     ) -> Self {
         Self::ToolFinished {
             run_id: run_id.into(),
             tool_call_id: tool_call_id.into(),
             output: output.into(),
             is_error,
+            exit_code,
+        }
+    }
+
+    /// A chunk of streaming tool output was produced.
+    pub fn tool_output_delta(
+        run_id: impl Into<String>,
+        tool_call_id: impl Into<String>,
+        chunk: impl Into<String>,
+    ) -> Self {
+        Self::ToolOutputDelta {
+            run_id: run_id.into(),
+            tool_call_id: tool_call_id.into(),
+            chunk: chunk.into(),
         }
     }
 
@@ -535,6 +550,18 @@ pub enum RuntimeEventKind {
         output: String,
         /// Whether the tool call failed.
         is_error: bool,
+        /// Exit code returned by the tool, if any.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        exit_code: Option<i32>,
+    },
+    /// A chunk of streaming tool output was produced.
+    ToolOutputDelta {
+        /// Run identifier.
+        run_id: String,
+        /// Tool call identifier.
+        tool_call_id: String,
+        /// Incremental output chunk.
+        chunk: String,
     },
     /// Run was cancelled.
     RunCancelled {
@@ -1056,14 +1083,25 @@ mod tests {
 
         let finished = RuntimeEvent {
             sequence: 13,
-            kind: RuntimeEventKind::tool_finished("run-1", "call-1", "contents", false),
+            kind: RuntimeEventKind::tool_finished("run-1", "call-1", "contents", false, Some(0)),
         };
         let decoded: RuntimeEvent =
             decode_json_line(&encode_json_line(&finished).unwrap()).unwrap();
         assert!(matches!(
             decoded.kind,
-            RuntimeEventKind::ToolFinished { tool_call_id, output, is_error, .. }
-            if tool_call_id == "call-1" && output == "contents" && !is_error
+            RuntimeEventKind::ToolFinished { tool_call_id, output, is_error, exit_code, .. }
+            if tool_call_id == "call-1" && output == "contents" && !is_error && exit_code == Some(0)
+        ));
+
+        let delta = RuntimeEvent {
+            sequence: 14,
+            kind: RuntimeEventKind::tool_output_delta("run-1", "call-1", "chunk"),
+        };
+        let decoded: RuntimeEvent = decode_json_line(&encode_json_line(&delta).unwrap()).unwrap();
+        assert!(matches!(
+            decoded.kind,
+            RuntimeEventKind::ToolOutputDelta { tool_call_id, chunk, .. }
+            if tool_call_id == "call-1" && chunk == "chunk"
         ));
     }
 

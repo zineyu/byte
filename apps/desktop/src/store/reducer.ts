@@ -138,6 +138,7 @@ function loadSession(
         status: "completed",
         output: null,
         error: null,
+        exitCode: null,
       };
     }
   }
@@ -270,6 +271,7 @@ function applyRuntimeEvent(state: AppState, event: RuntimeEvent): AppState {
             status: "running",
             output: null,
             error: null,
+            exitCode: null,
           };
           return acc;
         }, {}) ?? {};
@@ -355,6 +357,28 @@ function applyRuntimeEvent(state: AppState, event: RuntimeEvent): AppState {
             status: "running",
             output: existing?.output ?? null,
             error: null,
+            exitCode: existing?.exitCode ?? null,
+          },
+        },
+      };
+    }
+    case "tool_output_delta": {
+      const existing = state.toolCalls[event.tool_call_id];
+      return {
+        ...state,
+        events,
+        toolCalls: {
+          ...state.toolCalls,
+          [event.tool_call_id]: {
+            toolCallId: event.tool_call_id,
+            messageId: existing?.messageId ?? "",
+            runId: event.run_id,
+            name: existing?.name ?? "工具",
+            arguments: existing?.arguments ?? null,
+            status: "running",
+            output: (existing?.output ?? "") + event.chunk,
+            error: null,
+            exitCode: existing?.exitCode ?? null,
           },
         },
       };
@@ -375,6 +399,7 @@ function applyRuntimeEvent(state: AppState, event: RuntimeEvent): AppState {
             status: event.is_error ? "error" : "completed",
             output: event.output,
             error: event.is_error ? event.output : null,
+            exitCode: event.exit_code ?? null,
           },
         },
       };

@@ -84,6 +84,85 @@ impl ToolError {
     }
 }
 
+/// The final result of a tool invocation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolOutputResult {
+    /// Serialized output from the tool.
+    pub output: String,
+    /// Exit code returned by the tool, if any.
+    pub exit_code: Option<i32>,
+    /// Whether the tool call should be treated as an error.
+    pub is_error: bool,
+}
+
+impl ToolOutputResult {
+    /// Create a successful result with the given output.
+    #[must_use]
+    pub fn success(output: impl Into<String>) -> Self {
+        Self {
+            output: output.into(),
+            exit_code: None,
+            is_error: false,
+        }
+    }
+
+    /// Create a successful result with the given output and exit code.
+    #[must_use]
+    pub fn success_with_exit_code(output: impl Into<String>, exit_code: i32) -> Self {
+        Self {
+            output: output.into(),
+            exit_code: Some(exit_code),
+            is_error: false,
+        }
+    }
+
+    /// Create an error result with the given message.
+    #[must_use]
+    pub fn error(output: impl Into<String>) -> Self {
+        Self {
+            output: output.into(),
+            exit_code: None,
+            is_error: true,
+        }
+    }
+
+    /// Create an error result with the given message and exit code.
+    #[must_use]
+    pub fn error_with_exit_code(output: impl Into<String>, exit_code: i32) -> Self {
+        Self {
+            output: output.into(),
+            exit_code: Some(exit_code),
+            is_error: true,
+        }
+    }
+}
+
+/// A streaming output event produced by a tool during execution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToolOutputEvent {
+    /// A chunk of incremental output.
+    Chunk {
+        /// Incremental output chunk.
+        chunk: String,
+    },
+}
+
+/// A sink for streaming tool output events.
+#[async_trait]
+pub trait ToolEventSink: Send + Sync {
+    /// Emit a streaming tool output event.
+    async fn emit(&self, event: ToolOutputEvent);
+}
+
+/// A no-op sink for tests and tools that do not stream output.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NoopEventSink;
+
+#[async_trait]
+impl ToolEventSink for NoopEventSink {
+    async fn emit(&self, _event: ToolOutputEvent) {}
+}
+
 /// A tool that can be invoked by the runtime.
 #[async_trait]
 pub trait Tool: Send + Sync {
@@ -91,12 +170,33 @@ pub trait Tool: Send + Sync {
     fn definition(&self) -> byte_protocol::ToolDefinition;
 
     /// Invoke the tool with the given call and context.
+    ///
+    /// This is the non-streaming entry point used by tests and simple tools.
+    /// The runtime calls [`Self::invoke_with_sink`] so that tools can emit
+    /// incremental output while they run.
     async fn invoke(
         &self,
         call: &ToolCall,
         ctx: &SessionContext,
         cancel: &CancellationToken,
     ) -> Result<String, ToolError>;
+
+    /// Invoke the tool with a streaming event sink.
+    ///
+    /// The default implementation calls [`Self::invoke`] and emits no
+    /// streaming events. Tools that produce incremental output (such as
+    /// `run_command`) should override this method.
+    async fn invoke_with_sink(
+        &self,
+        call: &ToolCall,
+        ctx: &SessionContext,
+        cancel: &CancellationToken,
+        sink: Arc<dyn ToolEventSink>,
+    ) -> Result<ToolOutputResult, ToolError> {
+        let _ = sink;
+        let output = self.invoke(call, ctx, cancel).await?;
+        Ok(ToolOutputResult::success(output))
+    }
 }
 
 /// A policy that decides whether a tool call is allowed.
@@ -132,16 +232,22 @@ pub trait ToolRegistry: Send + Sync {
     /// Return the names of all registered tools.
     fn names(&self) -> Vec<String>;
 
-    /// Get a tool definition by name, if it exists.
+    /// Get a tool and its policy by name, if registered.
     fn get(&self, name: &str) -> Option<(Arc<dyn Tool>, Arc<dyn ToolPolicy>)>;
 
     /// Invoke a tool call after checking its policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the tool is unknown, the policy rejects the call,
+    /// or the tool invocation fails.
     async fn invoke(
         &self,
         call: &ToolCall,
         ctx: &SessionContext,
         cancel: &CancellationToken,
-    ) -> Result<String, ToolError>;
+        sink: Arc<dyn ToolEventSink>,
+    ) -> Result<ToolOutputResult, ToolError>;
 }
 
 /// Resolve a `path` argument from a tool call against the session workspace root.
@@ -173,6 +279,8 @@ pub(crate) fn resolve_tool_path(
 #[cfg(test)]
 mod tests {
     #![allow(clippy::expect_used, clippy::unwrap_used, unused_results)]
+
+    use std::sync::Arc;
 
     use super::*;
     #[test]
@@ -227,10 +335,15 @@ mod tests {
             workspace_root: temp.path().to_path_buf(),
         };
         let result = registry
-            .invoke(&call, &ctx, &CancellationToken::new())
+            .invoke(
+                &call,
+                &ctx,
+                &CancellationToken::new(),
+                Arc::new(NoopEventSink),
+            )
             .await
             .unwrap();
-        assert_eq!(result, "fn main() {}");
+        assert_eq!(result.output, "fn main() {}");
     }
 
     #[tokio::test]
@@ -249,6 +362,7 @@ mod tests {
                     workspace_root: tempfile::tempdir().unwrap().path().to_path_buf(),
                 },
                 &CancellationToken::new(),
+                Arc::new(NoopEventSink),
             )
             .await;
         assert!(result.is_err());

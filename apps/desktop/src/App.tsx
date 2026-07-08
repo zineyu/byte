@@ -719,6 +719,8 @@ function eventLabel(event: RuntimeEventLogEntry): string {
       return "消息完成";
     case "tool_started":
       return "工具开始";
+    case "tool_output_delta":
+      return "工具输出";
     case "tool_finished":
       return "工具结束";
     case "run_cancelled":
@@ -769,14 +771,28 @@ function getEventDetails(event: RuntimeEventLogEntry): React.ReactNode {
       return `message ${base.message_id.slice(0, 8)}`;
     case "tool_started":
       return base.name;
+    case "tool_output_delta":
+      return `chunk ${base.chunk.slice(0, 40)}${base.chunk.length > 40 ? "…" : ""}`;
     case "tool_finished": {
       const output = base.is_error
         ? (base.output ?? "工具出错")
         : (base.output ?? "");
+      const exitCode =
+        base.exit_code !== null ? `exit ${base.exit_code}` : null;
       if (output.includes("\n")) {
-        return <pre>{output}</pre>;
+        return (
+          <>
+            {exitCode && <div>{exitCode}</div>}
+            <pre>{output}</pre>
+          </>
+        );
       }
-      return output;
+      return (
+        <>
+          {output}
+          {exitCode && ` · ${exitCode}`}
+        </>
+      );
     }
     case "run_cancelled":
       return `run ${base.run_id.slice(0, 8)}`;

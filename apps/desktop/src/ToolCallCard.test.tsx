@@ -78,7 +78,8 @@ describe("ToolCallCard", () => {
     await expandToolCard();
 
     expect(screen.getByText("失败")).toBeInTheDocument();
-    expect(screen.getByText("not found")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("not found");
+    expect(screen.getByText("missing.txt")).toBeInTheDocument();
   });
 
   it("renders a read_file output with a file header and pre block", async () => {

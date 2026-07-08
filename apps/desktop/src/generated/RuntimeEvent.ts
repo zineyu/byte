@@ -117,7 +117,23 @@ output: string,
 /**
  * Whether the tool call failed.
  */
-is_error: boolean, } } | { "run_cancelled": { 
+is_error: boolean, 
+/**
+ * Exit code returned by the tool, if any.
+ */
+exit_code: number | null, } } | { "tool_output_delta": { 
+/**
+ * Run identifier.
+ */
+run_id: string, 
+/**
+ * Tool call identifier.
+ */
+tool_call_id: string, 
+/**
+ * Incremental output chunk.
+ */
+chunk: string, } } | { "run_cancelled": { 
 /**
  * Run identifier.
  */

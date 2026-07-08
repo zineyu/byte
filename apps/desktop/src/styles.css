@@ -1633,3 +1633,58 @@ textarea {
 .tool-call-diff-line--context {
   color: #374151;
 }
+
+/* Command output */
+.tool-call-command {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.tool-call-command-line {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background: #f9fafb;
+  border: 1px solid #e8eaed;
+  border-radius: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.8125rem;
+}
+
+.tool-call-command-prompt {
+  color: #6b7280;
+  user-select: none;
+}
+
+.tool-call-command-text {
+  color: #111827;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.tool-call-exit-code {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.tool-call-exit-code-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.25rem 0.5rem;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.tool-call-exit-code-badge--success {
+  color: #14532d;
+  background: #d1fae5;
+}
+
+.tool-call-exit-code-badge--error {
+  color: #991b1b;
+  background: #fee2e2;
+}

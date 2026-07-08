@@ -110,6 +110,7 @@ export type ToolCallState = {
   status: "running" | "completed" | "error";
   output: string | null;
   error: string | null;
+  exitCode: number | null;
 };
 
 export type ChatRunState = {

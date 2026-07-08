@@ -439,6 +439,7 @@ describe("runtime event reducer", () => {
         tool_call_id: toolCallId,
         output: "fn main() {}",
         is_error: false,
+        exit_code: null,
       },
     });
 
@@ -477,11 +478,76 @@ describe("runtime event reducer", () => {
         tool_call_id: "tc-1",
         output: "directory does not exist",
         is_error: true,
+        exit_code: null,
       },
     });
 
     expect(afterError.toolCalls["tc-1"].status).toBe("error");
     expect(afterError.toolCalls["tc-1"].error).toBe("directory does not exist");
+  });
+
+  it("appends tool_output_delta chunks to the running tool output", () => {
+    const afterCompleted = reducer(initialState, {
+      type: "runtime_event",
+      event: {
+        sequence: 1,
+        type: "message_completed",
+        run_id: "r1",
+        message_id: "m1",
+        body: [
+          {
+            type: "toolCall",
+            id: "tc-1",
+            name: "run_command",
+            arguments: { command: "echo hello" },
+          },
+        ],
+      },
+    });
+
+    const afterChunk1 = reducer(afterCompleted, {
+      type: "runtime_event",
+      event: {
+        sequence: 2,
+        type: "tool_output_delta",
+        run_id: "r1",
+        tool_call_id: "tc-1",
+        chunk: "hello",
+      },
+    });
+
+    expect(afterChunk1.toolCalls["tc-1"].status).toBe("running");
+    expect(afterChunk1.toolCalls["tc-1"].output).toBe("hello");
+
+    const afterChunk2 = reducer(afterChunk1, {
+      type: "runtime_event",
+      event: {
+        sequence: 3,
+        type: "tool_output_delta",
+        run_id: "r1",
+        tool_call_id: "tc-1",
+        chunk: " world",
+      },
+    });
+
+    expect(afterChunk2.toolCalls["tc-1"].output).toBe("hello world");
+
+    const afterFinished = reducer(afterChunk2, {
+      type: "runtime_event",
+      event: {
+        sequence: 4,
+        type: "tool_finished",
+        run_id: "r1",
+        tool_call_id: "tc-1",
+        output: "hello world",
+        is_error: false,
+        exit_code: 0,
+      },
+    });
+
+    expect(afterFinished.toolCalls["tc-1"].status).toBe("completed");
+    expect(afterFinished.toolCalls["tc-1"].output).toBe("hello world");
+    expect(afterFinished.toolCalls["tc-1"].exitCode).toBe(0);
   });
 
   it("loads a session snapshot as completed messages including tool role", () => {

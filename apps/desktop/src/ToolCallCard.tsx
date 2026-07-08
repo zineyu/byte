@@ -8,6 +8,7 @@ import {
   Folder,
   Loader2,
   Search,
+  Terminal,
   XCircle,
 } from "lucide-react";
 import { useState } from "react";
@@ -61,21 +62,25 @@ export function ToolCallCard({ toolCall }: ToolCallCardProps) {
           />
         </button>
       </div>
-      {isExpanded && toolCall.status === "completed" && (
-        <div className="tool-call-body">
-          <ToolOutput
-            name={toolCall.name}
-            arguments={toolCall.arguments}
-            output={toolCall.output}
-          />
-        </div>
-      )}
       {isExpanded && isError && (
         <div className="tool-call-error" role="alert">
           <AlertCircle size={14} aria-hidden="true" />
           <span>{toolCall.error ?? "工具执行失败"}</span>
         </div>
       )}
+      {isExpanded &&
+        (toolCall.status === "completed" ||
+          toolCall.status === "error" ||
+          (toolCall.status === "running" && toolCall.output)) && (
+          <div className="tool-call-body">
+            <ToolOutput
+              name={toolCall.name}
+              arguments={toolCall.arguments}
+              output={toolCall.output}
+              exitCode={toolCall.exitCode}
+            />
+          </div>
+        )}
     </div>
   );
 }
@@ -98,6 +103,9 @@ function ToolIcon({ name }: { name: string }) {
   }
   if (name === "write_file") {
     return <FilePlus size={14} aria-hidden="true" />;
+  }
+  if (name === "run_command") {
+    return <Terminal size={14} aria-hidden="true" />;
   }
   return <Search size={14} aria-hidden="true" />;
 }
@@ -165,10 +173,12 @@ function ToolOutput({
   name,
   arguments: arguments_,
   output,
+  exitCode,
 }: {
   name: string;
   arguments: JsonValue;
   output: string | null;
+  exitCode: number | null;
 }) {
   if (!output) {
     return <span className="tool-call-empty">无输出</span>;
@@ -258,6 +268,28 @@ function ToolOutput({
 
   if (name === "apply_patch" || name === "write_file") {
     return <DiffView output={output} />;
+  }
+
+  if (name === "run_command") {
+    const command = getArgumentString(arguments_, "command") ?? "";
+    return (
+      <div className="tool-call-command">
+        <div className="tool-call-command-line">
+          <span className="tool-call-command-prompt">$</span>
+          <span className="tool-call-command-text">{command}</span>
+        </div>
+        <pre className="tool-call-pre">{output}</pre>
+        {exitCode !== null && (
+          <div className="tool-call-exit-code">
+            <span
+              className={`tool-call-exit-code-badge ${exitCode === 0 ? "tool-call-exit-code-badge--success" : "tool-call-exit-code-badge--error"}`}
+            >
+              exit {exitCode}
+            </span>
+          </div>
+        )}
+      </div>
+    );
   }
 
   return <pre className="tool-call-pre">{output}</pre>;

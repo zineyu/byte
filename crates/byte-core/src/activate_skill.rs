@@ -3,7 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use byte_protocol::{ActivatedSkill, ToolCall, ToolDefinition};
 use byte_skills::SkillRegistry;
-use byte_tools::{Tool, ToolError, ToolPolicy, ToolRegistry};
+use byte_tools::{Tool, ToolError, ToolEventSink, ToolOutputResult, ToolPolicy, ToolRegistry};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
@@ -181,12 +181,15 @@ impl ToolRegistry for SessionToolRegistry {
         call: &ToolCall,
         ctx: &byte_protocol::SessionContext,
         cancel: &CancellationToken,
-    ) -> Result<String, ToolError> {
+        sink: Arc<dyn ToolEventSink>,
+    ) -> Result<ToolOutputResult, ToolError> {
         if call.name == "activate_skill" {
             self.activate_policy.check(call, ctx)?;
-            self.activate_skill.invoke(call, ctx, cancel).await
+            self.activate_skill
+                .invoke_with_sink(call, ctx, cancel, sink)
+                .await
         } else {
-            self.base.invoke(call, ctx, cancel).await
+            self.base.invoke(call, ctx, cancel, sink).await
         }
     }
 }
