@@ -1,10 +1,8 @@
-//! Integration tests for the byte daemon over a Unix domain socket.
+//! Integration tests for the byte daemon over a WebSocket.
 
-#![cfg(unix)]
 #![allow(clippy::expect_used, clippy::unwrap_used, unused_results)]
 
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
+use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -14,6 +12,8 @@ use byte_protocol::{
     ListSessionsResult, LoadSessionParams, LoadSessionResult, NewSessionParams, NewSessionResult,
     RpcId, RunStatus, RuntimeEventKind, SendMessageParams, decode_json_line, encode_json_line,
 };
+use tungstenite::{Message, WebSocket};
+use tungstenite::stream::MaybeTlsStream;
 
 fn message_text(message: &byte_protocol::Message) -> &str {
     match &message.body.0[..] {
@@ -23,24 +23,19 @@ fn message_text(message: &byte_protocol::Message) -> &str {
 }
 
 #[test]
-fn daemon_returns_state_and_runtime_event_over_unix_socket_jsonl() {
-    let socket_path = unique_socket_path();
-    let child = start_daemon(&socket_path);
+fn daemon_returns_state_and_runtime_event_over_websocket() {
+    let addr = unique_address();
+    let child = start_daemon(&addr);
 
-    let mut stream = connect_with_retry(&socket_path);
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .expect("read timeout is set");
-
+    let mut socket = connect_with_retry(&addr);
     let request = JsonRpcRequest::new(42, "get_state", None);
-    write_request(&mut stream, &request);
+    write_request(&mut socket, &request);
 
-    let mut reader = BufReader::new(stream);
     let mut saw_response = false;
     let mut saw_event = false;
 
     while !(saw_response && saw_event) {
-        let line = read_line(&mut reader);
+        let line = read_line(&mut socket);
 
         match decode_json_line::<JsonRpcMessage>(&line).expect("message decodes") {
             JsonRpcMessage::Response(response) => {
@@ -64,24 +59,19 @@ fn daemon_returns_state_and_runtime_event_over_unix_socket_jsonl() {
         }
     }
 
-    stop_daemon(child, &socket_path, None);
+    stop_daemon(child, None);
 }
 
 #[test]
 fn send_message_with_missing_config_emits_visible_error_event() {
-    let socket_path = unique_socket_path();
+    let addr = unique_address();
     let config_path = unique_config_path();
     let data_dir = unique_data_dir();
-    let child = start_daemon_with_config(&socket_path, &config_path, &data_dir);
+    let child = start_daemon_with_config(&addr, &config_path, &data_dir);
 
-    let mut stream = connect_with_retry(&socket_path);
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .expect("read timeout is set");
-
-    let mut reader = BufReader::new(stream.try_clone().expect("stream clones"));
+    let mut socket = connect_with_retry(&addr);
     // Wait for daemon_started so we know the broadcast channel is ready.
-    wait_for_event_type(&mut reader, |kind| {
+    wait_for_event_type(&mut socket, |kind| {
         matches!(kind, RuntimeEventKind::DaemonStarted { .. })
     });
 
@@ -92,11 +82,11 @@ fn send_message_with_missing_config_emits_visible_error_event() {
     })
     .expect("new session params encode");
     let new_request = JsonRpcRequest::new(0, "new_session", Some(new_params));
-    write_request(&mut stream, &new_request);
+    write_request(&mut socket, &new_request);
 
     let mut session_id: Option<String> = None;
     while session_id.is_none() {
-        let line = read_line(&mut reader);
+        let line = read_line(&mut socket);
         if let JsonRpcMessage::Response(response) =
             decode_json_line::<JsonRpcMessage>(&line).expect("message decodes")
         {
@@ -116,14 +106,14 @@ fn send_message_with_missing_config_emits_visible_error_event() {
     })
     .expect("params encode");
     let request = JsonRpcRequest::new(1, "send_message", Some(params));
-    write_request(&mut stream, &request);
+    write_request(&mut socket, &request);
 
     let mut saw_run_id_response = false;
     let mut saw_error = false;
     let mut saw_run_finished_failed = false;
 
     while !(saw_run_id_response && saw_error && saw_run_finished_failed) {
-        let line = read_line(&mut reader);
+        let line = read_line(&mut socket);
 
         match decode_json_line::<JsonRpcMessage>(&line).expect("message decodes") {
             JsonRpcMessage::Response(response) => {
@@ -160,25 +150,20 @@ fn send_message_with_missing_config_emits_visible_error_event() {
         }
     }
 
-    drop(stream);
-    stop_daemon(child, &socket_path, Some(&data_dir));
+    drop(socket);
+    stop_daemon(child, Some(&data_dir));
 }
 
 #[test]
 fn send_message_with_echo_provider_streams_assistant_message() {
-    let socket_path = unique_socket_path();
+    let addr = unique_address();
     let config_path =
         write_config("provider = 'echo'\nbase_url = ''\napi_key = ''\nmodel = 'echo'");
     let data_dir = unique_data_dir();
-    let child = start_daemon_with_config(&socket_path, &config_path, &data_dir);
+    let child = start_daemon_with_config(&addr, &config_path, &data_dir);
 
-    let mut stream = connect_with_retry(&socket_path);
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .expect("read timeout is set");
-
-    let mut reader = BufReader::new(stream.try_clone().expect("stream clones"));
-    wait_for_event_type(&mut reader, |kind| {
+    let mut socket = connect_with_retry(&addr);
+    wait_for_event_type(&mut socket, |kind| {
         matches!(kind, RuntimeEventKind::DaemonStarted { .. })
     });
 
@@ -189,11 +174,11 @@ fn send_message_with_echo_provider_streams_assistant_message() {
     })
     .expect("new session params encode");
     let new_request = JsonRpcRequest::new(1, "new_session", Some(new_params));
-    write_request(&mut stream, &new_request);
+    write_request(&mut socket, &new_request);
 
     let mut session_id: Option<String> = None;
     while session_id.is_none() {
-        let line = read_line(&mut reader);
+        let line = read_line(&mut socket);
         if let JsonRpcMessage::Response(response) =
             decode_json_line::<JsonRpcMessage>(&line).expect("message decodes")
         {
@@ -213,7 +198,7 @@ fn send_message_with_echo_provider_streams_assistant_message() {
     })
     .expect("params encode");
     let request = JsonRpcRequest::new(2, "send_message", Some(params));
-    write_request(&mut stream, &request);
+    write_request(&mut socket, &request);
 
     let mut saw_run_started = false;
     let mut saw_message_started = false;
@@ -227,7 +212,7 @@ fn send_message_with_echo_provider_streams_assistant_message() {
         && saw_message_completed
         && saw_run_finished_success)
     {
-        let line = read_line(&mut reader);
+        let line = read_line(&mut socket);
 
         match decode_json_line::<JsonRpcMessage>(&line).expect("message decodes") {
             JsonRpcMessage::Notification(notification) => {
@@ -262,30 +247,25 @@ fn send_message_with_echo_provider_streams_assistant_message() {
         }
     }
 
-    drop(stream);
-    stop_daemon(child, &socket_path, Some(&data_dir));
+    drop(socket);
+    stop_daemon(child, Some(&data_dir));
 }
 
 #[test]
 #[allow(clippy::too_many_lines)]
 fn send_message_persists_messages_to_session() {
-    let socket_path = unique_socket_path();
+    let addr = unique_address();
     let config_path =
         write_config("provider = 'echo'\nbase_url = ''\napi_key = ''\nmodel = 'echo'");
     let data_dir = unique_data_dir();
     let workspace_dir = unique_workspace_dir();
-    let child = start_daemon_with_config(&socket_path, &config_path, &data_dir);
+    let child = start_daemon_with_config(&addr, &config_path, &data_dir);
 
     std::fs::create_dir_all(&workspace_dir).expect("workspace dir creates");
     std::fs::write(workspace_dir.join("main.rs"), "fn main() {}").expect("main.rs writes");
 
-    let mut stream = connect_with_retry(&socket_path);
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .expect("read timeout is set");
-
-    let mut reader = BufReader::new(stream.try_clone().expect("stream clones"));
-    wait_for_event_type(&mut reader, |kind| {
+    let mut socket = connect_with_retry(&addr);
+    wait_for_event_type(&mut socket, |kind| {
         matches!(kind, RuntimeEventKind::DaemonStarted { .. })
     });
 
@@ -294,11 +274,11 @@ fn send_message_persists_messages_to_session() {
     })
     .expect("new session params encode");
     let new_request = JsonRpcRequest::new(20, "new_session", Some(new_params));
-    write_request(&mut stream, &new_request);
+    write_request(&mut socket, &new_request);
 
     let mut session_id: Option<String> = None;
     while session_id.is_none() {
-        let line = read_line(&mut reader);
+        let line = read_line(&mut socket);
         if let JsonRpcMessage::Response(response) =
             decode_json_line::<JsonRpcMessage>(&line).expect("message decodes")
         {
@@ -318,9 +298,9 @@ fn send_message_persists_messages_to_session() {
     })
     .expect("params encode");
     let request = JsonRpcRequest::new(3, "send_message", Some(params));
-    write_request(&mut stream, &request);
+    write_request(&mut socket, &request);
 
-    wait_for_event_type(&mut reader, |kind| {
+    wait_for_event_type(&mut socket, |kind| {
         matches!(
             kind,
             RuntimeEventKind::RunFinished {
@@ -336,10 +316,10 @@ fn send_message_persists_messages_to_session() {
     })
     .expect("load params encode");
     let load_request = JsonRpcRequest::new(4, "load_session", Some(load_params));
-    write_request(&mut stream, &load_request);
+    write_request(&mut socket, &load_request);
 
     let session = loop {
-        let line = read_line(&mut reader);
+        let line = read_line(&mut socket);
         if let JsonRpcMessage::Response(response) =
             decode_json_line::<JsonRpcMessage>(&line).expect("message decodes")
             && response.id == RpcId::Number(4)
@@ -382,28 +362,23 @@ fn send_message_persists_messages_to_session() {
         Some(session.messages[2].id.clone())
     );
 
-    drop(stream);
-    stop_daemon(child, &socket_path, Some(&data_dir));
+    drop(socket);
+    stop_daemon(child, Some(&data_dir));
     let _ = std::fs::remove_dir_all(&workspace_dir);
 }
 
 #[test]
 fn session_operations_emit_session_changed_event() {
-    let socket_path = unique_socket_path();
+    let addr = unique_address();
     let data_dir = unique_data_dir();
     let child = start_daemon_with_config(
-        &socket_path,
+        &addr,
         &write_config("provider = 'echo'\nbase_url = ''\napi_key = ''\nmodel = 'echo'"),
         &data_dir,
     );
 
-    let mut stream = connect_with_retry(&socket_path);
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .expect("read timeout is set");
-
-    let mut reader = BufReader::new(stream.try_clone().expect("stream clones"));
-    wait_for_event_type(&mut reader, |kind| {
+    let mut socket = connect_with_retry(&addr);
+    wait_for_event_type(&mut socket, |kind| {
         matches!(kind, RuntimeEventKind::DaemonStarted { .. })
     });
 
@@ -414,12 +389,12 @@ fn session_operations_emit_session_changed_event() {
     })
     .expect("new session params encode");
     let new_request = JsonRpcRequest::new(5, "new_session", Some(new_params));
-    write_request(&mut stream, &new_request);
+    write_request(&mut socket, &new_request);
 
     let mut created_id: Option<String> = None;
     let mut saw_created = false;
     while !saw_created {
-        let line = read_line(&mut reader);
+        let line = read_line(&mut socket);
         match decode_json_line::<JsonRpcMessage>(&line).expect("message decodes") {
             JsonRpcMessage::Response(response) => {
                 assert_eq!(response.id, RpcId::Number(5));
@@ -453,11 +428,11 @@ fn session_operations_emit_session_changed_event() {
     })
     .expect("load session params encode");
     let load_request = JsonRpcRequest::new(6, "load_session", Some(load_params));
-    write_request(&mut stream, &load_request);
+    write_request(&mut socket, &load_request);
 
     let mut saw_loaded = false;
     while !saw_loaded {
-        let line = read_line(&mut reader);
+        let line = read_line(&mut socket);
         match decode_json_line::<JsonRpcMessage>(&line).expect("message decodes") {
             JsonRpcMessage::Response(response) => {
                 assert_eq!(response.id, RpcId::Number(6));
@@ -482,28 +457,23 @@ fn session_operations_emit_session_changed_event() {
         }
     }
 
-    drop(stream);
-    stop_daemon(child, &socket_path, Some(&data_dir));
+    drop(socket);
+    stop_daemon(child, Some(&data_dir));
 }
 
 #[test]
 #[allow(clippy::too_many_lines)]
 fn list_sessions_and_delete_session() {
-    let socket_path = unique_socket_path();
+    let addr = unique_address();
     let data_dir = unique_data_dir();
     let child = start_daemon_with_config(
-        &socket_path,
+        &addr,
         &write_config("provider = 'echo'\nbase_url = ''\napi_key = ''\nmodel = 'echo'"),
         &data_dir,
     );
 
-    let mut stream = connect_with_retry(&socket_path);
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .expect("read timeout is set");
-
-    let mut reader = BufReader::new(stream.try_clone().expect("stream clones"));
-    wait_for_event_type(&mut reader, |kind| {
+    let mut socket = connect_with_retry(&addr);
+    wait_for_event_type(&mut socket, |kind| {
         matches!(kind, RuntimeEventKind::DaemonStarted { .. })
     });
 
@@ -515,11 +485,11 @@ fn list_sessions_and_delete_session() {
     })
     .expect("new session params encode");
     let new_request = JsonRpcRequest::new(7, "new_session", Some(new_params));
-    write_request(&mut stream, &new_request);
+    write_request(&mut socket, &new_request);
 
     let mut created_id: Option<String> = None;
     while created_id.is_none() {
-        let line = read_line(&mut reader);
+        let line = read_line(&mut socket);
         if let JsonRpcMessage::Response(response) =
             decode_json_line::<JsonRpcMessage>(&line).expect("message decodes")
         {
@@ -535,11 +505,11 @@ fn list_sessions_and_delete_session() {
 
     // List sessions.
     let list_request = JsonRpcRequest::new(8, "list_sessions", None);
-    write_request(&mut stream, &list_request);
+    write_request(&mut socket, &list_request);
 
     let mut saw_list = false;
     while !saw_list {
-        let line = read_line(&mut reader);
+        let line = read_line(&mut socket);
         if let JsonRpcMessage::Response(response) =
             decode_json_line::<JsonRpcMessage>(&line).expect("message decodes")
             && response.id == RpcId::Number(8)
@@ -564,11 +534,11 @@ fn list_sessions_and_delete_session() {
     })
     .expect("delete session params encode");
     let delete_request = JsonRpcRequest::new(9, "delete_session", Some(delete_params));
-    write_request(&mut stream, &delete_request);
+    write_request(&mut socket, &delete_request);
 
     let mut saw_deleted = false;
     while !saw_deleted {
-        let line = read_line(&mut reader);
+        let line = read_line(&mut socket);
         match decode_json_line::<JsonRpcMessage>(&line).expect("message decodes") {
             JsonRpcMessage::Response(response) => {
                 assert_eq!(response.id, RpcId::Number(9));
@@ -595,11 +565,11 @@ fn list_sessions_and_delete_session() {
 
     // List again to confirm it is gone.
     let list_request = JsonRpcRequest::new(10, "list_sessions", None);
-    write_request(&mut stream, &list_request);
+    write_request(&mut socket, &list_request);
 
     let mut saw_empty_list = false;
     while !saw_empty_list {
-        let line = read_line(&mut reader);
+        let line = read_line(&mut socket);
         if let JsonRpcMessage::Response(response) =
             decode_json_line::<JsonRpcMessage>(&line).expect("message decodes")
             && response.id == RpcId::Number(10)
@@ -613,29 +583,24 @@ fn list_sessions_and_delete_session() {
         }
     }
 
-    drop(stream);
-    stop_daemon(child, &socket_path, Some(&data_dir));
+    drop(socket);
+    stop_daemon(child, Some(&data_dir));
 }
 
 #[test]
 fn cancel_run_emits_run_cancelled_and_run_finished_cancelled() {
-    let socket_path = unique_socket_path();
+    let addr = unique_address();
     let data_dir = unique_data_dir();
     let child = start_daemon_with_config(
-        &socket_path,
+        &addr,
         &write_config(
             "provider = 'echo'\nbase_url = ''\napi_key = ''\nmodel = 'echo'\necho_chunk_size = 1\necho_delay_ms = 20",
         ),
         &data_dir,
     );
 
-    let mut stream = connect_with_retry(&socket_path);
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .expect("read timeout is set");
-
-    let mut reader = BufReader::new(stream.try_clone().expect("stream clones"));
-    wait_for_event_type(&mut reader, |kind| {
+    let mut socket = connect_with_retry(&addr);
+    wait_for_event_type(&mut socket, |kind| {
         matches!(kind, RuntimeEventKind::DaemonStarted { .. })
     });
 
@@ -646,11 +611,11 @@ fn cancel_run_emits_run_cancelled_and_run_finished_cancelled() {
     })
     .expect("new session params encode");
     let new_request = JsonRpcRequest::new(10, "new_session", Some(new_params));
-    write_request(&mut stream, &new_request);
+    write_request(&mut socket, &new_request);
 
     let mut session_id: Option<String> = None;
     while session_id.is_none() {
-        let line = read_line(&mut reader);
+        let line = read_line(&mut socket);
         if let JsonRpcMessage::Response(response) =
             decode_json_line::<JsonRpcMessage>(&line).expect("message decodes")
         {
@@ -670,24 +635,24 @@ fn cancel_run_emits_run_cancelled_and_run_finished_cancelled() {
     })
     .expect("send params encode");
     let send_request = JsonRpcRequest::new(11, "send_message", Some(send_params));
-    write_request(&mut stream, &send_request);
+    write_request(&mut socket, &send_request);
 
     // Wait until the assistant message has started so the run is active.
-    wait_for_event_type(&mut reader, |kind| {
+    wait_for_event_type(&mut socket, |kind| {
         matches!(kind, RuntimeEventKind::MessageStarted { .. })
     });
 
     let cancel_params =
         serde_json::to_value(CancelRunParams { session_id }).expect("cancel params encode");
     let cancel_request = JsonRpcRequest::new(12, "cancel_run", Some(cancel_params));
-    write_request(&mut stream, &cancel_request);
+    write_request(&mut socket, &cancel_request);
 
     let mut saw_cancel_response = false;
     let mut saw_run_cancelled = false;
     let mut saw_run_finished_cancelled = false;
 
     while !(saw_cancel_response && saw_run_cancelled && saw_run_finished_cancelled) {
-        let line = read_line(&mut reader);
+        let line = read_line(&mut socket);
 
         match decode_json_line::<JsonRpcMessage>(&line).expect("message decodes") {
             JsonRpcMessage::Response(response) => {
@@ -719,16 +684,17 @@ fn cancel_run_emits_run_cancelled_and_run_finished_cancelled() {
         }
     }
 
-    drop(stream);
-    stop_daemon(child, &socket_path, Some(&data_dir));
+    drop(socket);
+    stop_daemon(child, Some(&data_dir));
 }
+
 #[test]
 fn per_session_workspace_resolves_relative_read_file_path() {
-    let socket_path = unique_socket_path();
+    let addr = unique_address();
     let data_dir = unique_data_dir();
     let workspace_dir = unique_workspace_dir();
     let child = start_daemon_with_config(
-        &socket_path,
+        &addr,
         &write_config("provider = 'echo'\nbase_url = ''\napi_key = ''\nmodel = 'echo'"),
         &data_dir,
     );
@@ -736,13 +702,8 @@ fn per_session_workspace_resolves_relative_read_file_path() {
     std::fs::create_dir_all(&workspace_dir).expect("workspace dir creates");
     std::fs::write(workspace_dir.join("main.rs"), "fn main() {}").expect("main.rs writes");
 
-    let mut stream = connect_with_retry(&socket_path);
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .expect("read timeout is set");
-
-    let mut reader = BufReader::new(stream.try_clone().expect("stream clones"));
-    wait_for_event_type(&mut reader, |kind| {
+    let mut socket = connect_with_retry(&addr);
+    wait_for_event_type(&mut socket, |kind| {
         matches!(kind, RuntimeEventKind::DaemonStarted { .. })
     });
 
@@ -751,11 +712,11 @@ fn per_session_workspace_resolves_relative_read_file_path() {
     })
     .expect("new session params encode");
     let new_request = JsonRpcRequest::new(13, "new_session", Some(new_params));
-    write_request(&mut stream, &new_request);
+    write_request(&mut socket, &new_request);
 
     let mut session_id: Option<String> = None;
     while session_id.is_none() {
-        let line = read_line(&mut reader);
+        let line = read_line(&mut socket);
         if let JsonRpcMessage::Response(response) =
             decode_json_line::<JsonRpcMessage>(&line).expect("message decodes")
         {
@@ -775,13 +736,13 @@ fn per_session_workspace_resolves_relative_read_file_path() {
     })
     .expect("send params encode");
     let send_request = JsonRpcRequest::new(14, "send_message", Some(send_params));
-    write_request(&mut stream, &send_request);
+    write_request(&mut socket, &send_request);
 
     let mut saw_tool_finished = false;
     let mut saw_run_finished_success = false;
 
     while !(saw_tool_finished && saw_run_finished_success) {
-        let line = read_line(&mut reader);
+        let line = read_line(&mut socket);
 
         match decode_json_line::<JsonRpcMessage>(&line).expect("message decodes") {
             JsonRpcMessage::Notification(notification) => {
@@ -816,8 +777,8 @@ fn per_session_workspace_resolves_relative_read_file_path() {
         }
     }
 
-    drop(stream);
-    stop_daemon(child, &socket_path, Some(&data_dir));
+    drop(socket);
+    stop_daemon(child, Some(&data_dir));
     let _ = std::fs::remove_dir_all(&workspace_dir);
 }
 
@@ -829,10 +790,10 @@ fn unique_workspace_dir() -> PathBuf {
     ))
 }
 
-fn start_daemon(socket_path: &Path) -> std::process::Child {
+fn start_daemon(addr: &SocketAddr) -> std::process::Child {
     Command::new(env!("CARGO_BIN_EXE_byte-daemon"))
-        .arg("--rpc-socket")
-        .arg(socket_path)
+        .arg("--rpc-websocket")
+        .arg(addr.to_string())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -841,13 +802,13 @@ fn start_daemon(socket_path: &Path) -> std::process::Child {
 }
 
 fn start_daemon_with_config(
-    socket_path: &Path,
+    addr: &SocketAddr,
     config_path: &Path,
     data_dir: &Path,
 ) -> std::process::Child {
     Command::new(env!("CARGO_BIN_EXE_byte-daemon"))
-        .arg("--rpc-socket")
-        .arg(socket_path)
+        .arg("--rpc-websocket")
+        .arg(addr.to_string())
         .env("BYTE_CONFIG_PATH", config_path)
         // Production commonly has no XDG_DATA_HOME; exercise the HOME fallback
         // while still isolating integration-test session files.
@@ -860,56 +821,50 @@ fn start_daemon_with_config(
         .expect("daemon starts")
 }
 
-fn stop_daemon(mut child: std::process::Child, socket_path: &Path, data_dir: Option<&Path>) {
+fn stop_daemon(mut child: std::process::Child, data_dir: Option<&Path>) {
     child.kill().expect("daemon can be killed after test");
     child.wait().expect("daemon exits after kill");
-    let _ = std::fs::remove_file(socket_path);
     if let Some(dir) = data_dir {
         let _ = std::fs::remove_dir_all(dir);
     }
 }
 
-fn connect_with_retry(socket_path: &Path) -> UnixStream {
+fn connect_with_retry(addr: &SocketAddr) -> WebSocket<MaybeTlsStream<TcpStream>> {
     let started = Instant::now();
     loop {
-        match UnixStream::connect(socket_path) {
-            Ok(stream) => return stream,
+        match tungstenite::client::connect(format!("ws://{}/", addr)) {
+            Ok((socket, _)) => return socket,
             Err(error) if started.elapsed() < Duration::from_secs(2) => {
                 std::thread::sleep(Duration::from_millis(20));
                 let _ = error;
             }
-            Err(error) => panic!(
-                "failed to connect to daemon socket {}: {error}",
-                socket_path.display()
-            ),
+            Err(error) => panic!("failed to connect to daemon WebSocket at {addr}: {error}"),
         }
     }
 }
 
-fn write_request(stream: &mut UnixStream, request: &JsonRpcRequest) {
-    stream
-        .write_all(
-            encode_json_line(request)
-                .expect("request encodes")
-                .as_bytes(),
-        )
-        .expect("request is written");
-    stream.flush().expect("request is flushed");
+fn write_request(socket: &mut WebSocket<MaybeTlsStream<TcpStream>>, request: &JsonRpcRequest) {
+    let line = encode_json_line(request).expect("request encodes");
+    socket.send(Message::Text(line.into())).expect("request is sent");
+    socket.flush().expect("request is flushed");
 }
 
-fn read_line(reader: &mut BufReader<UnixStream>) -> String {
-    let mut line = String::new();
-    reader.read_line(&mut line).expect("message is readable");
-    assert!(!line.is_empty(), "daemon closed the socket unexpectedly");
-    line
+fn read_line(socket: &mut WebSocket<MaybeTlsStream<TcpStream>>) -> String {
+    match socket.read().expect("message is readable") {
+        Message::Text(text) => text.to_string(),
+        Message::Close(_) => {
+            panic!("daemon closed the WebSocket unexpectedly")
+        }
+        other => panic!("unexpected WebSocket message: {other:?}"),
+    }
 }
 
 fn wait_for_event_type(
-    reader: &mut BufReader<UnixStream>,
+    socket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
     predicate: impl Fn(RuntimeEventKind) -> bool,
 ) {
     loop {
-        let line = read_line(reader);
+        let line = read_line(socket);
         if let JsonRpcMessage::Notification(notification) =
             decode_json_line::<JsonRpcMessage>(&line).expect("message decodes")
         {
@@ -924,12 +879,15 @@ fn wait_for_event_type(
     }
 }
 
-fn unique_socket_path() -> PathBuf {
-    std::env::temp_dir().join(format!(
-        "byte-daemon-test-{}-{}.sock",
-        std::process::id(),
-        unique_suffix()
-    ))
+fn unique_address() -> SocketAddr {
+    format!("127.0.0.1:{}", unique_port()).parse().unwrap()
+}
+
+fn unique_port() -> u16 {
+    // Use a high ephemeral port derived from the process id and timestamp to
+    // avoid collisions between concurrent tests.
+    let base = (std::process::id() as u128 + unique_suffix()) % 16384;
+    49152 + base as u16
 }
 
 fn unique_config_path() -> PathBuf {
