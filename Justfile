@@ -4,7 +4,7 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 verify target="all":
     #!/usr/bin/env bash
     set -euo pipefail
-    case "{{target}}" in
+    case "{{ target }}" in
       all)
         just _repo-hygiene
         just _design-md-check
@@ -33,7 +33,7 @@ verify target="all":
         just _verify-audit
         ;;
       *)
-        echo "unknown verify target: {{target}}" >&2
+        echo "unknown verify target: {{ target }}" >&2
         echo "usage: just verify [all|repo|design-md|workflow|rust|desktop|audit]" >&2
         exit 2
         ;;
@@ -174,10 +174,16 @@ _desktop-fmt-check: _desktop-install
 _verify-audit: _desktop-install
     cd apps/desktop && pnpm audit --audit-level high
 
-# Start the desktop app in development mode.
-dev:
-    cd apps/desktop && pnpm run tauri:dev
-
 # Build the local daemon used by the desktop app.
 build-daemon:
     cargo build -p byte-daemon
+
+# Start the local daemon on a loopback WebSocket address (default: 127.0.0.1:8787).
+start-daemon addr="127.0.0.1:8787": build-daemon
+    ./target/debug/byte-daemon --rpc-websocket {{ addr }}
+
+# Start the desktop app in development mode.
+# NOTE: start the daemon first in another terminal with `just start-daemon`.
+start-desktop:
+    @echo "Reminder: run \`just start-daemon\` in another terminal first."
+    cd apps/desktop && pnpm run tauri:dev
