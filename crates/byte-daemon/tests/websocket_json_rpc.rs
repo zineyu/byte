@@ -12,8 +12,8 @@ use byte_protocol::{
     ListSessionsResult, LoadSessionParams, LoadSessionResult, NewSessionParams, NewSessionResult,
     RpcId, RunStatus, RuntimeEventKind, SendMessageParams, decode_json_line, encode_json_line,
 };
-use tungstenite::{Message, WebSocket};
 use tungstenite::stream::MaybeTlsStream;
+use tungstenite::{Message, WebSocket};
 
 fn message_text(message: &byte_protocol::Message) -> &str {
     match &message.body.0[..] {
@@ -832,7 +832,7 @@ fn stop_daemon(mut child: std::process::Child, data_dir: Option<&Path>) {
 fn connect_with_retry(addr: &SocketAddr) -> WebSocket<MaybeTlsStream<TcpStream>> {
     let started = Instant::now();
     loop {
-        match tungstenite::client::connect(format!("ws://{}/", addr)) {
+        match tungstenite::client::connect(format!("ws://{addr}/")) {
             Ok((socket, _)) => return socket,
             Err(error) if started.elapsed() < Duration::from_secs(2) => {
                 std::thread::sleep(Duration::from_millis(20));
@@ -845,7 +845,9 @@ fn connect_with_retry(addr: &SocketAddr) -> WebSocket<MaybeTlsStream<TcpStream>>
 
 fn write_request(socket: &mut WebSocket<MaybeTlsStream<TcpStream>>, request: &JsonRpcRequest) {
     let line = encode_json_line(request).expect("request encodes");
-    socket.send(Message::Text(line.into())).expect("request is sent");
+    socket
+        .send(Message::Text(line.into()))
+        .expect("request is sent");
     socket.flush().expect("request is flushed");
 }
 
@@ -886,7 +888,7 @@ fn unique_address() -> SocketAddr {
 fn unique_port() -> u16 {
     // Use a high ephemeral port derived from the process id and timestamp to
     // avoid collisions between concurrent tests.
-    let base = (std::process::id() as u128 + unique_suffix()) % 16384;
+    let base = (u128::from(std::process::id()) + unique_suffix()) % 16384;
     49152 + base as u16
 }
 

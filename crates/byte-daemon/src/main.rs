@@ -42,14 +42,16 @@ async fn main() -> anyhow::Result<()> {
 }
 
 /// Parse the `--rpc-websocket <addr>` argument from the command line.
-fn parse_rpc_websocket_arg(args: impl IntoIterator<Item = String>) -> anyhow::Result<DaemonAddress> {
+fn parse_rpc_websocket_arg(
+    args: impl IntoIterator<Item = String>,
+) -> anyhow::Result<DaemonAddress> {
     let mut args = args.into_iter();
     let _program = args.next();
 
     match (args.next().as_deref(), args.next(), args.next()) {
-        (Some("--rpc-websocket"), Some(addr), None) => addr.parse().map_err(|error| {
-            anyhow::anyhow!("invalid --rpc-websocket address '{addr}': {error}")
-        }),
+        (Some("--rpc-websocket"), Some(addr), None) => addr
+            .parse()
+            .map_err(|error| anyhow::anyhow!("invalid --rpc-websocket address '{addr}': {error}")),
         _ => bail!("usage: byte-daemon --rpc-websocket <addr>"),
     }
 }
@@ -148,11 +150,7 @@ async fn handle_connection(
     let writer_task = tokio::spawn(async move {
         while let Some(line) = output_rx.recv().await {
             trace!(%line, "writing line to websocket");
-            if ws_tx
-                .send(WsMessage::Text(line.into()))
-                .await
-                .is_err()
-            {
+            if ws_tx.send(WsMessage::Text(line.into())).await.is_err() {
                 break;
             }
         }
@@ -207,14 +205,14 @@ async fn handle_connection(
                 debug!(method = %request.method, id = ?request.id, "received JSON-RPC request");
 
                 let response = handle_request(&rpc_context, request).await;
-                let response_line = encode_json_line(&response)
-                    .context("failed to encode JSON-RPC response")?;
+                let response_line =
+                    encode_json_line(&response).context("failed to encode JSON-RPC response")?;
                 if output_tx.send(response_line).is_err() {
                     break;
                 }
             }
-            Ok(WsMessage::Close(_)) | Ok(WsMessage::Ping(_)) | Ok(WsMessage::Pong(_)) => {}
-            Ok(WsMessage::Frame(_)) | Ok(WsMessage::Binary(_)) => {
+            Ok(WsMessage::Close(_) | WsMessage::Ping(_) | WsMessage::Pong(_)) => {}
+            Ok(WsMessage::Frame(_) | WsMessage::Binary(_)) => {
                 warn!("received unsupported WebSocket message type");
             }
             Err(error) => {

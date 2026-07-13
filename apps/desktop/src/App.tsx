@@ -19,6 +19,10 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { ToolCallCard } from "./ToolCallCard";
 import {
+  ConnectionDialog,
+  type ConnectionDialogMode,
+} from "./ConnectionDialog";
+import {
   useByteStore,
   buildTimelineItems,
   type ChatRunState,
@@ -61,6 +65,13 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showRuntimeEvents, setShowRuntimeEvents] = useState(false);
   const [sidebarMode, setSidebarMode] = useState<"chat" | "work">("chat");
+  const [showConnectionDialog, setShowConnectionDialog] = useState(false);
+  const [connectionDialogMode, setConnectionDialogMode] =
+    useState<ConnectionDialogMode>("initial");
+  const [daemonAddressInput, setDaemonAddressInput] = useState("");
+  const [savedDaemonAddress, setSavedDaemonAddress] = useState<string | null>(
+    null,
+  );
   const initialLoadDoneRef = useRef(false);
 
   const {
@@ -119,6 +130,27 @@ export default function App() {
     }
   }, [setSessions, setConnection]);
 
+  const handleConnectionConfigured = useCallback(
+    (view: DaemonConnectionView) => {
+      setConnection(view, view.connected ? "ready" : "error");
+      if (view.connected) {
+        setSavedDaemonAddress(daemonAddressInput);
+        setShowConnectionDialog(false);
+        void listSessions();
+      }
+    },
+    [setConnection, listSessions, daemonAddressInput],
+  );
+
+  const openConnectionDialog = useCallback(
+    (mode: ConnectionDialogMode) => () => {
+      setConnectionDialogMode(mode);
+      setDaemonAddressInput(savedDaemonAddress ?? "");
+      setShowConnectionDialog(true);
+    },
+    [savedDaemonAddress],
+  );
+
   const loadSession = useCallback(
     async (targetSessionId: string) => {
       try {
@@ -155,11 +187,35 @@ export default function App() {
 
   useEffect(() => {
     const setup = async () => {
-      await refreshDaemonState();
-      await listSessions();
+      setLoadState("loading");
+      try {
+        const savedAddress = await invoke<string | null>("get_daemon_address");
+        if (!savedAddress) {
+          setConnectionDialogMode("initial");
+          setDaemonAddressInput("");
+          setSavedDaemonAddress(null);
+          setShowConnectionDialog(true);
+          setLoadState("error");
+          return;
+        }
+        setDaemonAddressInput(savedAddress);
+        setSavedDaemonAddress(savedAddress);
+        await refreshDaemonState();
+        await listSessions();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setConnection(
+          {
+            connected: false,
+            state: null,
+            error: message,
+          },
+          "error",
+        );
+      }
     };
     void setup();
-  }, [refreshDaemonState, listSessions]);
+  }, [refreshDaemonState, listSessions, setConnection, setLoadState]);
 
   useEffect(() => {
     if (initialLoadDoneRef.current) return;
@@ -459,6 +515,15 @@ export default function App() {
               className={`status-dot ${isConnected ? "online" : "offline"}`}
             />
             <span>{isConnected ? "已连接" : "未连接"}</span>
+            {!isConnected && (
+              <button
+                type="button"
+                className="connection-status-button"
+                onClick={openConnectionDialog("initial")}
+              >
+                配置地址
+              </button>
+            )}
           </div>
           {connection.state && (
             <span className="version-meta">
@@ -476,6 +541,14 @@ export default function App() {
           </button>
         </div>
       </aside>
+
+      <ConnectionDialog
+        open={showConnectionDialog}
+        mode={connectionDialogMode}
+        initialAddress={daemonAddressInput}
+        onClose={() => setShowConnectionDialog(false)}
+        onConnected={handleConnectionConfigured}
+      />
 
       <section className="main-area">
         {messages.length === 0 ? (
@@ -620,6 +693,21 @@ export default function App() {
             {showRuntimeEvents && <RuntimeEventsPanel events={events} />}
             {showSettings && (
               <div className="drawer-panel">
+                <div className="settings-section">
+                  <h4 className="settings-section-title">Daemon 连接地址</h4>
+                  <div
+                    className={`settings-value ${savedDaemonAddress ? "" : "settings-value--empty"}`}
+                  >
+                    {savedDaemonAddress ?? "未配置"}
+                  </div>
+                  <button
+                    type="button"
+                    className="settings-button"
+                    onClick={openConnectionDialog("settings")}
+                  >
+                    {savedDaemonAddress ? "修改地址" : "配置地址"}
+                  </button>
+                </div>
                 <p className="settings-placeholder">
                   模型与连接设置由本地配置文件管理：
                   <br />

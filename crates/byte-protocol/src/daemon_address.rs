@@ -24,6 +24,7 @@ pub enum DaemonAddressError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct DaemonAddress {
+    /// The validated loopback socket address.
     inner: SocketAddr,
 }
 
@@ -107,7 +108,10 @@ mod tests {
         assert!("127.0.0.1:8787".parse::<DaemonAddress>().is_ok());
         assert!("localhost:8787".parse::<DaemonAddress>().is_ok());
         assert_eq!(
-            "localhost:8787".parse::<DaemonAddress>().unwrap().to_string(),
+            "localhost:8787"
+                .parse::<DaemonAddress>()
+                .unwrap()
+                .to_string(),
             "127.0.0.1:8787"
         );
     }

@@ -6,10 +6,10 @@
 #![allow(clippy::unreachable)]
 
 use byte_protocol::{
-    DaemonAddress, DaemonConnectionView, DaemonState, DeleteSessionParams, DeleteSessionResult,
-    JsonRpcMessage, JsonRpcRequest, JsonRpcResponse, ListSessionsResult, LoadSessionResult,
-    NewSessionParams, NewSessionResult, RpcId, RuntimeEvent, RuntimeEventKind, SessionSummary,
-    SessionView, RUNTIME_EVENT_METHOD, decode_json_line, encode_json_line,
+    decode_json_line, encode_json_line, DaemonAddress, DaemonConnectionView, DaemonState,
+    DeleteSessionParams, DeleteSessionResult, JsonRpcMessage, JsonRpcRequest, JsonRpcResponse,
+    ListSessionsResult, LoadSessionResult, NewSessionParams, NewSessionResult, RpcId, RuntimeEvent,
+    RuntimeEventKind, SessionSummary, SessionView, RUNTIME_EVENT_METHOD,
 };
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -50,10 +50,7 @@ impl DaemonSupervisor {
     }
 
     /// Ensures a daemon client is connected, returning a mutable reference to it.
-    async fn ensure_client(
-        &mut self,
-        app_handle: AppHandle,
-    ) -> Result<&mut DaemonClient, String> {
+    async fn ensure_client(&mut self, app_handle: AppHandle) -> Result<&mut DaemonClient, String> {
         if self.client.is_none() {
             let address = self.address.ok_or_else(|| {
                 "未配置 daemon 地址。请在设置中输入本地 daemon WebSocket 地址，例如 127.0.0.1:8787。"
@@ -80,10 +77,7 @@ impl DaemonSupervisor {
     }
 
     /// Returns the current daemon connection state, connecting if a saved address exists.
-    async fn get_state(
-        &mut self,
-        app_handle: AppHandle,
-    ) -> Result<DaemonConnectionView, String> {
+    async fn get_state(&mut self, app_handle: AppHandle) -> Result<DaemonConnectionView, String> {
         match self.ensure_client(app_handle).await {
             Ok(client) => match client.get_state().await {
                 Ok(state) => {
@@ -144,11 +138,7 @@ impl DaemonClient {
 
         let writer_task = tokio::spawn(async move {
             while let Some(line) = writer_rx.recv().await {
-                if ws_tx
-                    .send(WsMessage::Text(line.into()))
-                    .await
-                    .is_err()
-                {
+                if ws_tx.send(WsMessage::Text(line.into())).await.is_err() {
                     break;
                 }
             }
@@ -161,18 +151,11 @@ impl DaemonClient {
             loop {
                 match ws_rx.next().await {
                     Some(Ok(WsMessage::Text(text))) => {
-                        handle_daemon_message(
-                            &reader_app_handle,
-                            &reader_pending,
-                            text.as_str(),
-                        )
-                        .await;
+                        handle_daemon_message(&reader_app_handle, &reader_pending, text.as_str())
+                            .await;
                     }
-                    Some(Ok(WsMessage::Close(_)))
-                    | Some(Ok(WsMessage::Ping(_)))
-                    | Some(Ok(WsMessage::Pong(_))) => {}
-                    Some(Ok(WsMessage::Binary(_)))
-                    | Some(Ok(WsMessage::Frame(_))) => {
+                    Some(Ok(WsMessage::Close(_) | WsMessage::Ping(_) | WsMessage::Pong(_))) => {}
+                    Some(Ok(WsMessage::Binary(_) | WsMessage::Frame(_))) => {
                         warn!("received unsupported WebSocket message type from daemon");
                     }
                     Some(Err(error)) => {
@@ -203,19 +186,16 @@ impl DaemonClient {
     }
 
     /// Fetches the daemon's current runtime state.
-    async fn get_state(&mut self,
-    ) -> Result<DaemonState, String> {
+    async fn get_state(&mut self) -> Result<DaemonState, String> {
         let response = self.request("get_state", None).await?;
         let result = response
             .result
             .ok_or_else(|| "daemon get_state 响应未包含 result".to_owned())?;
-        serde_json::from_value(result)
-            .map_err(|error| format!("无法解析 daemon 状态: {error}"))
+        serde_json::from_value(result).map_err(|error| format!("无法解析 daemon 状态: {error}"))
     }
 
     /// Creates a new session in `workspace` and returns its generated session id.
-    async fn new_session(&mut self, workspace: String
-    ) -> Result<String, String> {
+    async fn new_session(&mut self, workspace: String) -> Result<String, String> {
         let params = serde_json::to_value(NewSessionParams { workspace })
             .map_err(|error| format!("无法编码 new_session 参数: {error}"))?;
         let response = self.request("new_session", Some(params)).await?;
@@ -228,8 +208,7 @@ impl DaemonClient {
     }
 
     /// Lists all sessions known to the daemon.
-    async fn list_sessions(&mut self,
-    ) -> Result<Vec<SessionSummary>, String> {
+    async fn list_sessions(&mut self) -> Result<Vec<SessionSummary>, String> {
         let response = self.request("list_sessions", None).await?;
         let result = response
             .result
@@ -240,8 +219,7 @@ impl DaemonClient {
     }
 
     /// Deletes the session with the given id.
-    async fn delete_session(&mut self, session_id: String
-    ) -> Result<String, String> {
+    async fn delete_session(&mut self, session_id: String) -> Result<String, String> {
         let params = serde_json::to_value(DeleteSessionParams { session_id })
             .map_err(|error| format!("无法编码 delete_session 参数: {error}"))?;
         let response = self.request("delete_session", Some(params)).await?;
@@ -254,8 +232,7 @@ impl DaemonClient {
     }
 
     /// Loads the full view for the session with the given id.
-    async fn load_session(&mut self, session_id: String
-    ) -> Result<SessionView, String> {
+    async fn load_session(&mut self, session_id: String) -> Result<SessionView, String> {
         let params = serde_json::to_value(byte_protocol::LoadSessionParams { session_id })
             .map_err(|error| format!("无法编码 load_session 参数: {error}"))?;
         let response = self.request("load_session", Some(params)).await?;
@@ -292,23 +269,16 @@ impl DaemonClient {
         let response = match tokio::time::timeout(Duration::from_secs(5), response_rx).await {
             Ok(Ok(response)) => response,
             Ok(Err(_)) => {
-                return Err(format!(
-                    "daemon 响应通道已关闭，请求 id: {request_id:?}"
-                ));
+                return Err(format!("daemon 响应通道已关闭，请求 id: {request_id:?}"));
             }
             Err(_) => {
                 let _ = self.pending.lock().await.remove(&request_id);
-                return Err(format!(
-                    "daemon 未在超时时间内响应请求 {request_id:?}"
-                ));
+                return Err(format!("daemon 未在超时时间内响应请求 {request_id:?}"));
             }
         };
 
         if let Some(error) = response.error {
-            return Err(format!(
-                "daemon 返回错误 {}: {}",
-                error.code, error.message
-            ));
+            return Err(format!("daemon 返回错误 {}: {}", error.code, error.message));
         }
 
         Ok(response)
@@ -370,10 +340,7 @@ async fn handle_daemon_message(
                 "daemon-event",
                 RuntimeEvent {
                     sequence: 0,
-                    kind: RuntimeEventKind::error(
-                        None,
-                        format!("无法解析 daemon RPC 帧: {error}"),
-                    ),
+                    kind: RuntimeEventKind::error(None, format!("无法解析 daemon RPC 帧: {error}")),
                 },
             );
         }
@@ -389,12 +356,13 @@ struct DaemonConfigFile {
 
 /// Resolve the path to `~/.config/byte/daemon.toml`.
 fn resolve_daemon_config_path() -> PathBuf {
-    let config_dir = std::env::var("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
+    let config_dir = std::env::var("XDG_CONFIG_HOME").map_or_else(
+        |_| {
             let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_owned());
             PathBuf::from(home).join(".config")
-        });
+        },
+        PathBuf::from,
+    );
     config_dir.join("byte").join("daemon.toml")
 }
 
@@ -439,7 +407,9 @@ async fn set_daemon_address(
     app_handle: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<DaemonConnectionView, String> {
-    let parsed = address.parse::<DaemonAddress>().map_err(|error| error.to_string())?;
+    let parsed = address
+        .parse::<DaemonAddress>()
+        .map_err(|error| error.to_string())?;
     let mut supervisor = state.daemon.lock().await;
     supervisor.set_address(app_handle, parsed).await
 }
