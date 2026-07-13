@@ -1,5 +1,5 @@
 # Use Unix Socket JSON-RPC between the desktop shell and daemon
 
-Status: Accepted. Supersedes `docs/adr/0002-use-stdio-json-rpc-between-shell-and-daemon.md`.
+Status: Superseded by `docs/adr/0014-manual-start-daemon-websocket-json-rpc.md`.
 
-Byte Agent will connect the Tauri desktop shell to the local Agent Runtime daemon using LF-delimited JSON-RPC over a Unix Domain Socket. The desktop shell still owns the daemon process lifecycle and passes the socket path at launch, but request/response frames and runtime event notifications now share one local IPC stream instead of stdio. This keeps the transport local-only, avoids exposing a TCP port, allows stderr/stdout to remain operational diagnostics, and gives the shell a single reader task that can route responses by `RpcId` while forwarding `runtime_event` JSON-RPC notifications into React as Tauri `daemon-event` events. Windows named-pipe support is intentionally deferred until Windows packaging becomes a concrete target.
+Byte Agent will connect the Tauri desktop shell to the local Agent Runtime daemon using **JSON-RPC over a WebSocket**. The daemon is started manually by the user and listens on a loopback address supplied by `--rpc-websocket`. Each WebSocket text frame carries exactly one JSON-RPC message. The desktop shell persists the address in `~/.config/byte/daemon.toml` and reconnects automatically. The shell validates that the address is local (`127.0.0.1` or `localhost`). See `docs/adr/0014-manual-start-daemon-websocket-json-rpc.md` for the current design.

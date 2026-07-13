@@ -16,8 +16,9 @@ Byte Agent MVP is a desktop coding agent for a local code workspace. It uses a T
 
 ## 3. Key decisions
 
-- Agent runtime runs as an independent local Rust daemon, launched by the Tauri shell. See `docs/adr/0001-use-local-daemon-for-agent-runtime.md`.
-- Tauri and daemon communicate using LF-delimited JSON-RPC over a Unix Domain Socket. See `docs/adr/0008-use-unix-socket-json-rpc-between-shell-and-daemon.md`.
+- Agent runtime runs as an independent local Rust daemon, **started manually by the user**; the Tauri shell is only a client. See `docs/adr/0014-manual-start-daemon-websocket-json-rpc.md`.
+- Tauri and daemon communicate using **JSON-RPC over a WebSocket** on a loopback address, with one WebSocket text frame per JSON-RPC message. See `docs/adr/0014-manual-start-daemon-websocket-json-rpc.md`.
+- The desktop shell persists the daemon WebSocket address in `~/.config/byte/daemon.toml` and reconnects automatically; on first launch or reconnect failure it shows a connection dialog.
 - Runtime progress is event-driven, but persisted state is not full event sourcing. See `docs/adr/0003-use-runtime-event-stream-without-event-sourcing.md`.
 - MVP runs in unrestricted local agent mode. See `docs/adr/0004-use-unrestricted-local-agent-mode-for-mvp.md`.
 - Sessions are JSONL trees with `id` / `parent_id`. See `docs/adr/0005-store-sessions-as-jsonl-trees.md`.
@@ -29,14 +30,14 @@ Byte Agent MVP is a desktop coding agent for a local code workspace. It uses a T
 ```text
 React UI
   │
-  │ Tauri command bridge: start/stop daemon, Unix socket JSONL transport
+  │ Tauri command bridge: connect/reconnect, get/set daemon address
   │ Tauri event bridge: daemon-event notifications
   ▼
 Tauri Desktop Shell
   │
-  │ LF-delimited JSON-RPC over Unix Domain Socket
+  │ JSON-RPC over WebSocket (one JSON-RPC message per text frame)
 Rust Agent Daemon
-  ├─ RpcServer
+  ├─ WebSocket RpcServer
   ├─ SessionRunner
   ├─ RuntimeEventBus
   ├─ LlmContextBuilder
@@ -210,7 +211,7 @@ Events drive the React store reducer. Persisted session entries remain the sourc
 
 ## 8. RPC command surface
 
-MVP daemon commands:
+MVP daemon commands (over WebSocket JSON-RPC):
 
 ```text
 open_workspace
@@ -223,7 +224,7 @@ get_state
 set_model
 ```
 
-Responses and runtime events share the local Unix socket as LF-delimited JSON-RPC frames. Commands use request/response objects correlated by `RpcId`; runtime events are JSON-RPC notifications with method `runtime_event`, which Tauri forwards to React as `daemon-event`.
+Responses are JSON-RPC response objects correlated by `RpcId`; runtime events are JSON-RPC notifications with method `runtime_event`, which Tauri forwards to React as `daemon-event`.
 
 ## 9. Session storage
 
@@ -326,11 +327,11 @@ Keep `ConfigStore` and `SecretStore` separate so plaintext secrets can later mov
 
 ## 14. Crash recovery
 
-Tauri owns the daemon child process. If it exits:
+The daemon is a long-lived local service. If the desktop app loses its WebSocket connection:
 
 1. UI shows daemon disconnected state.
-2. Developer can restart daemon.
-3. Tauri reloads the last workspace/session.
+2. User can restart the daemon manually and reconnect, or enter a new address in the connection dialog.
+3. Tauri reloads the last workspace/session once reconnected.
 4. Daemon reconstructs `SessionView` from JSONL.
 5. Any active run is marked `interrupted`.
 

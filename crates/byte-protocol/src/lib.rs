@@ -7,12 +7,19 @@ use std::path::PathBuf;
 /// JSON-RPC protocol version.
 pub const JSON_RPC_VERSION: &str = "2.0";
 /// Wire format version supported by this crate.
-pub const PROTOCOL_VERSION: u16 = 7;
+pub const PROTOCOL_VERSION: u16 = 8;
+
 /// JSON-RPC method name used for runtime event notifications.
 pub const RUNTIME_EVENT_METHOD: &str = "runtime_event";
 
+/// Daemon WebSocket address discovery and validation.
+pub mod daemon_address;
+/// Re-exported daemon address types.
+pub use daemon_address::{DaemonAddress, DaemonAddressError};
+
 /// Session persistence and view types.
 pub mod session;
+
 /// Re-exported session request/result and view types.
 pub use session::{
     BlockDelta, DeleteSessionParams, DeleteSessionResult, ListSessionsResult, LoadSessionParams,
@@ -740,6 +747,12 @@ pub enum ProtocolError {
     Serialize(#[from] serde_json::Error),
 }
 
+/// Encode a JSON value as a single LF-delimited line.
+///
+/// When the transport is WebSocket, one JSON-RPC message is sent as one text
+/// frame; the trailing newline is kept so the same payload can also be parsed
+/// by line-oriented readers and tests.
+///
 /// # Errors
 ///
 /// Returns an error if `message` cannot be serialized to JSON.
