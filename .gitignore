@@ -11,6 +11,11 @@ node_modules/
 # direnv
 .direnv/
 
+# devenv
+.devenv*
+devenv.local.nix
+devenv.local.yaml
+
 # OS/editor
 .DS_Store
 *.swp

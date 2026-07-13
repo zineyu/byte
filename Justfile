@@ -143,11 +143,18 @@ _desktop-install:
     #!/usr/bin/env bash
     set -euo pipefail
     cd apps/desktop
-    if ! command -v pnpm >/dev/null 2>&1; then
-      corepack enable
-      corepack prepare pnpm@latest --activate
+    if command -v pnpm >/dev/null 2>&1; then
+      pnpm install --frozen-lockfile
+    elif command -v corepack >/dev/null 2>&1; then
+      # In read-only Nix environments, corepack enable/prepare --activate fails
+      # because it tries to write into the Node.js installation directory. Use
+      # corepack pnpm directly instead; it respects the packageManager field
+      # and caches pnpm in a writable location.
+      corepack pnpm install --frozen-lockfile
+    else
+      echo "pnpm not found and corepack is unavailable; please install pnpm" >&2
+      exit 1
     fi
-    pnpm install --frozen-lockfile
 
 _verify-desktop: _desktop-fmt-check
     #!/usr/bin/env bash
@@ -184,6 +191,6 @@ start-daemon addr="127.0.0.1:8787": build-daemon
 
 # Start the desktop app in development mode.
 # NOTE: start the daemon first in another terminal with `just start-daemon`.
-start-desktop:
+start-desktop: _desktop-install
     @echo "Reminder: run \`just start-daemon\` in another terminal first."
     cd apps/desktop && pnpm run tauri:dev

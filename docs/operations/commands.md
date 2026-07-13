@@ -2,13 +2,16 @@
 
 Common commands for building, testing, and running Byte Agent.
 
-## Nix + direnv development environment
+## Nix + direnv + devenv development environment
 
-The repository provides a `flake.nix` with all Rust, Node.js, and Tauri system dependencies. Enter the shell with `nix develop`, or use `direnv` to load it automatically when entering the directory.
+The repository provides a `devenv.nix` with all Rust, Node.js, and Tauri system dependencies. Enter the shell with `devenv shell`, or use `direnv` to load it automatically when entering the directory.
 
 ```bash
-# First time only: allow direnv to load the flake
+# First time only: allow direnv to load the devenv
 direnv allow
+
+# Or enter the shell manually
+devenv shell
 
 # Verify the environment
 rustc --version
@@ -18,7 +21,13 @@ pnpm --version
 just --version
 ```
 
-The flake pins Node.js 22, pnpm 10.33.0, the latest stable Rust toolchain (with `rustfmt`, `clippy`, and `rust-src`), and the Linux GTK/WebKitGTK libraries required by Tauri. It also includes `just`, `ruby`, `git`, and `jj` for the local workflow.
+The devenv pins Node.js 22, pnpm 10.33.0 (via corepack), the latest stable Rust toolchain (with `rustfmt`, `clippy`, and `rust-src`), and the Linux GTK/WebKitGTK libraries required by Tauri. It also includes `just`, `ruby`, `git`, and `jj` for the local workflow.
+
+If the `devenv.lock` is missing or inputs need updating, run:
+
+```bash
+devenv update
+```
 
 Once inside the dev shell, run the same `just` commands documented below.
 
