@@ -320,12 +320,16 @@ name = "byte-desktop"
 version = "0.1.0"
 dependencies = [
  "byte-protocol",
+ "futures",
  "serde",
  "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
  "tokio",
+ "tokio-tungstenite",
+ "toml 0.8.2",
+ "tracing",
 ]
 
 [[package]]

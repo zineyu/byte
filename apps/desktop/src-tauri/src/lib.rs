@@ -1,60 +1,66 @@
 //! Byte Agent Tauri desktop application.
 //!
-//! Manages the local daemon process and exposes JSON-RPC backed commands to the
-//! frontend through Tauri's invoke handler.
+//! Connects to a manually-started local daemon over WebSocket JSON-RPC and
+//! exposes commands to the React frontend.
 #![deny(rustdoc::broken_intra_doc_links)]
 #![allow(clippy::unreachable)]
 
-use std::collections::HashMap;
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
-use std::process::Stdio;
-use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
 use byte_protocol::{
-    decode_json_line, encode_json_line, DaemonConnectionView, DaemonState, DeleteSessionParams,
-    DeleteSessionResult, JsonRpcMessage, JsonRpcRequest, JsonRpcResponse, ListSessionsResult,
-    LoadSessionResult, NewSessionParams, NewSessionResult, RpcId, RuntimeEvent, RuntimeEventKind,
-    SessionSummary, SessionView, RUNTIME_EVENT_METHOD,
+    DaemonAddress, DaemonConnectionView, DaemonState, DeleteSessionParams, DeleteSessionResult,
+    JsonRpcMessage, JsonRpcRequest, JsonRpcResponse, ListSessionsResult, LoadSessionResult,
+    NewSessionParams, NewSessionResult, RpcId, RuntimeEvent, RuntimeEventKind, SessionSummary,
+    SessionView, RUNTIME_EVENT_METHOD, decode_json_line, encode_json_line,
 };
+use futures::{SinkExt, StreamExt};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-#[cfg(unix)]
-use tokio::net::UnixStream;
-use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::task::JoinHandle;
-use tokio::time::sleep;
+use tokio::time::Duration;
+use tokio_tungstenite::tungstenite::Message as WsMessage;
+use tracing::warn;
 
 /// Shared application state managed by Tauri.
 struct AppState {
-    /// Supervisor that owns the daemon process and reconnects on demand.
+    /// Supervisor that maintains the daemon connection and reconnects on demand.
     daemon: Mutex<DaemonSupervisor>,
 }
 
-/// Lifecycle manager for the local daemon process.
+/// Lifecycle manager for the daemon WebSocket connection.
 struct DaemonSupervisor {
-    /// Active daemon client, if the daemon is currently running.
+    /// Active daemon client, if connected.
     client: Option<DaemonClient>,
-    /// Most recent error encountered when starting or talking to the daemon.
+    /// Most recent error encountered when connecting to the daemon.
     last_error: Option<String>,
+    /// Persisted daemon address, if any.
+    address: Option<DaemonAddress>,
 }
 
 impl DaemonSupervisor {
-    /// Creates a new supervisor with no running daemon.
-    const fn new() -> Self {
+    /// Creates a new supervisor with no connection and loads the saved address.
+    fn new() -> Self {
         Self {
             client: None,
             last_error: None,
+            address: load_daemon_address().ok().flatten(),
         }
     }
 
-    /// Ensures a daemon client is running, returning a mutable reference to it.
-    async fn ensure_client(&mut self, app_handle: AppHandle) -> Result<&mut DaemonClient, String> {
+    /// Ensures a daemon client is connected, returning a mutable reference to it.
+    async fn ensure_client(
+        &mut self,
+        app_handle: AppHandle,
+    ) -> Result<&mut DaemonClient, String> {
         if self.client.is_none() {
-            match DaemonClient::spawn(app_handle).await {
+            let address = self.address.ok_or_else(|| {
+                "未配置 daemon 地址。请在设置中输入本地 daemon WebSocket 地址，例如 127.0.0.1:8787。"
+                    .to_owned()
+            })?;
+
+            match DaemonClient::connect(address, app_handle).await {
                 Ok(client) => {
                     self.client = Some(client);
                     self.last_error = None;
@@ -69,111 +75,196 @@ impl DaemonSupervisor {
         self.client.as_mut().ok_or_else(|| {
             self.last_error
                 .clone()
-                .unwrap_or_else(|| "daemon is not running".to_owned())
+                .unwrap_or_else(|| "daemon 未连接".to_owned())
         })
     }
 
-    /// Returns the current daemon connection state, starting it if necessary.
-    async fn get_state(&mut self, app_handle: AppHandle) -> DaemonConnectionView {
+    /// Returns the current daemon connection state, connecting if a saved address exists.
+    async fn get_state(
+        &mut self,
+        app_handle: AppHandle,
+    ) -> Result<DaemonConnectionView, String> {
         match self.ensure_client(app_handle).await {
             Ok(client) => match client.get_state().await {
                 Ok(state) => {
                     self.last_error = None;
-                    DaemonConnectionView::connected(state)
+                    Ok(DaemonConnectionView::connected(state))
                 }
                 Err(error) => {
                     self.client = None;
                     self.last_error = Some(error.clone());
-                    DaemonConnectionView::disconnected(error)
+                    Ok(DaemonConnectionView::disconnected(error))
                 }
             },
-            Err(error) => DaemonConnectionView::disconnected(error),
+            Err(error) => Ok(DaemonConnectionView::disconnected(error)),
         }
+    }
+
+    /// Sets the daemon address, validates it, persists it, and connects.
+    async fn set_address(
+        &mut self,
+        app_handle: AppHandle,
+        address: DaemonAddress,
+    ) -> Result<DaemonConnectionView, String> {
+        self.address = Some(address);
+        if let Err(error) = save_daemon_address(address) {
+            return Err(format!("保存 daemon 地址失败: {error}"));
+        }
+        self.client = None;
+        self.get_state(app_handle).await
     }
 }
 
-/// Connection to a running daemon process over a local socket.
+/// Connection to a running daemon over a WebSocket.
 struct DaemonClient {
-    /// Child process handle for the daemon executable.
-    child: Child,
-    /// Temporary directory holding the daemon's RPC socket.
-    socket_dir: PathBuf,
-    /// Channel for sending JSON-RPC request lines to the daemon writer task.
+    /// WebSocket writer channel for sending JSON-RPC request frames.
     writer: mpsc::UnboundedSender<String>,
     /// Outstanding RPC requests awaiting responses.
     pending: Arc<Mutex<HashMap<RpcId, oneshot::Sender<JsonRpcResponse>>>>,
-    /// Background task that reads lines from the daemon socket.
+    /// Background task that reads frames from the daemon WebSocket.
     reader_task: JoinHandle<()>,
-    /// Background task that writes lines to the daemon socket.
+    /// Background task that writes frames to the daemon WebSocket.
     writer_task: JoinHandle<()>,
     /// Monotonically increasing counter for JSON-RPC request ids.
     next_request_id: u64,
 }
 
 impl DaemonClient {
-    /// Starts a new daemon process and returns a client connected to it.
-    async fn spawn(app_handle: AppHandle) -> Result<Self, String> {
-        spawn_daemon_client(app_handle).await
+    /// Connects to the daemon at the given WebSocket address.
+    async fn connect(address: DaemonAddress, app_handle: AppHandle) -> Result<Self, String> {
+        let url = address.websocket_url();
+        let (ws_stream, _) = tokio_tungstenite::connect_async(&url)
+            .await
+            .map_err(|error| format!("无法连接到 daemon {url}: {error}"))?;
+        let (mut ws_tx, mut ws_rx) = ws_stream.split();
+        let (writer, mut writer_rx) = mpsc::unbounded_channel::<String>();
+        let pending = Arc::new(Mutex::new(
+            HashMap::<RpcId, oneshot::Sender<JsonRpcResponse>>::new(),
+        ));
+
+        let writer_task = tokio::spawn(async move {
+            while let Some(line) = writer_rx.recv().await {
+                if ws_tx
+                    .send(WsMessage::Text(line.into()))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            let _ = ws_tx.close().await;
+        });
+
+        let reader_app_handle = app_handle.clone();
+        let reader_pending = Arc::clone(&pending);
+        let reader_task = tokio::spawn(async move {
+            loop {
+                match ws_rx.next().await {
+                    Some(Ok(WsMessage::Text(text))) => {
+                        handle_daemon_message(
+                            &reader_app_handle,
+                            &reader_pending,
+                            text.as_str(),
+                        )
+                        .await;
+                    }
+                    Some(Ok(WsMessage::Close(_)))
+                    | Some(Ok(WsMessage::Ping(_)))
+                    | Some(Ok(WsMessage::Pong(_))) => {}
+                    Some(Ok(WsMessage::Binary(_)))
+                    | Some(Ok(WsMessage::Frame(_))) => {
+                        warn!("received unsupported WebSocket message type from daemon");
+                    }
+                    Some(Err(error)) => {
+                        let _ = reader_app_handle.emit(
+                            "daemon-event",
+                            RuntimeEvent {
+                                sequence: 0,
+                                kind: RuntimeEventKind::error(
+                                    None,
+                                    format!("daemon WebSocket error: {error}"),
+                                ),
+                            },
+                        );
+                        break;
+                    }
+                    None => break,
+                }
+            }
+        });
+
+        Ok(Self {
+            writer,
+            pending,
+            reader_task,
+            writer_task,
+            next_request_id: 1,
+        })
     }
 
     /// Fetches the daemon's current runtime state.
-    async fn get_state(&mut self) -> Result<DaemonState, String> {
+    async fn get_state(&mut self,
+    ) -> Result<DaemonState, String> {
         let response = self.request("get_state", None).await?;
         let result = response
             .result
-            .ok_or_else(|| "daemon get_state response did not include a result".to_owned())?;
+            .ok_or_else(|| "daemon get_state 响应未包含 result".to_owned())?;
         serde_json::from_value(result)
-            .map_err(|error| format!("failed to decode daemon state: {error}"))
+            .map_err(|error| format!("无法解析 daemon 状态: {error}"))
     }
 
     /// Creates a new session in `workspace` and returns its generated session id.
-    async fn new_session(&mut self, workspace: String) -> Result<String, String> {
+    async fn new_session(&mut self, workspace: String
+    ) -> Result<String, String> {
         let params = serde_json::to_value(NewSessionParams { workspace })
-            .map_err(|error| format!("failed to encode new_session params: {error}"))?;
+            .map_err(|error| format!("无法编码 new_session 参数: {error}"))?;
         let response = self.request("new_session", Some(params)).await?;
         let result = response
             .result
-            .ok_or_else(|| "daemon new_session response did not include a result".to_owned())?;
+            .ok_or_else(|| "daemon new_session 响应未包含 result".to_owned())?;
         serde_json::from_value::<NewSessionResult>(result)
             .map(|result| result.session_id)
-            .map_err(|error| format!("failed to decode new_session result: {error}"))
+            .map_err(|error| format!("无法解析 new_session 结果: {error}"))
     }
 
     /// Lists all sessions known to the daemon.
-    async fn list_sessions(&mut self) -> Result<Vec<SessionSummary>, String> {
+    async fn list_sessions(&mut self,
+    ) -> Result<Vec<SessionSummary>, String> {
         let response = self.request("list_sessions", None).await?;
         let result = response
             .result
-            .ok_or_else(|| "daemon list_sessions response did not include a result".to_owned())?;
+            .ok_or_else(|| "daemon list_sessions 响应未包含 result".to_owned())?;
         serde_json::from_value::<ListSessionsResult>(result)
             .map(|result| result.sessions)
-            .map_err(|error| format!("failed to decode session list: {error}"))
+            .map_err(|error| format!("无法解析会话列表: {error}"))
     }
 
     /// Deletes the session with the given id.
-    async fn delete_session(&mut self, session_id: String) -> Result<String, String> {
+    async fn delete_session(&mut self, session_id: String
+    ) -> Result<String, String> {
         let params = serde_json::to_value(DeleteSessionParams { session_id })
-            .map_err(|error| format!("failed to encode delete_session params: {error}"))?;
+            .map_err(|error| format!("无法编码 delete_session 参数: {error}"))?;
         let response = self.request("delete_session", Some(params)).await?;
         let result = response
             .result
-            .ok_or_else(|| "daemon delete_session response did not include a result".to_owned())?;
+            .ok_or_else(|| "daemon delete_session 响应未包含 result".to_owned())?;
         serde_json::from_value::<DeleteSessionResult>(result)
             .map(|result| result.session_id)
-            .map_err(|error| format!("failed to decode delete_session result: {error}"))
+            .map_err(|error| format!("无法解析 delete_session 结果: {error}"))
     }
 
     /// Loads the full view for the session with the given id.
-    async fn load_session(&mut self, session_id: String) -> Result<SessionView, String> {
+    async fn load_session(&mut self, session_id: String
+    ) -> Result<SessionView, String> {
         let params = serde_json::to_value(byte_protocol::LoadSessionParams { session_id })
-            .map_err(|error| format!("failed to encode load_session params: {error}"))?;
+            .map_err(|error| format!("无法编码 load_session 参数: {error}"))?;
         let response = self.request("load_session", Some(params)).await?;
         let result = response
             .result
-            .ok_or_else(|| "daemon load_session response did not include a result".to_owned())?;
+            .ok_or_else(|| "daemon load_session 响应未包含 result".to_owned())?;
         serde_json::from_value::<LoadSessionResult>(result)
             .map(|result| result.session)
-            .map_err(|error| format!("failed to decode session view: {error}"))
+            .map_err(|error| format!("无法解析 session view: {error}"))
     }
 
     /// Sends a JSON-RPC request to the daemon and waits for its response.
@@ -195,27 +286,27 @@ impl DaemonClient {
 
         if self.writer.send(request_line).is_err() {
             let _ = self.pending.lock().await.remove(&request_id);
-            return Err("daemon RPC writer is not running".to_owned());
+            return Err("daemon WebSocket 写入端已关闭".to_owned());
         }
 
         let response = match tokio::time::timeout(Duration::from_secs(5), response_rx).await {
             Ok(Ok(response)) => response,
             Ok(Err(_)) => {
                 return Err(format!(
-                    "daemon response channel closed for request {request_id:?}"
+                    "daemon 响应通道已关闭，请求 id: {request_id:?}"
                 ));
             }
             Err(_) => {
                 let _ = self.pending.lock().await.remove(&request_id);
                 return Err(format!(
-                    "daemon did not respond to request {request_id:?} before timeout"
+                    "daemon 未在超时时间内响应请求 {request_id:?}"
                 ));
             }
         };
 
         if let Some(error) = response.error {
             return Err(format!(
-                "daemon returned error {}: {}",
+                "daemon 返回错误 {}: {}",
                 error.code, error.message
             ));
         }
@@ -235,102 +326,16 @@ impl Drop for DaemonClient {
     fn drop(&mut self) {
         self.reader_task.abort();
         self.writer_task.abort();
-        let _ = self.child.start_kill();
-        let _ = std::fs::remove_dir_all(&self.socket_dir);
     }
 }
 
-#[cfg(unix)]
-/// Spawns the daemon executable and returns a client connected to its socket.
-async fn spawn_daemon_client(app_handle: AppHandle) -> Result<DaemonClient, String> {
-    let daemon_path = resolve_daemon_path();
-    let (socket_dir, socket_path) = create_rpc_socket_path()?;
-
-    let mut command = Command::new(&daemon_path);
-    let _ = command
-        .arg("--rpc-socket")
-        .arg(&socket_path)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .kill_on_drop(true);
-
-    let mut child = command.spawn().map_err(|error| {
-        format!(
-            "failed to launch daemon at {}: {error}",
-            daemon_path.display()
-        )
-    })?;
-
-    let stream = match connect_daemon_socket(&socket_path).await {
-        Ok(stream) => stream,
-        Err(error) => {
-            let _ = child.start_kill();
-            let _ = std::fs::remove_dir_all(&socket_dir);
-            return Err(error);
-        }
-    };
-
-    let (read_half, mut write_half) = stream.into_split();
-    let (writer, mut writer_rx) = mpsc::unbounded_channel::<String>();
-    let pending = Arc::new(Mutex::new(
-        HashMap::<RpcId, oneshot::Sender<JsonRpcResponse>>::new(),
-    ));
-
-    let writer_task = tokio::spawn(async move {
-        while let Some(line) = writer_rx.recv().await {
-            if write_half.write_all(line.as_bytes()).await.is_err() {
-                break;
-            }
-            if write_half.flush().await.is_err() {
-                break;
-            }
-        }
-    });
-
-    let reader_pending = Arc::clone(&pending);
-    let reader_task = tokio::spawn(async move {
-        let mut reader = BufReader::new(read_half).lines();
-        loop {
-            match reader.next_line().await {
-                Ok(Some(line)) if line.trim().is_empty() => {}
-                Ok(Some(line)) => handle_daemon_message(&app_handle, &reader_pending, &line).await,
-                Ok(None) => break,
-                Err(error) => {
-                    let _ = app_handle.emit(
-                        "daemon-event",
-                        RuntimeEvent {
-                            sequence: 0,
-                            kind: RuntimeEventKind::error(
-                                None,
-                                format!("failed to read daemon RPC frame: {error}"),
-                            ),
-                        },
-                    );
-                    break;
-                }
-            }
-        }
-    });
-
-    Ok(DaemonClient {
-        child,
-        socket_dir,
-        writer,
-        pending,
-        reader_task,
-        writer_task,
-        next_request_id: 1,
-    })
-}
-
-/// Decodes a line from the daemon and routes it to pending requests or frontend events.
+/// Decodes a frame from the daemon and routes it to pending requests or frontend events.
 async fn handle_daemon_message(
     app_handle: &AppHandle,
     pending: &Arc<Mutex<HashMap<RpcId, oneshot::Sender<JsonRpcResponse>>>>,
-    line: &str,
+    text: &str,
 ) {
-    match decode_json_line::<JsonRpcMessage>(line) {
+    match decode_json_line::<JsonRpcMessage>(text) {
         Ok(JsonRpcMessage::Response(response)) => {
             if let Some(response_tx) = pending.lock().await.remove(&response.id) {
                 let _ = response_tx.send(response);
@@ -351,7 +356,7 @@ async fn handle_daemon_message(
                                 sequence: 0,
                                 kind: RuntimeEventKind::error(
                                     None,
-                                    format!("failed to decode daemon runtime event: {error}"),
+                                    format!("无法解析 daemon runtime event: {error}"),
                                 ),
                             },
                         );
@@ -367,7 +372,7 @@ async fn handle_daemon_message(
                     sequence: 0,
                     kind: RuntimeEventKind::error(
                         None,
-                        format!("failed to decode daemon RPC frame: {error}"),
+                        format!("无法解析 daemon RPC 帧: {error}"),
                     ),
                 },
             );
@@ -375,65 +380,78 @@ async fn handle_daemon_message(
     }
 }
 
-#[cfg(unix)]
-/// Repeatedly tries to connect to the daemon RPC socket until it succeeds or times out.
-async fn connect_daemon_socket(socket_path: &Path) -> Result<UnixStream, String> {
-    let mut last_error = None;
+/// Persisted daemon connection settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct DaemonConfigFile {
+    /// Daemon WebSocket address.
+    address: DaemonAddress,
+}
 
-    for _ in 0..80 {
-        match UnixStream::connect(socket_path).await {
-            Ok(stream) => return Ok(stream),
-            Err(error) => {
-                last_error = Some(error);
-                sleep(Duration::from_millis(25)).await;
-            }
-        }
+/// Resolve the path to `~/.config/byte/daemon.toml`.
+fn resolve_daemon_config_path() -> PathBuf {
+    let config_dir = std::env::var("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_owned());
+            PathBuf::from(home).join(".config")
+        });
+    config_dir.join("byte").join("daemon.toml")
+}
+
+/// Load the saved daemon address, if any.
+fn load_daemon_address() -> Result<Option<DaemonAddress>, String> {
+    let path = resolve_daemon_config_path();
+    if !path.exists() {
+        return Ok(None);
     }
-
-    Err(format!(
-        "failed to connect daemon RPC socket at {}: {}",
-        socket_path.display(),
-        last_error.map_or_else(|| "timed out".to_owned(), |error| error.to_string())
-    ))
+    let contents = std::fs::read_to_string(&path)
+        .map_err(|error| format!("读取 daemon 配置失败 {}: {error}", path.display()))?;
+    let file: DaemonConfigFile = toml::from_str(&contents)
+        .map_err(|error| format!("解析 daemon 配置失败 {}: {error}", path.display()))?;
+    Ok(Some(file.address))
 }
 
-#[cfg(unix)]
-/// Creates a private temporary directory and RPC socket path for the daemon.
-fn create_rpc_socket_path() -> Result<(PathBuf, PathBuf), String> {
-    let suffix = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
-    let socket_dir =
-        std::env::temp_dir().join(format!("byte-daemon-{}-{suffix}", std::process::id()));
-
-    std::fs::create_dir(&socket_dir).map_err(|error| {
-        format!(
-            "failed to create private daemon RPC directory {}: {error}",
-            socket_dir.display()
-        )
-    })?;
-    std::fs::set_permissions(&socket_dir, std::fs::Permissions::from_mode(0o700)).map_err(
-        |error| {
-            let _ = std::fs::remove_dir_all(&socket_dir);
-            format!(
-                "failed to secure daemon RPC directory {}: {error}",
-                socket_dir.display()
-            )
-        },
-    )?;
-
-    let socket_path = socket_dir.join("rpc.sock");
-    Ok((socket_dir, socket_path))
+/// Save the daemon address to disk.
+fn save_daemon_address(address: DaemonAddress) -> Result<(), String> {
+    let path = resolve_daemon_config_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("创建配置目录失败 {}: {error}", parent.display()))?;
+    }
+    let file = DaemonConfigFile { address };
+    let contents =
+        toml::to_string(&file).map_err(|error| format!("序列化 daemon 配置失败: {error}"))?;
+    std::fs::write(&path, contents)
+        .map_err(|error| format!("写入 daemon 配置失败 {}: {error}", path.display()))
 }
 
-/// Returns the current daemon connection state, starting it if necessary.
+/// Returns the currently saved daemon address, if any.
+#[tauri::command]
+async fn get_daemon_address(state: State<'_, AppState>) -> Result<Option<String>, String> {
+    let supervisor = state.daemon.lock().await;
+    Ok(supervisor.address.map(|addr| addr.to_string()))
+}
+
+/// Sets and persists the daemon address, then connects and returns the new state.
+#[tauri::command]
+async fn set_daemon_address(
+    address: String,
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<DaemonConnectionView, String> {
+    let parsed = address.parse::<DaemonAddress>().map_err(|error| error.to_string())?;
+    let mut supervisor = state.daemon.lock().await;
+    supervisor.set_address(app_handle, parsed).await
+}
+
+/// Returns the current daemon connection state, attempting to connect if a saved address exists.
 #[tauri::command]
 async fn get_daemon_state(
     app_handle: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<DaemonConnectionView, String> {
-    Ok(state.daemon.lock().await.get_state(app_handle).await)
+    let mut supervisor = state.daemon.lock().await;
+    supervisor.get_state(app_handle).await
 }
 
 /// Sends a message to the daemon for the given session.
@@ -444,8 +462,8 @@ async fn send_message(
     app_handle: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let mut daemon = state.daemon.lock().await;
-    let client = daemon.ensure_client(app_handle).await?;
+    let mut supervisor = state.daemon.lock().await;
+    let client = supervisor.ensure_client(app_handle).await?;
     let params = serde_json::to_value(byte_protocol::SendMessageParams {
         session_id,
         message,
@@ -462,8 +480,8 @@ async fn new_session(
     app_handle: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    let mut daemon = state.daemon.lock().await;
-    let client = daemon.ensure_client(app_handle).await?;
+    let mut supervisor = state.daemon.lock().await;
+    let client = supervisor.ensure_client(app_handle).await?;
     client.new_session(workspace).await
 }
 
@@ -473,8 +491,8 @@ async fn list_sessions(
     app_handle: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Vec<SessionSummary>, String> {
-    let mut daemon = state.daemon.lock().await;
-    let client = daemon.ensure_client(app_handle).await?;
+    let mut supervisor = state.daemon.lock().await;
+    let client = supervisor.ensure_client(app_handle).await?;
     client.list_sessions().await
 }
 
@@ -485,8 +503,8 @@ async fn delete_session(
     app_handle: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    let mut daemon = state.daemon.lock().await;
-    let client = daemon.ensure_client(app_handle).await?;
+    let mut supervisor = state.daemon.lock().await;
+    let client = supervisor.ensure_client(app_handle).await?;
     client.delete_session(session_id).await
 }
 
@@ -497,8 +515,8 @@ async fn load_session(
     app_handle: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<SessionView, String> {
-    let mut daemon = state.daemon.lock().await;
-    let client = daemon.ensure_client(app_handle).await?;
+    let mut supervisor = state.daemon.lock().await;
+    let client = supervisor.ensure_client(app_handle).await?;
     client.load_session(session_id).await
 }
 
@@ -518,6 +536,8 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            get_daemon_address,
+            set_daemon_address,
             get_daemon_state,
             send_message,
             new_session,
@@ -527,45 +547,4 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Byte Agent desktop app");
-}
-
-/// Locates the daemon executable using environment overrides and common paths.
-fn resolve_daemon_path() -> PathBuf {
-    if let Ok(path) = std::env::var("BYTE_DAEMON_PATH") {
-        return PathBuf::from(path);
-    }
-
-    let executable_name = if cfg!(windows) {
-        "byte-daemon.exe"
-    } else {
-        "byte-daemon"
-    };
-
-    if let Ok(current_exe) = std::env::current_exe() {
-        if let Some(parent) = current_exe.parent() {
-            let candidate = parent.join(executable_name);
-            if candidate.exists() {
-                return candidate;
-            }
-        }
-    }
-
-    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(3)
-        .map(PathBuf::from);
-
-    if let Some(workspace_root) = workspace_root {
-        for profile in ["debug", "release"] {
-            let candidate = workspace_root
-                .join("target")
-                .join(profile)
-                .join(executable_name);
-            if candidate.exists() {
-                return candidate;
-            }
-        }
-    }
-
-    PathBuf::from(executable_name)
 }
