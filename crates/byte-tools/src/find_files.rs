@@ -8,7 +8,9 @@ use async_trait::async_trait;
 use byte_protocol::{SessionContext, ToolCall};
 use tokio_util::sync::CancellationToken;
 
-use crate::{Tool, ToolError, resolve_tool_path};
+use crate::{
+    Tool, ToolError, ToolOutputStream, ToolStreamEvent, resolve_tool_path, single_event_stream,
+};
 
 /// Maximum number of file paths returned by `find_files`.
 const MAX_RESULTS: usize = 10_000;
@@ -41,8 +43,23 @@ impl Tool for FindFilesTool {
         }
     }
 
-    /// Invoke the tool with the given call and context.
+    /// Invoke the tool and return its output as a single-event stream.
     async fn invoke(
+        &self,
+        call: &ToolCall,
+        ctx: &SessionContext,
+        cancel: &CancellationToken,
+    ) -> Result<ToolOutputStream, ToolError> {
+        match self.find(call, ctx, cancel).await {
+            Ok(output) => Ok(single_event_stream(Ok(ToolStreamEvent::done(output)))),
+            Err(error) => Ok(single_event_stream(Ok(ToolStreamEvent::done_error(&error)))),
+        }
+    }
+}
+
+impl FindFilesTool {
+    /// Execute the tool's core logic.
+    async fn find(
         &self,
         call: &ToolCall,
         ctx: &SessionContext,
@@ -198,7 +215,7 @@ mod tests {
         };
 
         let result = FindFilesTool
-            .invoke(&call("**/*.rs", Some(".")), &ctx, &CancellationToken::new())
+            .find(&call("**/*.rs", Some(".")), &ctx, &CancellationToken::new())
             .await
             .expect("find_files succeeds");
 
@@ -222,7 +239,7 @@ mod tests {
         };
 
         let result = FindFilesTool
-            .invoke(&call("*.toml", None), &ctx, &CancellationToken::new())
+            .find(&call("*.toml", None), &ctx, &CancellationToken::new())
             .await
             .expect("find_files succeeds");
 
@@ -237,7 +254,7 @@ mod tests {
             workspace_root: PathBuf::from("/nonexistent/workspace"),
         };
         let err = FindFilesTool
-            .invoke(&call("*.rs", Some(".")), &ctx, &CancellationToken::new())
+            .find(&call("*.rs", Some(".")), &ctx, &CancellationToken::new())
             .await
             .expect_err("should fail");
         assert!(err.to_string().contains("does not exist"));
@@ -252,7 +269,7 @@ mod tests {
             workspace_root: root.to_path_buf(),
         };
         let err = FindFilesTool
-            .invoke(&call("[", Some(".")), &ctx, &CancellationToken::new())
+            .find(&call("[", Some(".")), &ctx, &CancellationToken::new())
             .await
             .expect_err("should fail");
         assert!(err.to_string().contains("invalid glob pattern"));
@@ -270,7 +287,7 @@ mod tests {
             workspace_root: tempdir().unwrap().path().to_path_buf(),
         };
         let err = FindFilesTool
-            .invoke(&call, &ctx, &CancellationToken::new())
+            .find(&call, &ctx, &CancellationToken::new())
             .await
             .expect_err("should fail");
         assert!(err.to_string().contains("missing `pattern` argument"));
@@ -287,7 +304,7 @@ mod tests {
             workspace_root: tempdir().unwrap().path().to_path_buf(),
         };
         let result = FindFilesTool
-            .invoke(
+            .find(
                 &call("*.rs", Some(root.to_str().unwrap())),
                 &ctx,
                 &CancellationToken::new(),
@@ -312,7 +329,7 @@ mod tests {
             workspace_root: tempdir().unwrap().path().to_path_buf(),
         };
         let result = FindFilesTool
-            .invoke(
+            .find(
                 &call("*.rs", Some(root.to_str().unwrap())),
                 &ctx,
                 &CancellationToken::new(),
@@ -337,7 +354,7 @@ mod tests {
             workspace_root: root.to_path_buf(),
         };
         let err = FindFilesTool
-            .invoke(&call("*.txt", Some(".")), &ctx, &CancellationToken::new())
+            .find(&call("*.txt", Some(".")), &ctx, &CancellationToken::new())
             .await
             .expect_err("should exceed result limit");
         assert!(err.to_string().contains("result limit exceeded"));
@@ -360,7 +377,7 @@ mod tests {
             workspace_root: root.to_path_buf(),
         };
         let result = FindFilesTool
-            .invoke(
+            .find(
                 &call("**/*.txt", Some(".")),
                 &ctx,
                 &CancellationToken::new(),
@@ -389,7 +406,7 @@ mod tests {
         cancel.cancel();
 
         let err = FindFilesTool
-            .invoke(&call("*.rs", Some(".")), &ctx, &cancel)
+            .find(&call("*.rs", Some(".")), &ctx, &cancel)
             .await
             .expect_err("should be cancelled");
         assert!(err.to_string().contains("find_files cancelled"));

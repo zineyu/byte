@@ -3,7 +3,7 @@ use byte_protocol::{SessionContext, ToolCall};
 use tokio::io::AsyncReadExt;
 use tokio_util::sync::CancellationToken;
 
-use crate::{Tool, ToolError};
+use crate::{Tool, ToolError, ToolOutputStream, ToolStreamEvent, single_event_stream};
 
 /// A tool that reads the contents of a file relative to the workspace root.
 #[derive(Debug, Clone, Copy)]
@@ -34,8 +34,23 @@ impl Tool for ReadFileTool {
         }
     }
 
-    /// Invoke the tool with the given call and context.
+    /// Invoke the tool and return its output as a single-event stream.
     async fn invoke(
+        &self,
+        call: &ToolCall,
+        ctx: &SessionContext,
+        cancel: &CancellationToken,
+    ) -> Result<ToolOutputStream, ToolError> {
+        match self.read(call, ctx, cancel).await {
+            Ok(output) => Ok(single_event_stream(Ok(ToolStreamEvent::done(output)))),
+            Err(error) => Ok(single_event_stream(Ok(ToolStreamEvent::done_error(&error)))),
+        }
+    }
+}
+
+impl ReadFileTool {
+    /// Execute the tool's core logic.
+    async fn read(
         &self,
         call: &ToolCall,
         ctx: &SessionContext,
@@ -130,7 +145,7 @@ mod tests {
         };
 
         let result = ReadFileTool
-            .invoke(&call, &ctx, &CancellationToken::new())
+            .read(&call, &ctx, &CancellationToken::new())
             .await
             .unwrap();
         assert_eq!(result, "fn main() {}");
@@ -153,7 +168,7 @@ mod tests {
         };
 
         let result = ReadFileTool
-            .invoke(&call, &ctx, &CancellationToken::new())
+            .read(&call, &ctx, &CancellationToken::new())
             .await
             .unwrap();
         assert_eq!(result, "const X: u32 = 1;");
@@ -173,7 +188,7 @@ mod tests {
         };
 
         let result = ReadFileTool
-            .invoke(&call, &ctx, &CancellationToken::new())
+            .read(&call, &ctx, &CancellationToken::new())
             .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("missing.rs"));
@@ -198,7 +213,7 @@ mod tests {
         cancel.cancel();
 
         let err = ReadFileTool
-            .invoke(&call, &ctx, &cancel)
+            .read(&call, &ctx, &cancel)
             .await
             .expect_err("should be cancelled");
         assert!(err.to_string().contains("read_file cancelled"));
@@ -217,7 +232,7 @@ mod tests {
         };
 
         let result = ReadFileTool
-            .invoke(&call, &ctx, &CancellationToken::new())
+            .read(&call, &ctx, &CancellationToken::new())
             .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("path"));
@@ -242,7 +257,7 @@ mod tests {
         };
 
         let result = ReadFileTool
-            .invoke(&call, &ctx, &CancellationToken::new())
+            .read(&call, &ctx, &CancellationToken::new())
             .await;
         assert!(result.is_err());
         let message = result.unwrap_err().to_string();

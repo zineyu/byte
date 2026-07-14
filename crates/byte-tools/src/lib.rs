@@ -6,10 +6,12 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use byte_protocol::{SessionContext, ToolCall};
+use futures::Stream;
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
@@ -139,28 +141,44 @@ impl ToolOutputResult {
 
 /// A streaming output event produced by a tool during execution.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ToolOutputEvent {
+pub enum ToolStreamEvent {
     /// A chunk of incremental output.
     Chunk {
         /// Incremental output chunk.
         chunk: String,
     },
+    /// The tool has finished and produced a final result.
+    Done {
+        /// Final result of the tool invocation.
+        result: ToolOutputResult,
+    },
 }
 
-/// A sink for streaming tool output events.
-#[async_trait]
-pub trait ToolEventSink: Send + Sync {
-    /// Emit a streaming tool output event.
-    async fn emit(&self, event: ToolOutputEvent);
+impl ToolStreamEvent {
+    /// Create a `Done` event wrapping a successful [`ToolOutputResult`].
+    #[must_use]
+    pub fn done(output: impl Into<String>) -> Self {
+        Self::Done {
+            result: ToolOutputResult::success(output),
+        }
+    }
+
+    /// Create a `Done` event wrapping an error [`ToolOutputResult`].
+    #[must_use]
+    pub fn done_error(error: &ToolError) -> Self {
+        Self::Done {
+            result: ToolOutputResult::error(error.to_string()),
+        }
+    }
 }
 
-/// A no-op sink for tests and tools that do not stream output.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct NoopEventSink;
+/// A pinned, [`Send`]-able stream of [`ToolStreamEvent`]s.
+pub type ToolOutputStream = Pin<Box<dyn Stream<Item = Result<ToolStreamEvent, ToolError>> + Send>>;
 
-#[async_trait]
-impl ToolEventSink for NoopEventSink {
-    async fn emit(&self, _event: ToolOutputEvent) {}
+/// Create a [`ToolOutputStream`] that yields a single `event`.
+#[must_use]
+pub fn single_event_stream(event: Result<ToolStreamEvent, ToolError>) -> ToolOutputStream {
+    Box::pin(futures::stream::once(async { event }))
 }
 
 /// A tool that can be invoked by the runtime.
@@ -169,34 +187,18 @@ pub trait Tool: Send + Sync {
     /// Return the protocol definition for this tool.
     fn definition(&self) -> byte_protocol::ToolDefinition;
 
-    /// Invoke the tool with the given call and context.
+    /// Invoke the tool and return a stream of output events.
     ///
-    /// This is the non-streaming entry point used by tests and simple tools.
-    /// The runtime calls [`Self::invoke_with_sink`] so that tools can emit
-    /// incremental output while they run.
+    /// The returned stream must eventually emit a [`ToolStreamEvent::Done`]
+    /// event unless it returns an error first. Non-streaming tools can return
+    /// a single `Done` event; streaming tools emit zero or more `Chunk`s
+    /// followed by a `Done`.
     async fn invoke(
         &self,
         call: &ToolCall,
         ctx: &SessionContext,
         cancel: &CancellationToken,
-    ) -> Result<String, ToolError>;
-
-    /// Invoke the tool with a streaming event sink.
-    ///
-    /// The default implementation calls [`Self::invoke`] and emits no
-    /// streaming events. Tools that produce incremental output (such as
-    /// `run_command`) should override this method.
-    async fn invoke_with_sink(
-        &self,
-        call: &ToolCall,
-        ctx: &SessionContext,
-        cancel: &CancellationToken,
-        sink: Arc<dyn ToolEventSink>,
-    ) -> Result<ToolOutputResult, ToolError> {
-        let _ = sink;
-        let output = self.invoke(call, ctx, cancel).await?;
-        Ok(ToolOutputResult::success(output))
-    }
+    ) -> Result<ToolOutputStream, ToolError>;
 }
 
 /// A policy that decides whether a tool call is allowed.
@@ -246,8 +248,7 @@ pub trait ToolRegistry: Send + Sync {
         call: &ToolCall,
         ctx: &SessionContext,
         cancel: &CancellationToken,
-        sink: Arc<dyn ToolEventSink>,
-    ) -> Result<ToolOutputResult, ToolError>;
+    ) -> Result<ToolOutputStream, ToolError>;
 }
 
 /// Resolve a `path` argument from a tool call against the session workspace root.
@@ -281,6 +282,8 @@ mod tests {
     #![allow(clippy::expect_used, clippy::unwrap_used, unused_results)]
 
     use std::sync::Arc;
+
+    use futures::StreamExt;
 
     use super::*;
     #[test]
@@ -334,16 +337,19 @@ mod tests {
             session_id: None,
             workspace_root: temp.path().to_path_buf(),
         };
-        let result = registry
-            .invoke(
-                &call,
-                &ctx,
-                &CancellationToken::new(),
-                Arc::new(NoopEventSink),
-            )
+        let mut stream = registry
+            .invoke(&call, &ctx, &CancellationToken::new())
             .await
             .unwrap();
-        assert_eq!(result.output, "fn main() {}");
+        let event = stream.next().await.unwrap().unwrap();
+        assert!(
+            matches!(event, ToolStreamEvent::Done { result } if result.output == "fn main() {}"),
+            "expected single Done event with file contents"
+        );
+        assert!(
+            stream.next().await.is_none(),
+            "stream should end after Done"
+        );
     }
 
     #[tokio::test]
@@ -362,10 +368,22 @@ mod tests {
                     workspace_root: tempfile::tempdir().unwrap().path().to_path_buf(),
                 },
                 &CancellationToken::new(),
-                Arc::new(NoopEventSink),
             )
             .await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("unknown tool"));
+        let message = match result {
+            Err(error) => error.to_string(),
+            Ok(_) => panic!("expected error"),
+        };
+        assert!(message.contains("unknown tool"));
+    }
+
+    #[tokio::test]
+    async fn single_event_stream_yields_done_and_ends() {
+        let stream = single_event_stream(Ok(ToolStreamEvent::done("hello")));
+        let mut stream = stream;
+        let event = stream.next().await.unwrap().unwrap();
+        assert!(matches!(event, ToolStreamEvent::Done { result } if result.output == "hello"));
+        assert!(stream.next().await.is_none());
     }
 }

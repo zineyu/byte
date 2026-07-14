@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use byte_protocol::{ActivatedSkill, ToolCall, ToolDefinition};
 use byte_session::SessionStore;
 use byte_skills::SkillRegistry;
-use byte_tools::{Tool, ToolError, ToolEventSink, ToolOutputResult, ToolPolicy, ToolRegistry};
+use byte_tools::{Tool, ToolError, ToolOutputStream, ToolPolicy, ToolRegistry, ToolStreamEvent};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
@@ -71,7 +71,7 @@ impl Tool for ActivateSkillTool {
         call: &ToolCall,
         ctx: &byte_protocol::SessionContext,
         _cancel: &CancellationToken,
-    ) -> Result<String, ToolError> {
+    ) -> Result<ToolOutputStream, ToolError> {
         let name = call
             .arguments
             .get("name")
@@ -107,7 +107,10 @@ impl Tool for ActivateSkillTool {
         }
         drop(active_skills);
 
-        Ok(definition.content)
+        let output = definition.content;
+        Ok(byte_tools::single_event_stream(Ok(ToolStreamEvent::done(
+            output,
+        ))))
     }
 }
 
@@ -193,15 +196,12 @@ impl ToolRegistry for SessionToolRegistry {
         call: &ToolCall,
         ctx: &byte_protocol::SessionContext,
         cancel: &CancellationToken,
-        sink: Arc<dyn ToolEventSink>,
-    ) -> Result<ToolOutputResult, ToolError> {
+    ) -> Result<ToolOutputStream, ToolError> {
         if call.name == "activate_skill" {
             self.activate_policy.check(call, ctx)?;
-            self.activate_skill
-                .invoke_with_sink(call, ctx, cancel, sink)
-                .await
+            self.activate_skill.invoke(call, ctx, cancel).await
         } else {
-            self.base.invoke(call, ctx, cancel, sink).await
+            self.base.invoke(call, ctx, cancel).await
         }
     }
 }
@@ -219,6 +219,7 @@ mod tests {
     use async_trait::async_trait;
     use byte_protocol::{SessionContext, SkillDefinition, SkillEntry};
     use byte_tools::{AllowAllPolicy, MvpToolRegistry};
+    use futures::StreamExt;
 
     fn temp_store() -> Arc<SessionStore> {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -258,6 +259,14 @@ mod tests {
         }
     }
 
+    async fn collect_one(mut stream: ToolOutputStream) -> ToolStreamEvent {
+        stream
+            .next()
+            .await
+            .expect("stream should have an event")
+            .expect("event should be Ok")
+    }
+
     #[tokio::test]
     async fn activate_skill_appends_to_active_skills_and_returns_content() {
         let active_skills: Arc<Mutex<Vec<ActivatedSkill>>> = Arc::new(Mutex::new(Vec::new()));
@@ -283,11 +292,14 @@ mod tests {
             workspace_root: PathBuf::from("/workspace"),
         };
 
-        let result = tool
+        let stream = tool
             .invoke(&call, &ctx, &CancellationToken::new())
             .await
             .unwrap();
-        assert_eq!(result, "Review carefully.");
+        let event = collect_one(stream).await;
+        assert!(
+            matches!(event, ToolStreamEvent::Done { result } if result.output == "Review carefully." && !result.is_error)
+        );
 
         let skills = active_skills.lock().await;
         assert_eq!(skills.len(), 1);
@@ -345,11 +357,14 @@ mod tests {
             name: "activate_skill".into(),
             arguments: serde_json::json!({"name": "review"}),
         };
-        let first_result = tool
+        let first_stream = tool
             .invoke(&first_call, &ctx, &CancellationToken::new())
             .await
             .unwrap();
-        assert_eq!(first_result, "First version.");
+        let first_event = collect_one(first_stream).await;
+        assert!(
+            matches!(first_event, ToolStreamEvent::Done { result } if result.output == "First version." && !result.is_error)
+        );
 
         // Simulate a refreshed skill definition from the registry.
         {
@@ -362,11 +377,14 @@ mod tests {
             name: "activate_skill".into(),
             arguments: serde_json::json!({"name": "review"}),
         };
-        let second_result = tool
+        let second_stream = tool
             .invoke(&second_call, &ctx, &CancellationToken::new())
             .await
             .unwrap();
-        assert_eq!(second_result, "Updated version.");
+        let second_event = collect_one(second_stream).await;
+        assert!(
+            matches!(second_event, ToolStreamEvent::Done { result } if result.output == "Updated version." && !result.is_error)
+        );
 
         let skills = active_skills.lock().await;
         assert_eq!(skills.len(), 1, "same skill should not be added twice");

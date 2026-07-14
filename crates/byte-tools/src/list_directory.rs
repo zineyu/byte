@@ -2,7 +2,9 @@ use async_trait::async_trait;
 use byte_protocol::{SessionContext, ToolCall};
 use tokio_util::sync::CancellationToken;
 
-use crate::{Tool, ToolError, resolve_tool_path};
+use crate::{
+    Tool, ToolError, ToolOutputStream, ToolStreamEvent, resolve_tool_path, single_event_stream,
+};
 
 /// A tool that lists the entries in a directory.
 #[derive(Debug, Clone, Copy)]
@@ -28,8 +30,23 @@ impl Tool for ListDirectoryTool {
         }
     }
 
-    /// Invoke the tool with the given call and context.
+    /// Invoke the tool and return its output as a single-event stream.
     async fn invoke(
+        &self,
+        call: &ToolCall,
+        ctx: &SessionContext,
+        cancel: &CancellationToken,
+    ) -> Result<ToolOutputStream, ToolError> {
+        match self.list(call, ctx, cancel).await {
+            Ok(output) => Ok(single_event_stream(Ok(ToolStreamEvent::done(output)))),
+            Err(error) => Ok(single_event_stream(Ok(ToolStreamEvent::done_error(&error)))),
+        }
+    }
+}
+
+impl ListDirectoryTool {
+    /// Execute the tool's core logic.
+    async fn list(
         &self,
         call: &ToolCall,
         ctx: &SessionContext,
@@ -131,7 +148,7 @@ mod tests {
         };
 
         let result = ListDirectoryTool
-            .invoke(&call("."), &ctx, &CancellationToken::new())
+            .list(&call("."), &ctx, &CancellationToken::new())
             .await
             .expect("list succeeds");
 
@@ -155,7 +172,7 @@ mod tests {
             workspace_root: tempdir().unwrap().path().to_path_buf(),
         };
         let result = ListDirectoryTool
-            .invoke(
+            .list(
                 &ToolCall {
                     id: "call-1".into(),
                     name: "list_directory".into(),
@@ -180,7 +197,7 @@ mod tests {
             workspace_root: PathBuf::from("/nonexistent/workspace"),
         };
         let err = ListDirectoryTool
-            .invoke(&call("missing"), &ctx, &CancellationToken::new())
+            .list(&call("missing"), &ctx, &CancellationToken::new())
             .await
             .expect_err("should fail");
         assert!(err.to_string().contains("does not exist"));
@@ -201,7 +218,7 @@ mod tests {
         cancel.cancel();
 
         let err = ListDirectoryTool
-            .invoke(&call("."), &ctx, &cancel)
+            .list(&call("."), &ctx, &cancel)
             .await
             .expect_err("should be cancelled");
         assert!(err.to_string().contains("list_directory cancelled"));
@@ -219,7 +236,7 @@ mod tests {
             workspace_root: tempdir().unwrap().path().to_path_buf(),
         };
         let err = ListDirectoryTool
-            .invoke(&call, &ctx, &CancellationToken::new())
+            .list(&call, &ctx, &CancellationToken::new())
             .await
             .expect_err("should fail");
         assert!(err.to_string().contains("missing `path` argument"));

@@ -3,7 +3,10 @@ use byte_protocol::{SessionContext, ToolCall};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio_util::sync::CancellationToken;
 
-use crate::{Tool, ToolError, resolve_tool_path, unified_diff};
+use crate::{
+    Tool, ToolError, ToolOutputStream, ToolStreamEvent, resolve_tool_path, single_event_stream,
+    unified_diff,
+};
 use std::path::Path;
 
 /// A tool that applies multiple search/replace patches to a file.
@@ -54,8 +57,23 @@ impl Tool for ApplyPatchTool {
         }
     }
 
-    /// Invoke the tool with the given call and context.
+    /// Invoke the tool and return its output as a single-event stream.
     async fn invoke(
+        &self,
+        call: &ToolCall,
+        ctx: &SessionContext,
+        cancel: &CancellationToken,
+    ) -> Result<ToolOutputStream, ToolError> {
+        match self.patch(call, ctx, cancel).await {
+            Ok(output) => Ok(single_event_stream(Ok(ToolStreamEvent::done(output)))),
+            Err(error) => Ok(single_event_stream(Ok(ToolStreamEvent::done_error(&error)))),
+        }
+    }
+}
+
+impl ApplyPatchTool {
+    /// Execute the tool's core logic.
+    async fn patch(
         &self,
         call: &ToolCall,
         ctx: &SessionContext,
@@ -323,7 +341,7 @@ mod tests {
         };
 
         let result = ApplyPatchTool
-            .invoke(
+            .patch(
                 &call(
                     "lib.rs",
                     &serde_json::json!([{"search": "old", "replace": "new"}]),
@@ -360,7 +378,7 @@ mod tests {
         };
 
         ApplyPatchTool
-            .invoke(
+            .patch(
                 &call(
                     "src/lib.rs",
                     &serde_json::json!([
@@ -390,7 +408,7 @@ mod tests {
         };
 
         let result = ApplyPatchTool
-            .invoke(
+            .patch(
                 &call(
                     "lib.rs",
                     &serde_json::json!([
@@ -424,7 +442,7 @@ mod tests {
         };
 
         let result = ApplyPatchTool
-            .invoke(
+            .patch(
                 &call(
                     "lib.rs",
                     &serde_json::json!([{"search": "", "replace": "x"}]),
@@ -449,7 +467,7 @@ mod tests {
         };
 
         let result = ApplyPatchTool
-            .invoke(
+            .patch(
                 &call(
                     "missing.rs",
                     &serde_json::json!([{"search": "x", "replace": "y"}]),
@@ -476,7 +494,7 @@ mod tests {
         };
 
         let result = ApplyPatchTool
-            .invoke(&call, &ctx, &CancellationToken::new())
+            .patch(&call, &ctx, &CancellationToken::new())
             .await;
 
         assert!(result.is_err());
@@ -495,7 +513,7 @@ mod tests {
         };
 
         let result = ApplyPatchTool
-            .invoke(
+            .patch(
                 &call(
                     "lib.rs",
                     &serde_json::json!([{"search": "old", "replace": "new"}]),
@@ -539,7 +557,7 @@ mod tests {
         };
 
         let result = ApplyPatchTool
-            .invoke(
+            .patch(
                 &call(
                     "huge.rs",
                     &serde_json::json!([{"search": "x", "replace": "y"}]),
@@ -575,10 +593,10 @@ mod tests {
         // output size, even though the input itself is well under the limit.
         let huge_replace = "x".repeat(1024 * 1024 + 1);
         let result = ApplyPatchTool
-            .invoke(
+            .patch(
                 &call(
                     "small.rs",
-                    &serde_json::json!([{"search": "x", "replace": huge_replace}]),
+                    &serde_json::json!([{"search": "x", "replace": &huge_replace}]),
                 ),
                 &ctx,
                 &CancellationToken::new(),
@@ -617,7 +635,7 @@ mod tests {
         };
 
         ApplyPatchTool
-            .invoke(
+            .patch(
                 &call(
                     "script.sh",
                     &serde_json::json!([{"search": "old", "replace": "new"}]),
@@ -650,7 +668,7 @@ mod tests {
         };
 
         ApplyPatchTool
-            .invoke(
+            .patch(
                 &call(
                     "lib.rs",
                     &serde_json::json!([{"search": "old", "replace": "new"}]),
@@ -740,7 +758,7 @@ mod tests {
         // intermediate oversized result rather than silently succeed.
         let huge = "x".repeat(1024 * 1024 + 1);
         let result = ApplyPatchTool
-            .invoke(
+            .patch(
                 &call(
                     "lib.rs",
                     &serde_json::json!([

@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use byte_protocol::{SessionContext, ToolCall};
 use tokio_util::sync::CancellationToken;
 
-use crate::{Tool, ToolError, ToolEventSink, ToolOutputResult, ToolPolicy, ToolRegistry};
+use crate::{Tool, ToolError, ToolOutputStream, ToolPolicy, ToolRegistry};
 
 /// A simple in-memory tool registry used in the MVP.
 pub struct MvpToolRegistry {
@@ -78,12 +78,11 @@ impl ToolRegistry for MvpToolRegistry {
         call: &ToolCall,
         ctx: &SessionContext,
         cancel: &CancellationToken,
-        sink: Arc<dyn ToolEventSink>,
-    ) -> Result<ToolOutputResult, ToolError> {
+    ) -> Result<ToolOutputStream, ToolError> {
         let (tool, policy) = self
             .get(&call.name)
             .ok_or_else(|| ToolError::new(format!("unknown tool: {}", call.name)))?;
         policy.check(call, ctx)?;
-        tool.invoke_with_sink(call, ctx, cancel, sink).await
+        tool.invoke(call, ctx, cancel).await
     }
 }

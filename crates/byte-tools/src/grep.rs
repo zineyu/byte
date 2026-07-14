@@ -4,7 +4,9 @@ use regex::Regex;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
-use crate::{Tool, ToolError, resolve_tool_path};
+use crate::{
+    Tool, ToolError, ToolOutputStream, ToolStreamEvent, resolve_tool_path, single_event_stream,
+};
 
 /// A tool that recursively searches file contents for a regular expression.
 #[derive(Debug, Clone, Copy)]
@@ -38,8 +40,23 @@ impl Tool for GrepTool {
         }
     }
 
-    /// Invoke the tool with the given call and context.
+    /// Invoke the tool and return its output as a single-event stream.
     async fn invoke(
+        &self,
+        call: &ToolCall,
+        ctx: &SessionContext,
+        cancel: &CancellationToken,
+    ) -> Result<ToolOutputStream, ToolError> {
+        match self.grep(call, ctx, cancel).await {
+            Ok(output) => Ok(single_event_stream(Ok(ToolStreamEvent::done(output)))),
+            Err(error) => Ok(single_event_stream(Ok(ToolStreamEvent::done_error(&error)))),
+        }
+    }
+}
+
+impl GrepTool {
+    /// Execute the tool's core logic.
+    async fn grep(
         &self,
         call: &ToolCall,
         ctx: &SessionContext,
@@ -220,7 +237,7 @@ mod tests {
         };
 
         let result = GrepTool
-            .invoke(&call("banana", "."), &ctx, &CancellationToken::new())
+            .grep(&call("banana", "."), &ctx, &CancellationToken::new())
             .await
             .expect("grep succeeds");
 
@@ -252,7 +269,7 @@ mod tests {
         };
 
         let result = GrepTool
-            .invoke(&call("needle", "."), &ctx, &CancellationToken::new())
+            .grep(&call("needle", "."), &ctx, &CancellationToken::new())
             .await
             .expect("grep succeeds");
 
@@ -273,7 +290,7 @@ mod tests {
             workspace_root: tempdir().unwrap().path().to_path_buf(),
         };
         let err = GrepTool
-            .invoke(&call("[", "."), &ctx, &CancellationToken::new())
+            .grep(&call("[", "."), &ctx, &CancellationToken::new())
             .await
             .expect_err("should fail");
         assert!(err.to_string().contains("invalid regex pattern"));
@@ -286,7 +303,7 @@ mod tests {
             workspace_root: PathBuf::from("/nonexistent/workspace"),
         };
         let err = GrepTool
-            .invoke(&call("foo", "missing"), &ctx, &CancellationToken::new())
+            .grep(&call("foo", "missing"), &ctx, &CancellationToken::new())
             .await
             .expect_err("should fail");
         assert!(err.to_string().contains("does not exist"));
@@ -304,7 +321,7 @@ mod tests {
             workspace_root: tempdir().unwrap().path().to_path_buf(),
         };
         let err = GrepTool
-            .invoke(&call, &ctx, &CancellationToken::new())
+            .grep(&call, &ctx, &CancellationToken::new())
             .await
             .expect_err("should fail");
         assert!(err.to_string().contains("missing `pattern` argument"));
@@ -326,7 +343,7 @@ mod tests {
         cancel.cancel();
 
         let err = GrepTool
-            .invoke(&call("needle", "."), &ctx, &cancel)
+            .grep(&call("needle", "."), &ctx, &cancel)
             .await
             .expect_err("should be cancelled");
         assert!(err.to_string().contains("grep cancelled"));

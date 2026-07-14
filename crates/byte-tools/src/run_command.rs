@@ -1,6 +1,5 @@
 #![allow(unsafe_code)]
 
-use std::sync::Arc;
 use std::time::Duration;
 
 #[cfg(unix)]
@@ -10,11 +9,12 @@ use std::process::Stdio;
 
 use async_trait::async_trait;
 use byte_protocol::{SessionContext, ToolCall};
+use futures::channel::mpsc;
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
-use crate::{NoopEventSink, Tool, ToolError, ToolEventSink, ToolOutputEvent, ToolOutputResult};
+use crate::{Tool, ToolError, ToolOutputStream, ToolStreamEvent};
 
 /// Default command timeout in seconds.
 const DEFAULT_TIMEOUT_SECONDS: u64 = 30;
@@ -29,6 +29,7 @@ const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
 #[derive(Debug, Clone, Copy)]
 pub struct RunCommandTool;
 
+#[allow(clippy::too_many_lines)]
 #[async_trait]
 impl Tool for RunCommandTool {
     /// Return the protocol definition for this tool.
@@ -60,34 +61,18 @@ impl Tool for RunCommandTool {
         }
     }
 
-    /// Invoke the tool without streaming.
+    /// Invoke the tool and return a stream of stdout/stderr chunks.
     ///
-    /// Delegates to [`Self::invoke_with_sink`] using a no-op sink so callers
-    /// that do not need live chunks still receive the final output.
+    /// The returned stream emits each chunk as it arrives, followed by a
+    /// [`ToolStreamEvent::Done`] event when the process exits. On timeout,
+    /// cancellation, or output limit, the process group is killed and the
+    /// final `Done` event contains an error result.
     async fn invoke(
         &self,
         call: &ToolCall,
         ctx: &SessionContext,
         cancel: &CancellationToken,
-    ) -> Result<String, ToolError> {
-        let result = self
-            .invoke_with_sink(call, ctx, cancel, Arc::new(NoopEventSink))
-            .await?;
-        if result.is_error {
-            Err(ToolError::new(result.output))
-        } else {
-            Ok(result.output)
-        }
-    }
-
-    /// Invoke the tool and emit stdout/stderr chunks as they arrive.
-    async fn invoke_with_sink(
-        &self,
-        call: &ToolCall,
-        ctx: &SessionContext,
-        cancel: &CancellationToken,
-        sink: Arc<dyn ToolEventSink>,
-    ) -> Result<ToolOutputResult, ToolError> {
+    ) -> Result<ToolOutputStream, ToolError> {
         if cancel.is_cancelled() {
             return Err(ToolError::new("run_command cancelled"));
         }
@@ -101,6 +86,8 @@ impl Tool for RunCommandTool {
         let cwd = resolve_cwd(call, ctx);
         let timeout_seconds = resolve_timeout(call)?;
         let timeout = Duration::from_secs(timeout_seconds);
+
+        let (tx, rx) = mpsc::unbounded();
 
         let mut std_cmd = std::process::Command::new("/bin/sh");
         // Run the command in a subshell and redirect stderr to stdout so the
@@ -128,57 +115,89 @@ impl Tool for RunCommandTool {
             .map_err(|error| ToolError::new(format!("failed to spawn command: {error}")))?;
 
         let pgid = child.id().map(u32::cast_signed);
+        let cancel = cancel.clone();
 
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| ToolError::new("failed to capture command stdout"))?;
-        let mut stdout_handle = tokio::spawn(read_streaming_output(stdout, sink, MAX_OUTPUT_BYTES));
+        let _handle = tokio::spawn(async move {
+            let stdout = child
+                .stdout
+                .take()
+                .ok_or_else(|| ToolError::new("failed to capture command stdout"));
+            let mut stdout = match stdout {
+                Ok(s) => s,
+                Err(error) => {
+                    let _ = tx
+                        .unbounded_send(Ok(ToolStreamEvent::done_error(&error)))
+                        .ok();
+                    return;
+                }
+            };
 
-        let reason = tokio::select! {
-            () = cancel.cancelled() => Some("cancelled"),
-            () = tokio::time::sleep(timeout) => Some("timed out"),
-            output = &mut stdout_handle => {
-                let output = output.map_err(|error| {
-                    ToolError::new(format!("stdout reader panicked: {error}"))
-                })?;
-                let output = match output {
-                    Ok(output) => output,
-                    Err(error) => {
-                        kill_and_reap(&mut child, pgid).await;
-                        return Err(error);
+            let mut buf = Vec::with_capacity(4096);
+            let mut chunk = [0u8; 8192];
+
+            let reason = tokio::select! {
+                () = cancel.cancelled() => Some("cancelled"),
+                () = tokio::time::sleep(timeout) => Some("timed out"),
+                result = read_streaming_output(&mut stdout, &tx, &mut buf, &mut chunk, MAX_OUTPUT_BYTES
+                ) => {
+                    match result {
+                        Ok(()) => {}
+                        Err(error) => {
+                            kill_and_reap(&mut child, pgid).await;
+                            let _ = tx.unbounded_send(Ok(ToolStreamEvent::done_error(&error))).ok();
+                            return;
+                        }
                     }
-                };
-                let status = child.wait().await;
-                return Ok(finish_with_status(status, output));
-            }
-            status = child.wait() => {
-                let output = stdout_handle.await.map_err(|error| {
-                    ToolError::new(format!("stdout reader panicked: {error}"))
-                })?;
-                let output = match output {
-                    Ok(output) => output,
-                    Err(error) => {
-                        kill_and_reap(&mut child, pgid).await;
-                        return Err(error);
-                    }
-                };
-                return Ok(finish_with_status(status, output));
-            }
-        };
+                    let output = String::from_utf8_lossy(&buf).into_owned();
+                    let status = child.wait().await;
+                    let _ = tx
+                        .unbounded_send(Ok(ToolStreamEvent::Done {
+                            result: finish_with_status(status, output),
+                        }))
+                        .ok();
+                    return;
+                }
+                status = child.wait() => {
+                    let output = match read_streaming_output(
+                        &mut stdout, &tx, &mut buf, &mut chunk, MAX_OUTPUT_BYTES
+                    ).await {
+                        Ok(()) => String::from_utf8_lossy(&buf).into_owned(),
+                        Err(error) => {
+                            kill_and_reap(&mut child, pgid).await;
+                            let _ = tx.unbounded_send(Ok(ToolStreamEvent::done_error(&error))).ok();
+                            return;
+                        }
+                    };
+                    let _ = tx
+                        .unbounded_send(Ok(ToolStreamEvent::Done {
+                            result: finish_with_status(status, output),
+                        }))
+                        .ok();
+                    return;
+                }
+            };
 
-        // Timeout or cancellation path: kill the process group and reap the
-        // child so it does not become a zombie.
-        kill_and_reap(&mut child, pgid).await;
-        let _ = stdout_handle.await;
+            // Timeout or cancellation path: kill the process group and reap the
+            // child so it does not become a zombie.
+            kill_and_reap(&mut child, pgid).await;
+            let _ = read_streaming_output(&mut stdout, &tx, &mut buf, &mut chunk, MAX_OUTPUT_BYTES)
+                .await;
 
-        match reason {
-            Some("cancelled") => Ok(ToolOutputResult::error("run_command cancelled")),
-            Some("timed out") => Ok(ToolOutputResult::error(format!(
-                "run_command timed out after {timeout_seconds} second(s)"
-            ))),
-            _ => Ok(ToolOutputResult::error("run_command terminated")),
-        }
+            let message = match reason {
+                Some("cancelled") => "run_command cancelled".to_string(),
+                Some("timed out") => {
+                    format!("run_command timed out after {timeout_seconds} second(s)")
+                }
+                _ => "run_command terminated".to_string(),
+            };
+            let _ = tx
+                .unbounded_send(Ok(ToolStreamEvent::Done {
+                    result: crate::ToolOutputResult::error(message),
+                }))
+                .ok();
+        });
+
+        Ok(Box::pin(rx))
     }
 }
 
@@ -186,22 +205,22 @@ impl Tool for RunCommandTool {
 fn finish_with_status(
     status: Result<std::process::ExitStatus, std::io::Error>,
     output: String,
-) -> ToolOutputResult {
+) -> crate::ToolOutputResult {
     match status {
         Ok(status) if status.success() => {
-            ToolOutputResult::success_with_exit_code(output, status.code().unwrap_or(0))
+            crate::ToolOutputResult::success_with_exit_code(output, status.code().unwrap_or(0))
         }
         Ok(status) => {
             let code = status
                 .code()
                 .map_or_else(|| "unknown".to_string(), |c| c.to_string());
-            ToolOutputResult::error_with_exit_code(
+            crate::ToolOutputResult::error_with_exit_code(
                 format!("command exited with code {code}\n{output}"),
                 status.code().unwrap_or(0),
             )
         }
         Err(error) => {
-            ToolOutputResult::error(format!("failed to wait for command: {error}\n{output}"))
+            crate::ToolOutputResult::error(format!("failed to wait for command: {error}\n{output}"))
         }
     }
 }
@@ -223,17 +242,20 @@ async fn kill_and_reap(child: &mut tokio::process::Child, pgid: Option<i32>) {
     let _ = child.wait().await;
 }
 
-/// Read command output, emit each chunk through `sink`, and return the full output.
+/// Read command output, emit each chunk through `tx`, and return the full output.
+///
+/// `buf` accumulates the complete output; `chunk` is the transient read buffer.
+/// The function returns early if the output exceeds `limit` bytes.
 async fn read_streaming_output(
-    mut stdout: tokio::process::ChildStdout,
-    sink: Arc<dyn ToolEventSink>,
+    stdout: &mut tokio::process::ChildStdout,
+    tx: &mpsc::UnboundedSender<Result<ToolStreamEvent, ToolError>>,
+    buf: &mut Vec<u8>,
+    chunk: &mut [u8; 8192],
     limit: usize,
-) -> Result<String, ToolError> {
-    let mut buf = Vec::with_capacity(4096);
-    let mut chunk = [0u8; 8192];
+) -> Result<(), ToolError> {
     loop {
         let n = stdout
-            .read(&mut chunk)
+            .read(chunk)
             .await
             .map_err(|error| ToolError::new(format!("failed to read command output: {error}")))?;
         if n == 0 {
@@ -246,11 +268,13 @@ async fn read_streaming_output(
         }
 
         let text = String::from_utf8_lossy(&chunk[..n]).into_owned();
-        sink.emit(ToolOutputEvent::Chunk { chunk: text }).await;
+        let _ = tx
+            .unbounded_send(Ok(ToolStreamEvent::Chunk { chunk: text }))
+            .ok();
 
         buf.extend_from_slice(&chunk[..n]);
     }
-    Ok(String::from_utf8_lossy(&buf).into_owned())
+    Ok(())
 }
 
 /// Resolve the working directory for a `run_command` call.
@@ -287,12 +311,16 @@ fn resolve_timeout(call: &ToolCall) -> Result<u64, ToolError> {
 mod tests {
     #![allow(clippy::expect_used, clippy::unwrap_used, unused_results)]
 
-    use std::sync::Arc;
+    use std::pin::Pin;
     use std::time::Instant;
+
+    use futures::Stream;
+    use futures::StreamExt;
 
     use super::*;
     use byte_protocol::{SessionContext, ToolCall};
-    use tokio::sync::Mutex;
+
+    use crate::ToolOutputResult;
 
     fn call_with_args(args: serde_json::Value) -> ToolCall {
         ToolCall {
@@ -309,50 +337,52 @@ mod tests {
         }
     }
 
-    /// A sink that records all emitted chunks.
-    #[derive(Default)]
-    struct RecordingSink {
-        chunks: Mutex<Vec<String>>,
-    }
-
-    #[async_trait]
-    impl ToolEventSink for RecordingSink {
-        async fn emit(&self, event: ToolOutputEvent) {
-            match event {
-                ToolOutputEvent::Chunk { chunk } => self.chunks.lock().await.push(chunk),
+    /// Collect all chunks and the final result from a `run_command` stream.
+    async fn collect_stream(
+        stream: Pin<Box<dyn Stream<Item = Result<ToolStreamEvent, ToolError>> + Send>>,
+    ) -> (Vec<String>, ToolOutputResult) {
+        let mut chunks = Vec::new();
+        let mut result = None;
+        let mut stream = stream;
+        while let Some(event) = stream.next().await {
+            match event.unwrap() {
+                ToolStreamEvent::Chunk { chunk } => chunks.push(chunk),
+                ToolStreamEvent::Done { result: r } => result = Some(r),
             }
         }
+        (chunks, result.expect("stream should end with Done"))
     }
 
     #[tokio::test]
     async fn echo_hello_returns_output_and_zero_exit() {
         let temp = tempfile::tempdir().unwrap();
-        let result = RunCommandTool
+        let stream = RunCommandTool
             .invoke(
                 &call_with_args(serde_json::json!({"command": "echo hello"})),
                 &ctx_with_workspace(&temp),
                 &CancellationToken::new(),
             )
-            .await;
-        assert_eq!(result.unwrap(), "hello\n");
+            .await
+            .unwrap();
+        let (_chunks, result) = collect_stream(stream).await;
+        assert_eq!(result.output, "hello\n");
+        assert_eq!(result.exit_code, Some(0));
+        assert!(!result.is_error);
     }
 
     #[tokio::test]
     async fn streaming_echo_emits_chunks_and_success_result() {
         let temp = tempfile::tempdir().unwrap();
-        let recording = Arc::new(RecordingSink::default());
-        let sink: Arc<dyn ToolEventSink> = recording.clone();
-        let result = RunCommandTool
-            .invoke_with_sink(
+        let stream = RunCommandTool
+            .invoke(
                 &call_with_args(serde_json::json!({"command": "echo hello"})),
                 &ctx_with_workspace(&temp),
                 &CancellationToken::new(),
-                sink,
             )
             .await
             .unwrap();
 
-        let chunks = recording.chunks.lock().await;
+        let (chunks, result) = collect_stream(stream).await;
         assert!(!chunks.is_empty(), "should emit at least one chunk");
         assert_eq!(chunks.concat(), "hello\n");
         assert_eq!(result.output, "hello\n");
@@ -364,7 +394,7 @@ mod tests {
     async fn sleep_times_out_and_kills_child() {
         let temp = tempfile::tempdir().unwrap();
         let start = Instant::now();
-        let result = RunCommandTool
+        let stream = RunCommandTool
             .invoke(
                 &call_with_args(serde_json::json!({
                     "command": "sleep 10",
@@ -373,13 +403,15 @@ mod tests {
                 &ctx_with_workspace(&temp),
                 &CancellationToken::new(),
             )
-            .await;
+            .await
+            .unwrap();
+        let (_chunks, result) = collect_stream(stream).await;
         let elapsed = start.elapsed();
 
-        assert!(result.is_err());
+        assert!(result.is_error);
         assert!(
-            result.unwrap_err().to_string().contains("timed out"),
-            "error should report a timeout"
+            result.output.contains("timed out"),
+            "result should report a timeout"
         );
         assert!(
             elapsed >= Duration::from_millis(900) && elapsed < Duration::from_secs(3),
@@ -402,7 +434,10 @@ mod tests {
             .await;
 
         assert!(result.is_err());
-        let error = result.unwrap_err().to_string();
+        let error = match result {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("expected error"),
+        };
         assert!(
             error.contains("cancelled"),
             "error should report cancellation"
@@ -429,10 +464,12 @@ mod tests {
 
         assert!(result.is_err());
         assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("timeout_seconds` must be at least 1"),
+            match result {
+                Err(error) => error
+                    .to_string()
+                    .contains("timeout_seconds` must be at least 1"),
+                Ok(_) => false,
+            },
             "error should report invalid timeout"
         );
     }
@@ -441,17 +478,19 @@ mod tests {
     async fn no_timeout_uses_default_and_succeeds() {
         let temp = tempfile::tempdir().unwrap();
         let start = Instant::now();
-        let result = RunCommandTool
+        let stream = RunCommandTool
             .invoke(
                 &call_with_args(serde_json::json!({"command": "sleep 1"})),
                 &ctx_with_workspace(&temp),
                 &CancellationToken::new(),
             )
-            .await;
+            .await
+            .unwrap();
+        let (_chunks, result) = collect_stream(stream).await;
         let elapsed = start.elapsed();
 
         assert!(
-            result.is_ok(),
+            !result.is_error,
             "command should succeed using default timeout"
         );
         assert!(
@@ -463,36 +502,15 @@ mod tests {
     #[tokio::test]
     async fn non_zero_exit_is_reported_as_error() {
         let temp = tempfile::tempdir().unwrap();
-        let result = RunCommandTool
+        let stream = RunCommandTool
             .invoke(
                 &call_with_args(serde_json::json!({"command": "exit 42"})),
                 &ctx_with_workspace(&temp),
                 &CancellationToken::new(),
             )
-            .await;
-
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("exited with code 42"),
-            "error should contain exit code"
-        );
-    }
-
-    #[tokio::test]
-    async fn streaming_non_zero_exit_includes_exit_code() {
-        let temp = tempfile::tempdir().unwrap();
-        let result = RunCommandTool
-            .invoke_with_sink(
-                &call_with_args(serde_json::json!({"command": "exit 42"})),
-                &ctx_with_workspace(&temp),
-                &CancellationToken::new(),
-                Arc::new(NoopEventSink),
-            )
             .await
             .unwrap();
+        let (_chunks, result) = collect_stream(stream).await;
 
         assert!(result.is_error);
         assert_eq!(result.exit_code, Some(42));
@@ -505,15 +523,17 @@ mod tests {
     #[tokio::test]
     async fn stderr_is_merged_into_output() {
         let temp = tempfile::tempdir().unwrap();
-        let result = RunCommandTool
+        let stream = RunCommandTool
             .invoke(
                 &call_with_args(serde_json::json!({"command": "echo out; echo err >&2"})),
                 &ctx_with_workspace(&temp),
                 &CancellationToken::new(),
             )
-            .await;
+            .await
+            .unwrap();
+        let (_chunks, result) = collect_stream(stream).await;
 
-        assert_eq!(result.unwrap(), "out\nerr\n");
+        assert_eq!(result.output, "out\nerr\n");
     }
 
     #[tokio::test]
@@ -526,7 +546,7 @@ mod tests {
             .await
             .unwrap();
 
-        let result = RunCommandTool
+        let stream = RunCommandTool
             .invoke(
                 &call_with_args(serde_json::json!({
                     "command": "cat file.txt",
@@ -535,9 +555,11 @@ mod tests {
                 &ctx_with_workspace(&temp),
                 &CancellationToken::new(),
             )
-            .await;
+            .await
+            .unwrap();
+        let (_chunks, result) = collect_stream(stream).await;
 
-        assert_eq!(result.unwrap(), "nested");
+        assert_eq!(result.output, "nested");
     }
 
     #[tokio::test]
@@ -553,10 +575,10 @@ mod tests {
 
         assert!(result.is_err());
         assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("missing `command` argument"),
+            match result {
+                Err(error) => error.to_string().contains("missing `command` argument"),
+                Ok(_) => false,
+            },
             "error should report missing command"
         );
     }
@@ -565,16 +587,18 @@ mod tests {
     async fn stdin_is_null_so_cat_returns_eof_immediately() {
         let temp = tempfile::tempdir().unwrap();
         let start = Instant::now();
-        let result = RunCommandTool
+        let stream = RunCommandTool
             .invoke(
                 &call_with_args(serde_json::json!({"command": "cat"})),
                 &ctx_with_workspace(&temp),
                 &CancellationToken::new(),
             )
-            .await;
+            .await
+            .unwrap();
+        let (_chunks, result) = collect_stream(stream).await;
         let elapsed = start.elapsed();
 
-        assert_eq!(result.unwrap(), "", "cat with no stdin should return EOF");
+        assert_eq!(result.output, "", "cat with no stdin should return EOF");
         assert!(
             elapsed < Duration::from_secs(2),
             "cat should not block waiting for stdin, took {elapsed:?}"
@@ -585,21 +609,20 @@ mod tests {
     async fn excessive_output_is_rejected_with_limit_error() {
         let temp = tempfile::tempdir().unwrap();
         let start = Instant::now();
-        let result = RunCommandTool
+        let stream = RunCommandTool
             .invoke(
                 &call_with_args(serde_json::json!({"command": "yes"})),
                 &ctx_with_workspace(&temp),
                 &CancellationToken::new(),
             )
-            .await;
+            .await
+            .unwrap();
+        let (_chunks, result) = collect_stream(stream).await;
         let elapsed = start.elapsed();
 
-        assert!(result.is_err());
+        assert!(result.is_error);
         assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("exceeded 1048576 byte limit"),
+            result.output.contains("exceeded 1048576 byte limit"),
             "error should report output limit exceeded"
         );
         assert!(

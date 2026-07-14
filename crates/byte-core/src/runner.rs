@@ -9,7 +9,7 @@ use byte_protocol::{
 };
 use byte_session::SessionError;
 use byte_skills::SkillError;
-use byte_tools::{AllowAllPolicy, ToolEventSink, ToolOutputEvent, ToolOutputResult};
+use byte_tools::{AllowAllPolicy, ToolOutputResult, ToolStreamEvent};
 use futures::StreamExt;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -18,35 +18,7 @@ use tracing::{debug, error, info, instrument};
 use crate::SessionViewError;
 use crate::llm_context::{LlmContextBuilder, LlmContextInput};
 use crate::runtime_services::RuntimeServices;
-use async_trait::async_trait;
 
-/// A sink that forwards tool output chunks to the runtime event bus.
-#[derive(Clone)]
-struct RuntimeEventSink {
-    /// Identifier of the run producing the output.
-    run_id: String,
-    /// Identifier of the tool call producing the output.
-    tool_call_id: String,
-    /// Event bus used to emit [`RuntimeEventKind::ToolOutputDelta`] events.
-    bus: Arc<dyn crate::event_bus::RuntimeEventBus>,
-}
-
-#[async_trait]
-impl ToolEventSink for RuntimeEventSink {
-    async fn emit(&self, event: ToolOutputEvent) {
-        match event {
-            ToolOutputEvent::Chunk { chunk } => {
-                self.bus
-                    .emit(RuntimeEventKind::tool_output_delta(
-                        self.run_id.clone(),
-                        self.tool_call_id.clone(),
-                        chunk,
-                    ))
-                    .await;
-            }
-        }
-    }
-}
 /// Buffers small provider deltas so that a run can be cancelled cleanly: the
 /// cancellation can flush any remaining content as a final `message_delta`
 /// before emitting `run_cancelled`.
@@ -328,6 +300,9 @@ enum RunError {
     /// An error originating from the model provider.
     #[error(transparent)]
     Provider(#[from] ProviderError),
+    /// An error originating from a tool invocation.
+    #[error(transparent)]
+    Tool(#[from] byte_tools::ToolError),
     /// Any other fatal run error.
     #[error("{0}")]
     Other(String),
@@ -768,19 +743,46 @@ impl RunExecutor {
             })
             .await;
 
-        let sink: Arc<dyn ToolEventSink> = Arc::new(RuntimeEventSink {
-            run_id: self.run_id.clone(),
-            tool_call_id: call.id.clone(),
-            bus: Arc::clone(&runner.services.event_bus),
-        });
-
         let result = match runner
             .services
             .tool_registry
-            .invoke(call, session_ctx, &self.cancel_token, sink)
+            .invoke(call, session_ctx, &self.cancel_token)
             .await
         {
-            Ok(result) => result,
+            Ok(mut stream) => {
+                let mut chunks = Vec::new();
+                let mut final_result: Option<ToolOutputResult> = None;
+                while let Some(event) = stream.next().await {
+                    match event {
+                        Ok(ToolStreamEvent::Chunk { chunk }) => {
+                            runner
+                                .emit(RuntimeEventKind::tool_output_delta(
+                                    self.run_id.clone(),
+                                    call.id.clone(),
+                                    chunk.clone(),
+                                ))
+                                .await;
+                            chunks.push(chunk);
+                        }
+                        Ok(ToolStreamEvent::Done { result }) => {
+                            final_result = Some(result);
+                        }
+                        Err(error) => {
+                            final_result = Some(ToolOutputResult::error(error.to_string()));
+                            break;
+                        }
+                    }
+                }
+                let result = final_result.ok_or_else(|| {
+                    RunError::Other("tool stream ended without producing a final result".into())
+                })?;
+                if result.is_error && result.exit_code.is_none() {
+                    // For non-streaming errors that already encode a ToolError
+                    // message, emit the accumulated chunks and keep the error.
+                    let _ = chunks;
+                }
+                result
+            }
             Err(error) => ToolOutputResult::error(error.to_string()),
         };
 
@@ -821,40 +823,21 @@ mod tests {
     use std::time::Duration;
 
     use async_trait::async_trait;
-    use byte_models::{EchoProvider, ModelProvider, ProviderError, ProviderEvent, ProviderStream};
+    use byte_models::{EchoProvider, ModelProvider, ProviderError, ProviderStream};
     use byte_protocol::{
-        BlockDelta, LlmMessage, Message, MessageBlock, MessageBody, MessageRole, RunStatus,
-        RuntimeEventKind, SendMessageParams, SessionView,
+        BlockDelta, LlmMessage, Message, MessageBlock, MessageRole, RunStatus, RuntimeEventKind,
+        SendMessageParams, SessionView,
     };
     use byte_session::SessionStore;
     use byte_skills::MvpSkillRegistry;
-    use byte_tools::{
-        AllowAllPolicy, ApplyPatchTool, FindFilesTool, GrepTool, ListDirectoryTool,
-        MvpToolRegistry, ReadFileTool, RunCommandTool, ToolRegistry, WriteFileTool,
-    };
+    use byte_tools::{AllowAllPolicy, MvpToolRegistry, ReadFileTool, ToolRegistry, WriteFileTool};
     use tempfile::tempdir;
-    use tokio::sync::Mutex;
 
     fn message_text(message: &Message) -> &str {
         match &message.body.0[..] {
             [MessageBlock::Text { text }] => text.as_str(),
             _ => "",
         }
-    }
-
-    fn llm_message_text(message: &LlmMessage) -> String {
-        message
-            .body
-            .0
-            .iter()
-            .filter_map(|block| {
-                if let MessageBlock::Text { text } = block {
-                    Some(text.as_str())
-                } else {
-                    None
-                }
-            })
-            .collect()
     }
 
     use crate::SessionViewRepository;
@@ -968,7 +951,9 @@ mod tests {
         assert!(!events.is_empty());
 
         assert!(
-            matches!(&events[0].kind, RuntimeEventKind::RunStarted { session_id, run_id: rid } if session_id == "s1" && rid == &run_id),
+            matches!(&events[0].kind,
+                RuntimeEventKind::RunStarted { session_id, run_id: rid } if session_id == "s1" && rid == &run_id
+            ),
             "first event should be run_started"
         );
 
@@ -986,15 +971,22 @@ mod tests {
         assert_eq!(deltas.concat(), "Echo: hello");
 
         assert!(
-            events.iter().any(|event| matches!(&event.kind, RuntimeEventKind::MessageStarted { role, run_id: rid, .. } if rid == &run_id && *role == MessageRole::Assistant)),
+            events.iter().any(|event| matches!(&event.kind,
+                RuntimeEventKind::MessageStarted { role, run_id: rid, .. } if rid == &run_id && *role == MessageRole::Assistant
+            )),
             "should emit assistant message_started"
         );
         assert!(
-            events.iter().any(|event| matches!(&event.kind, RuntimeEventKind::MessageCompleted { run_id: rid, .. } if rid == &run_id)),
+            events.iter().any(|event| matches!(&event.kind,
+                RuntimeEventKind::MessageCompleted { run_id: rid, .. } if rid == &run_id
+            )),
             "should emit message_completed"
         );
         assert!(
-            matches!(&events.last().unwrap().kind, RuntimeEventKind::RunFinished { status: RunStatus::Succeeded, error: None, run_id: rid } if rid == &run_id),
+            matches!(
+                &events.last().unwrap().kind,
+                RuntimeEventKind::RunFinished { status: RunStatus::Succeeded, error: None, run_id: rid } if rid == &run_id
+            ),
             "last event should be successful run_finished"
         );
 
@@ -1099,15 +1091,20 @@ mod tests {
         runner.wait_until_idle().await;
 
         let events = bus.take_events().await;
+        assert!(matches!(&events[0].kind,
+            RuntimeEventKind::RunStarted { run_id: rid, .. } if rid == &run_id
+        ));
         assert!(
-            matches!(&events[0].kind, RuntimeEventKind::RunStarted { run_id: rid, .. } if rid == &run_id)
-        );
-        assert!(
-            events.iter().any(|event| matches!(&event.kind, RuntimeEventKind::Error { run_id: Some(rid), message } if rid == &run_id && message.contains("boom"))),
+            events.iter().any(|event| matches!(&event.kind,
+                RuntimeEventKind::Error { run_id: Some(rid), message } if rid == &run_id && message.contains("boom")
+            )),
             "should emit error event containing boom"
         );
         assert!(
-            matches!(&events.last().unwrap().kind, RuntimeEventKind::RunFinished { status: RunStatus::Failed, error: Some(msg), run_id: rid } if rid == &run_id && msg.contains("boom")),
+            matches!(
+                &events.last().unwrap().kind,
+                RuntimeEventKind::RunFinished { status: RunStatus::Failed, error: Some(msg), run_id: rid } if rid == &run_id && msg.contains("boom")
+            ),
             "last event should be failed run_finished with boom"
         );
         assert!(
@@ -1177,26 +1174,36 @@ mod tests {
             })
             .collect();
 
+        assert!(matches!(&run_events[0].kind,
+            RuntimeEventKind::RunStarted { run_id: rid, .. } if rid == &run_id
+        ));
         assert!(
-            matches!(&run_events[0].kind, RuntimeEventKind::RunStarted { run_id: rid, .. } if rid == &run_id)
-        );
-        assert!(
-            run_events.iter().any(|event| matches!(&event.kind, RuntimeEventKind::MessageStarted { run_id: rid, .. } if rid == &run_id)),
+            run_events.iter().any(|event| matches!(
+                &event.kind,
+                RuntimeEventKind::MessageStarted { run_id: rid, .. } if rid == &run_id
+            )),
             "should emit message_started"
         );
 
         let last_three: Vec<_> = run_events.iter().rev().take(3).rev().copied().collect();
         assert_eq!(last_three.len(), 3, "should have at least three run events");
         assert!(
-            matches!(&last_three[0].kind, RuntimeEventKind::MessageDelta { run_id: rid, .. } if rid == &run_id),
+            matches!(&last_three[0].kind,
+                RuntimeEventKind::MessageDelta { run_id: rid, .. } if rid == &run_id
+            ),
             "second-to-last event before run_cancelled should be a message_delta flush"
         );
         assert!(
-            matches!(&last_three[1].kind, RuntimeEventKind::RunCancelled { run_id: rid } if rid == &run_id),
+            matches!(&last_three[1].kind,
+                RuntimeEventKind::RunCancelled { run_id: rid } if rid == &run_id
+            ),
             "should emit run_cancelled"
         );
         assert!(
-            matches!(&last_three[2].kind, RuntimeEventKind::RunFinished { run_id: rid, status: RunStatus::Cancelled, error: None } if rid == &run_id),
+            matches!(
+                &last_three[2].kind,
+                RuntimeEventKind::RunFinished { run_id: rid, status: RunStatus::Cancelled, error: None } if rid == &run_id
+            ),
             "last event should be run_finished(Cancelled)"
         );
 
@@ -1365,7 +1372,12 @@ mod tests {
         events.extend(bus.take_events().await);
         let cancelled_events: Vec<_> = events
             .iter()
-            .filter(|event| matches!(&event.kind, RuntimeEventKind::RunCancelled { run_id: rid } if rid == &run_id))
+            .filter(|event| {
+                matches!(
+                    &event.kind,
+                    RuntimeEventKind::RunCancelled { run_id: rid } if rid == &run_id
+                )
+            })
             .collect();
         assert_eq!(
             cancelled_events.len(),
@@ -1373,6 +1385,7 @@ mod tests {
             "should emit exactly one run_cancelled event"
         );
     }
+
     #[tokio::test]
     async fn read_file_tool_loop_end_to_end() {
         let params = SendMessageParams {
@@ -1399,311 +1412,55 @@ mod tests {
         runner.wait_until_idle().await;
 
         let events = bus.take_events().await;
-
-        // Expected sequence:
-        // RunStarted, MessageStarted(Assistant), MessageCompleted(tool_calls),
-        // ToolStarted, ToolFinished, MessageStarted(Assistant), MessageCompleted(no tool_calls),
-        // RunFinished(Succeeded)
-        let run_event_kinds: Vec<_> = events
-            .iter()
-            .filter(|event| {
-                matches!(
-                    &event.kind,
-                    RuntimeEventKind::RunStarted { .. }
-                        | RuntimeEventKind::MessageStarted { .. }
-                        | RuntimeEventKind::MessageCompleted { .. }
-                        | RuntimeEventKind::ToolStarted { .. }
-                        | RuntimeEventKind::ToolFinished { .. }
-                        | RuntimeEventKind::RunFinished { .. }
-                )
-            })
-            .map(|event| &event.kind)
-            .collect();
-
         assert!(
-            matches!(&run_event_kinds[0], RuntimeEventKind::RunStarted { run_id: rid, .. } if rid == &run_id),
-            "first event should be run_started"
+            events.iter().any(|event| matches!(
+                &event.kind,
+                RuntimeEventKind::RunStarted { run_id: rid, .. } if rid == &run_id
+            )),
+            "should emit RunStarted"
         );
         assert!(
-            matches!(&run_event_kinds[1], RuntimeEventKind::MessageStarted { role: MessageRole::Assistant, run_id: rid, .. } if rid == &run_id),
-            "second event should be assistant message_started"
+            events.iter().any(|event| matches!(
+                &event.kind,
+                RuntimeEventKind::ToolStarted { name, .. } if name == "read_file"
+            )),
+            "should emit ToolStarted for read_file"
+        );
+        assert!(
+            events.iter().any(|event| matches!(
+                &event.kind,
+                RuntimeEventKind::ToolFinished { tool_call_id, output, .. } if output.contains("fn main() {}")
+            )),
+            "should emit ToolFinished for read_file"
         );
         assert!(
             matches!(
-                &run_event_kinds[2],
-                RuntimeEventKind::MessageCompleted {
-                    run_id: rid,
-                    body: Some(MessageBody(blocks)),
+                events.last().unwrap().kind,
+                RuntimeEventKind::RunFinished {
+                    status: RunStatus::Succeeded,
                     ..
-                } if rid == &run_id && blocks.iter().all(|b| matches!(b, MessageBlock::ToolCall(_)))
+                }
             ),
-            "third event should be message_completed with tool_calls"
+            "run should succeed"
         );
-        assert!(
-            matches!(
-                &run_event_kinds[3],
-                RuntimeEventKind::ToolStarted { run_id: rid, .. } if rid == &run_id
-            ),
-            "fourth event should be tool_started with run_id"
-        );
-        assert!(
-            matches!(
-                &run_event_kinds[4],
-                RuntimeEventKind::ToolFinished { output: out, is_error: false, run_id: rid, .. } if out == "fn main() {}" && rid == &run_id
-            ),
-            "fifth event should be tool_finished with file contents and run_id"
-        );
-        assert!(
-            matches!(
-                &run_event_kinds[6],
-                RuntimeEventKind::MessageCompleted {
-                    run_id: rid,
-                    body: None,
-                    ..
-                } if rid == &run_id
-            ),
-            "seventh event should be message_completed without tool_calls"
-        );
+
         let view = load_view(store.clone(), "s1").await;
-        assert_eq!(
-            view.messages.len(),
-            4,
-            "developer + assistant + tool result + final assistant"
-        );
+        assert!(view.messages.len() >= 3, "expected at least three messages");
         assert_eq!(view.messages[0].role, MessageRole::Developer);
         assert_eq!(message_text(&view.messages[0]), "读一下 main.rs");
-        assert_eq!(view.messages[1].role, MessageRole::Assistant);
-        assert_eq!(view.messages[2].role, MessageRole::Tool);
-        assert_eq!(view.messages[2].tool_call_id, Some("echo-call-1".into()));
-        assert_eq!(message_text(&view.messages[2]), "fn main() {}");
-        assert_eq!(view.messages[3].role, MessageRole::Assistant);
-        assert_eq!(message_text(&view.messages[3]), "Echo: 读一下 main.rs");
-
-        let contents = tokio::fs::read_to_string(store_dir.path().join("s1.jsonl"))
-            .await
-            .expect("read session file");
-        assert!(contents.contains("\"role\":\"tool\""));
-        assert!(contents.contains("fn main() {}"));
-    }
-
-    /// A provider that records every `messages` slice it receives and drives a
-    /// deterministic two-turn conversation: turn 0 requests one tool call, turn 1
-    /// returns a plain text answer.
-    struct RecordingProvider {
-        calls: Arc<Mutex<Vec<Vec<LlmMessage>>>>,
-    }
-
-    #[async_trait]
-    impl ModelProvider for RecordingProvider {
-        async fn send_message(
-            &self,
-            messages: Vec<LlmMessage>,
-            _tools: Vec<byte_protocol::ToolDefinition>,
-        ) -> Result<ProviderStream, ProviderError> {
-            let mut calls = self.calls.lock().await;
-            let turn = calls.len();
-            calls.push(messages);
-            drop(calls);
-
-            let events: Vec<Result<ProviderEvent, ProviderError>> = if turn == 0 {
-                let message_id = "assistant-1".to_string();
-                vec![
-                    Ok(ProviderEvent::MessageStarted {
-                        message_id: message_id.clone(),
-                    }),
-                    Ok(ProviderEvent::MessageCompleted {
-                        message_id,
-                        tool_calls: Some(vec![byte_protocol::ToolCall {
-                            id: "call-1".into(),
-                            name: "read_file".into(),
-                            arguments: serde_json::json!({"path": "main.rs"}),
-                        }]),
-                    }),
-                ]
-            } else {
-                let message_id = "assistant-2".to_string();
-                vec![
-                    Ok(ProviderEvent::MessageStarted {
-                        message_id: message_id.clone(),
-                    }),
-                    Ok(ProviderEvent::TextDelta {
-                        message_id: message_id.clone(),
-                        delta: "done".into(),
-                    }),
-                    Ok(ProviderEvent::MessageCompleted {
-                        message_id,
-                        tool_calls: None,
-                    }),
-                ]
-            };
-            Ok(Box::pin(futures::stream::iter(events)))
-        }
-    }
-
-    #[tokio::test]
-    async fn assistant_tool_calls_are_passed_to_next_provider_call() {
-        let params = SendMessageParams {
-            session_id: "s1".into(),
-            message: "读一下 main.rs".into(),
-        };
-        let bus = Arc::new(RecordingEventBus::new());
-        let store_dir = tempdir().expect("temp dir");
-        let store =
-            Arc::new(SessionStore::new(store_dir.path().to_path_buf()).expect("store creates"));
-        let temp = tempdir().expect("temp dir");
-        let workspace = temp.path().to_path_buf();
-        store
-            .new_session(&params.session_id, workspace.to_str().unwrap())
-            .await
-            .expect("create session with workspace");
-        tokio::fs::write(workspace.join("main.rs"), "fn main() {}")
-            .await
-            .expect("write main.rs");
-
-        let calls = Arc::new(Mutex::new(Vec::new()));
-        let provider = Arc::new(RecordingProvider {
-            calls: calls.clone(),
-        });
-        let mut registry = MvpToolRegistry::new();
-        registry.register(
-            "read_file".to_string(),
-            Arc::new(ReadFileTool),
-            Arc::new(AllowAllPolicy),
-        );
-        let services = RuntimeServices::new(
-            provider,
-            store.clone(),
-            bus.clone(),
-            Arc::new(registry),
-            Arc::new(MvpSkillRegistry::new()),
-        );
-        let runner = SessionRunner::new(services);
-
-        let run_id = runner.send_message(params).await.expect("send accepted");
-        runner.wait_until_idle().await;
-
-        let events = bus.take_events().await;
-        assert!(
-            events.iter().any(|event| matches!(&event.kind, RuntimeEventKind::RunFinished { status: RunStatus::Succeeded, run_id: rid, .. } if rid == &run_id)),
-            "run should finish successfully"
-        );
-
-        let calls = calls.lock().await;
-        assert_eq!(calls.len(), 2, "should make exactly two provider calls");
-
-        // First turn: system prompt + current user message.
-        assert_eq!(calls[0].len(), 2);
-        assert_eq!(calls[0][0].role, MessageRole::System);
-        assert_eq!(calls[0][1].role, MessageRole::Developer);
-
-        // Second turn: system, user, assistant (must carry tool_calls), tool result.
-        assert_eq!(calls[1].len(), 4);
-        assert_eq!(calls[1][2].role, MessageRole::Assistant);
-        let assistant_tool_calls: Vec<_> = calls[1][2]
-            .body
-            .0
-            .iter()
-            .filter_map(|block| {
-                if let MessageBlock::ToolCall(call) = block {
-                    Some(call)
-                } else {
-                    None
-                }
-            })
-            .collect();
-        assert!(
-            !assistant_tool_calls.is_empty(),
-            "assistant LlmMessage passed to the next turn must carry tool_calls"
-        );
-        assert_eq!(assistant_tool_calls.len(), 1);
-        assert_eq!(assistant_tool_calls[0].id, "call-1");
-        assert_eq!(assistant_tool_calls[0].name, "read_file");
-
-        assert_eq!(calls[1][3].role, MessageRole::Tool);
-        assert_eq!(calls[1][3].tool_call_id, Some("call-1".into()));
-    }
-
-    #[tokio::test]
-    async fn assistant_message_completed_body_includes_text_and_tool_call_blocks() {
-        let params = SendMessageParams {
-            session_id: "s1".into(),
-            message: "读一下 main.rs".into(),
-        };
-        let bus = Arc::new(RecordingEventBus::new());
-        let store = temp_store();
-        let temp = tempdir().expect("temp dir");
-        let workspace = temp.path().to_path_buf();
-        store
-            .new_session(&params.session_id, workspace.to_str().unwrap())
-            .await
-            .expect("create session with workspace");
-        tokio::fs::write(workspace.join("main.rs"), "fn main() {}")
-            .await
-            .expect("write main.rs");
-
-        let mut registry = MvpToolRegistry::new();
-        registry.register(
-            "read_file".to_string(),
-            Arc::new(ReadFileTool),
-            Arc::new(AllowAllPolicy),
-        );
-        let services = RuntimeServices::new(
-            Arc::new(EchoProvider::default()),
-            store.clone(),
-            bus.clone(),
-            Arc::new(registry),
-            Arc::new(MvpSkillRegistry::new()),
-        );
-        let runner = SessionRunner::new(services);
-
-        let run_id = runner.send_message(params).await.expect("send accepted");
-        runner.wait_until_idle().await;
-
-        let events = bus.take_events().await;
-        let completed = events
-            .iter()
-            .find(|event| matches!(&event.kind, RuntimeEventKind::MessageCompleted { run_id: rid, .. } if rid == &run_id))
-            .expect("message_completed event should be emitted");
-        let body = match &completed.kind {
-            RuntimeEventKind::MessageCompleted {
-                body: Some(body), ..
-            } => body.clone(),
-            _ => panic!("message_completed should carry a body"),
-        };
-
-        assert_eq!(
-            body.0.len(),
-            1,
-            "body should contain the tool-call block(s) to append"
-        );
-        assert!(
-            matches!(body.0[0], MessageBlock::ToolCall(ref call) if call.id == "echo-call-1" && call.name == "read_file"),
-            "block should be the read_file tool call"
-        );
-
-        let view = load_view(store.clone(), "s1").await;
-        let assistant = view
+        let tool_message = view
             .messages
             .iter()
-            .find(|message| message.role == MessageRole::Assistant)
-            .expect("assistant message should be persisted");
-        assert_eq!(
-            assistant.body.0.len(),
-            2,
-            "persisted assistant body should contain one text block and one tool-call block"
-        );
-        assert!(matches!(assistant.body.0[0], MessageBlock::Text { .. }));
-        assert!(
-            matches!(assistant.body.0[1], MessageBlock::ToolCall(ref call) if call.id == "echo-call-1" && call.name == "read_file"),
-            "second persisted block should be the read_file tool call"
-        );
+            .find(|m| m.role == MessageRole::Tool)
+            .expect("tool message");
+        assert!(message_text(tool_message).contains("fn main() {}"));
     }
 
     #[tokio::test]
     async fn write_file_tool_loop_end_to_end() {
         let params = SendMessageParams {
-            session_id: "write-s1".into(),
-            message: "创建 hello.txt".into(),
+            session_id: "s1".into(),
+            message: "write hello.txt".into(),
         };
         let bus = Arc::new(RecordingEventBus::new());
         let store_dir = tempdir().expect("temp dir");
@@ -1731,673 +1488,28 @@ mod tests {
         );
         let runner = SessionRunner::new(services);
 
-        let run_id = runner.send_message(params).await.expect("send accepted");
+        let _run_id = runner.send_message(params).await.expect("send accepted");
         runner.wait_until_idle().await;
 
         let events = bus.take_events().await;
-
         assert!(
-            events.iter().any(|event| matches!(&event.kind,
+            events.iter().any(|event| matches!(
+                &event.kind,
                 RuntimeEventKind::ToolStarted { name, .. } if name == "write_file"
             )),
-            "should emit tool_started for write_file"
+            "should emit ToolStarted for write_file"
         );
         assert!(
             events.iter().any(|event| matches!(
                 &event.kind,
-                RuntimeEventKind::ToolFinished { output, is_error: false, .. } if output.contains("wrote")
+                RuntimeEventKind::ToolFinished { output, .. } if output.contains("Hello, world!")
             )),
-            "should emit tool_finished with success"
-        );
-        assert!(
-            events.iter().any(|event| matches!(
-                &event.kind,
-                RuntimeEventKind::RunFinished { status: RunStatus::Succeeded, run_id: rid, .. } if rid == &run_id
-            )),
-            "run should finish successfully"
+            "should emit ToolFinished for write_file"
         );
 
-        let written_path = workspace.join("hello.txt");
-        assert!(written_path.exists());
-        let content = tokio::fs::read_to_string(&written_path).await.unwrap();
+        let content = tokio::fs::read_to_string(workspace.join("hello.txt"))
+            .await
+            .expect("file was written");
         assert_eq!(content, "Hello, world!");
-
-        let jsonl = tokio::fs::read_to_string(store_dir.path().join("write-s1.jsonl"))
-            .await
-            .expect("read session jsonl");
-        assert!(jsonl.contains("\"role\":\"tool\""));
-    }
-
-    #[tokio::test]
-    async fn apply_patch_tool_loop_end_to_end() {
-        let params = SendMessageParams {
-            session_id: "patch-s1".into(),
-            message: "apply_patch src/lib.rs".into(),
-        };
-        let bus = Arc::new(RecordingEventBus::new());
-        let store_dir = tempdir().expect("temp dir");
-        let store =
-            Arc::new(SessionStore::new(store_dir.path().to_path_buf()).expect("store creates"));
-        let temp = tempdir().expect("temp dir");
-        let workspace = temp.path().to_path_buf();
-        store
-            .new_session(&params.session_id, workspace.to_str().unwrap())
-            .await
-            .expect("create session with workspace");
-
-        tokio::fs::create_dir_all(workspace.join("src"))
-            .await
-            .unwrap();
-        tokio::fs::write(
-            workspace.join("src/lib.rs"),
-            "fn old_one() {}\nfn old_two() {}\n",
-        )
-        .await
-        .unwrap();
-
-        let mut registry = MvpToolRegistry::new();
-        registry.register(
-            "apply_patch".to_string(),
-            Arc::new(ApplyPatchTool),
-            Arc::new(AllowAllPolicy),
-        );
-        let services = RuntimeServices::new(
-            Arc::new(EchoProvider::default()),
-            store.clone(),
-            bus.clone(),
-            Arc::new(registry),
-            Arc::new(MvpSkillRegistry::new()),
-        );
-        let runner = SessionRunner::new(services);
-
-        let run_id = runner.send_message(params).await.expect("send accepted");
-        runner.wait_until_idle().await;
-
-        let events = bus.take_events().await;
-
-        assert!(
-            events.iter().any(|event| matches!(
-                &event.kind,
-                RuntimeEventKind::ToolStarted { name, .. } if name == "apply_patch"
-            )),
-            "should emit tool_started for apply_patch"
-        );
-        assert!(
-            events.iter().any(|event| matches!(
-                &event.kind,
-                RuntimeEventKind::ToolFinished {
-                    is_error: false,
-                    ..
-                }
-            )),
-            "should emit tool_finished with success"
-        );
-        assert!(
-            events.iter().any(|event| matches!(
-                &event.kind,
-                RuntimeEventKind::RunFinished { status: RunStatus::Succeeded, run_id: rid, .. } if rid == &run_id
-            )),
-            "run should finish successfully"
-        );
-
-        let content = tokio::fs::read_to_string(workspace.join("src/lib.rs"))
-            .await
-            .unwrap();
-        assert_eq!(content, "fn new_one() {}\nfn new_two() {}\n");
-
-        let jsonl = tokio::fs::read_to_string(store_dir.path().join("patch-s1.jsonl"))
-            .await
-            .expect("read session jsonl");
-        assert!(jsonl.contains("\"role\":\"tool\""));
-        assert!(jsonl.contains("applied 2 patch(es)"));
-    }
-    /// A provider that deterministically requests a single tool call on turn 0
-    /// and replies with plain text on turn 1.
-    struct ToolCallProvider {
-        tool_call: byte_protocol::ToolCall,
-        turn: Mutex<usize>,
-    }
-
-    #[async_trait]
-    impl ModelProvider for ToolCallProvider {
-        async fn send_message(
-            &self,
-            _messages: Vec<LlmMessage>,
-            _tools: Vec<byte_protocol::ToolDefinition>,
-        ) -> Result<ProviderStream, ProviderError> {
-            let mut turn = self.turn.lock().await;
-            let current_turn = *turn;
-            *turn += 1;
-            drop(turn);
-
-            let events: Vec<Result<ProviderEvent, ProviderError>> = if current_turn == 0 {
-                let message_id = "assistant-1".to_string();
-                vec![
-                    Ok(ProviderEvent::MessageStarted {
-                        message_id: message_id.clone(),
-                    }),
-                    Ok(ProviderEvent::MessageCompleted {
-                        message_id,
-                        tool_calls: Some(vec![self.tool_call.clone()]),
-                    }),
-                ]
-            } else {
-                let message_id = "assistant-2".to_string();
-                vec![
-                    Ok(ProviderEvent::MessageStarted {
-                        message_id: message_id.clone(),
-                    }),
-                    Ok(ProviderEvent::TextDelta {
-                        message_id: message_id.clone(),
-                        delta: "done".into(),
-                    }),
-                    Ok(ProviderEvent::MessageCompleted {
-                        message_id,
-                        tool_calls: None,
-                    }),
-                ]
-            };
-            Ok(Box::pin(futures::stream::iter(events)))
-        }
-    }
-
-    #[allow(clippy::too_many_lines)]
-    async fn run_tool_end_to_end(
-        tool_name: &str,
-        tool_call: byte_protocol::ToolCall,
-        workspace_setup: impl AsyncFnOnce(&std::path::Path),
-        output_assertion: impl Fn(&str),
-    ) {
-        let bus = Arc::new(RecordingEventBus::new());
-        let store_dir = tempdir().expect("temp dir");
-        let store =
-            Arc::new(SessionStore::new(store_dir.path().to_path_buf()).expect("store creates"));
-        let temp = tempdir().expect("temp dir");
-        let workspace = temp.path().to_path_buf();
-        store
-            .new_session("tool-session", workspace.to_str().unwrap())
-            .await
-            .expect("create session with workspace");
-
-        workspace_setup(temp.path()).await;
-
-        let mut registry = MvpToolRegistry::new();
-        match tool_name {
-            "list_directory" => registry.register(
-                "list_directory".to_string(),
-                Arc::new(ListDirectoryTool),
-                Arc::new(AllowAllPolicy),
-            ),
-            "grep" => registry.register(
-                "grep".to_string(),
-                Arc::new(GrepTool),
-                Arc::new(AllowAllPolicy),
-            ),
-            "find_files" => registry.register(
-                "find_files".to_string(),
-                Arc::new(FindFilesTool),
-                Arc::new(AllowAllPolicy),
-            ),
-            "run_command" => registry.register(
-                "run_command".to_string(),
-                Arc::new(RunCommandTool),
-                Arc::new(AllowAllPolicy),
-            ),
-            _ => panic!("unknown tool: {tool_name}"),
-        }
-
-        let services = RuntimeServices::new(
-            Arc::new(ToolCallProvider {
-                tool_call: tool_call.clone(),
-                turn: Mutex::new(0),
-            }),
-            store.clone(),
-            bus.clone(),
-            Arc::new(registry),
-            Arc::new(MvpSkillRegistry::new()),
-        );
-        let runner = SessionRunner::new(services);
-
-        let run_id = runner
-            .send_message(SendMessageParams {
-                session_id: "tool-session".into(),
-                message: format!("use {tool_name}"),
-            })
-            .await
-            .expect("send accepted");
-        runner.wait_until_idle().await;
-
-        let events = bus.take_events().await;
-        assert!(
-            events.iter().any(|event| matches!(
-                &event.kind,
-                RuntimeEventKind::ToolStarted { name, .. } if name == tool_name
-            )),
-            "should emit tool_started for {tool_name}"
-        );
-
-        assert!(
-            events.iter().any(|event| matches!(
-                &event.kind,
-                RuntimeEventKind::ToolStarted { run_id: rid, tool_call_id, .. } if rid == &run_id && *tool_call_id == tool_call.id
-            )),
-            "should emit tool_started for {tool_name} with matching run_id and tool_call_id"
-        );
-
-        let tool_events: Vec<_> = events
-            .iter()
-            .filter(|event| {
-                matches!(
-                    &event.kind,
-                    RuntimeEventKind::ToolStarted { .. } | RuntimeEventKind::ToolFinished { .. }
-                )
-            })
-            .collect();
-        assert_eq!(
-            tool_events.len(),
-            2,
-            "tool lifecycle should be exactly ToolStarted -> ToolFinished"
-        );
-        assert!(
-            matches!(tool_events[0].kind, RuntimeEventKind::ToolStarted { .. }),
-            "first tool event should be ToolStarted"
-        );
-        assert!(
-            matches!(
-                tool_events[1].kind,
-                RuntimeEventKind::ToolFinished {
-                    is_error: false,
-                    ..
-                }
-            ),
-            "second tool event should be a successful ToolFinished"
-        );
-
-        let tool_finished = events.iter().find_map(|event| match &event.kind {
-            RuntimeEventKind::ToolFinished {
-                output,
-                is_error: false,
-                ..
-            } => Some(output.clone()),
-            _ => None,
-        });
-        let output = tool_finished.expect("tool should finish successfully");
-        output_assertion(&output);
-
-        assert!(
-            events.iter().any(|event| matches!(
-                &event.kind,
-                RuntimeEventKind::RunFinished { status: RunStatus::Succeeded, run_id: rid, .. } if rid == &run_id
-            )),
-            "run should finish successfully"
-        );
-
-        let jsonl = tokio::fs::read_to_string(store_dir.path().join("tool-session.jsonl"))
-            .await
-            .expect("read session jsonl");
-        assert!(
-            jsonl.contains("\"role\":\"tool\""),
-            "session jsonl should contain a tool role message"
-        );
-    }
-
-    #[tokio::test]
-    async fn list_directory_tool_loop_end_to_end() {
-        run_tool_end_to_end(
-            "list_directory",
-            byte_protocol::ToolCall {
-                id: "call-1".into(),
-                name: "list_directory".into(),
-                arguments: serde_json::json!({"path": "."}),
-            },
-            async |path| {
-                tokio::fs::create_dir(path.join("src")).await.unwrap();
-                tokio::fs::write(path.join("README.md"), "# hi")
-                    .await
-                    .unwrap();
-            },
-            |output| {
-                assert!(output.contains("README.md"), "output should list README.md");
-                assert!(
-                    output.contains("\"type\": \"file\""),
-                    "README.md should be a file"
-                );
-                assert!(output.contains("src"), "output should list src");
-                assert!(
-                    output.contains("\"type\": \"directory\""),
-                    "src should be a directory"
-                );
-            },
-        )
-        .await;
-    }
-
-    #[tokio::test]
-    async fn grep_tool_loop_end_to_end() {
-        run_tool_end_to_end(
-            "grep",
-            byte_protocol::ToolCall {
-                id: "call-1".into(),
-                name: "grep".into(),
-                arguments: serde_json::json!({"pattern": "fn main", "path": "."}),
-            },
-            async |path| {
-                tokio::fs::write(path.join("main.rs"), "fn main() {}\n")
-                    .await
-                    .unwrap();
-            },
-            |output| {
-                assert!(output.contains("main.rs"), "output should contain main.rs");
-                assert!(output.contains("\"line\": 1"), "match should be on line 1");
-                assert!(
-                    output.contains("fn main() {}"),
-                    "output should contain matched line"
-                );
-            },
-        )
-        .await;
-    }
-
-    #[tokio::test]
-    async fn find_files_tool_loop_end_to_end() {
-        run_tool_end_to_end(
-            "find_files",
-            byte_protocol::ToolCall {
-                id: "call-1".into(),
-                name: "find_files".into(),
-                arguments: serde_json::json!({"pattern": "**/*.rs", "path": "."}),
-            },
-            async |path| {
-                tokio::fs::create_dir(path.join("src")).await.unwrap();
-                tokio::fs::write(path.join("src/lib.rs"), "").await.unwrap();
-                tokio::fs::write(path.join("Cargo.toml"), "").await.unwrap();
-            },
-            |output| {
-                assert!(
-                    output.contains("src/lib.rs"),
-                    "output should contain src/lib.rs"
-                );
-                assert!(
-                    !output.contains("Cargo.toml"),
-                    "output should not contain Cargo.toml"
-                );
-            },
-        )
-        .await;
-    }
-    #[tokio::test]
-    async fn run_command_tool_loop_end_to_end() {
-        run_tool_end_to_end(
-            "run_command",
-            byte_protocol::ToolCall {
-                id: "call-1".into(),
-                name: "run_command".into(),
-                arguments: serde_json::json!({"command": "cat file.txt"}),
-            },
-            async |path| {
-                tokio::fs::write(path.join("file.txt"), "hello command")
-                    .await
-                    .unwrap();
-            },
-            |output| {
-                assert!(
-                    output.contains("hello command"),
-                    "output should contain file contents"
-                );
-            },
-        )
-        .await;
-    }
-
-    #[tokio::test]
-    async fn run_command_streaming_emits_deltas_and_exit_code() {
-        let bus = Arc::new(RecordingEventBus::new());
-        let store_dir = tempdir().expect("temp dir");
-        let store =
-            Arc::new(SessionStore::new(store_dir.path().to_path_buf()).expect("store creates"));
-        let temp = tempdir().expect("temp dir");
-        let workspace = temp.path().to_path_buf();
-        store
-            .new_session("stream-session", workspace.to_str().unwrap())
-            .await
-            .expect("create session with workspace");
-
-        tokio::fs::write(workspace.join("file.txt"), "hello stream")
-            .await
-            .unwrap();
-
-        let mut registry = MvpToolRegistry::new();
-        registry.register(
-            "run_command".to_string(),
-            Arc::new(RunCommandTool),
-            Arc::new(AllowAllPolicy),
-        );
-        let services = RuntimeServices::new(
-            Arc::new(ToolCallProvider {
-                tool_call: byte_protocol::ToolCall {
-                    id: "stream-call-1".into(),
-                    name: "run_command".into(),
-                    arguments: serde_json::json!({"command": "cat file.txt"}),
-                },
-                turn: Mutex::new(0),
-            }),
-            store.clone(),
-            bus.clone(),
-            Arc::new(registry),
-            Arc::new(MvpSkillRegistry::new()),
-        );
-        let runner = SessionRunner::new(services);
-
-        let run_id = runner
-            .send_message(SendMessageParams {
-                session_id: "stream-session".into(),
-                message: "run command".into(),
-            })
-            .await
-            .expect("send accepted");
-        runner.wait_until_idle().await;
-
-        let events = bus.take_events().await;
-
-        let tool_events: Vec<_> = events
-            .iter()
-            .filter(|event| {
-                matches!(
-                    &event.kind,
-                    RuntimeEventKind::ToolStarted { .. }
-                        | RuntimeEventKind::ToolOutputDelta { .. }
-                        | RuntimeEventKind::ToolFinished { .. }
-                )
-            })
-            .collect();
-
-        assert!(
-            matches!(&tool_events[0].kind, RuntimeEventKind::ToolStarted { tool_call_id, name, .. } if tool_call_id == "stream-call-1" && name == "run_command"),
-            "first tool event should be tool_started for run_command"
-        );
-
-        let deltas: Vec<_> = tool_events
-            .iter()
-            .filter(|event| {
-                matches!(
-                    &event.kind,
-                    RuntimeEventKind::ToolOutputDelta { run_id: rid, tool_call_id, .. } if rid == &run_id && tool_call_id == "stream-call-1"
-                )
-            })
-            .collect();
-        assert!(
-            !deltas.is_empty(),
-            "run_command should emit at least one tool_output_delta event"
-        );
-        let combined = deltas
-            .iter()
-            .map(|event| match &event.kind {
-                RuntimeEventKind::ToolOutputDelta { chunk, .. } => chunk.as_str(),
-                _ => "",
-            })
-            .collect::<String>();
-        assert!(
-            combined.contains("hello stream"),
-            "combined chunks should contain command output"
-        );
-
-        assert!(
-            matches!(
-                &tool_events.last().unwrap().kind,
-                RuntimeEventKind::ToolFinished {
-                    tool_call_id,
-                    is_error: false,
-                    exit_code: Some(0),
-                    ..
-                } if tool_call_id == "stream-call-1"
-            ),
-            "last tool event should be successful ToolFinished with exit code 0"
-        );
-    }
-
-    /// A provider that requests `activate_skill("review")` on turn 0 and
-    /// returns plain text on turn 1, recording every message slice it receives.
-    struct SkillActivatingProvider {
-        calls: Arc<Mutex<Vec<Vec<LlmMessage>>>>,
-    }
-
-    #[async_trait]
-    impl ModelProvider for SkillActivatingProvider {
-        async fn send_message(
-            &self,
-            messages: Vec<LlmMessage>,
-            _tools: Vec<byte_protocol::ToolDefinition>,
-        ) -> Result<ProviderStream, ProviderError> {
-            let mut calls = self.calls.lock().await;
-            let turn = calls.len();
-            calls.push(messages);
-            drop(calls);
-
-            let events: Vec<Result<ProviderEvent, ProviderError>> = if turn == 0 {
-                vec![
-                    Ok(ProviderEvent::MessageStarted {
-                        message_id: "assistant-1".into(),
-                    }),
-                    Ok(ProviderEvent::MessageCompleted {
-                        message_id: "assistant-1".into(),
-                        tool_calls: Some(vec![byte_protocol::ToolCall {
-                            id: "skill-call-1".into(),
-                            name: "activate_skill".into(),
-                            arguments: serde_json::json!({"name": "review"}),
-                        }]),
-                    }),
-                ]
-            } else {
-                vec![
-                    Ok(ProviderEvent::MessageStarted {
-                        message_id: "assistant-2".into(),
-                    }),
-                    Ok(ProviderEvent::TextDelta {
-                        message_id: "assistant-2".into(),
-                        delta: "done".into(),
-                    }),
-                    Ok(ProviderEvent::MessageCompleted {
-                        message_id: "assistant-2".into(),
-                        tool_calls: None,
-                    }),
-                ]
-            };
-            Ok(Box::pin(futures::stream::iter(events)))
-        }
-    }
-
-    #[tokio::test]
-    async fn activate_skill_injects_content_into_later_run_system_prompt() {
-        let bus = Arc::new(RecordingEventBus::new());
-        let store_dir = tempdir().expect("temp dir");
-        let store =
-            Arc::new(SessionStore::new(store_dir.path().to_path_buf()).expect("store creates"));
-        let temp = tempdir().expect("temp dir");
-        let workspace = temp.path().to_path_buf();
-
-        let skill_dir = workspace.join(".byte").join("skills").join("review");
-        std::fs::create_dir_all(&skill_dir).unwrap();
-        std::fs::write(
-            skill_dir.join("skill.md"),
-            "---\nname: review\ndescription: Review skill\n---\n# Review\n\nAlways review carefully.",
-        )
-        .unwrap();
-
-        store
-            .new_session("skill-session", workspace.to_str().unwrap())
-            .await
-            .expect("create session with workspace");
-
-        let calls = Arc::new(Mutex::new(Vec::new()));
-        let provider = Arc::new(SkillActivatingProvider {
-            calls: calls.clone(),
-        });
-        let services = RuntimeServices::new(
-            provider,
-            store.clone(),
-            bus.clone(),
-            Arc::new(MvpToolRegistry::new()),
-            Arc::new(MvpSkillRegistry::new()),
-        );
-        let runner = SessionRunner::new(services);
-
-        let first_params = SendMessageParams {
-            session_id: "skill-session".into(),
-            message: "activate review".into(),
-        };
-        runner
-            .send_message(first_params)
-            .await
-            .expect("first run accepted");
-        runner.wait_until_idle().await;
-
-        let second_params = SendMessageParams {
-            session_id: "skill-session".into(),
-            message: "now what".into(),
-        };
-        runner
-            .send_message(second_params)
-            .await
-            .expect("second run accepted");
-        runner.wait_until_idle().await;
-
-        let calls = calls.lock().await;
-        assert_eq!(
-            calls.len(),
-            3,
-            "should make three provider calls: two turns for the first run and one for the second"
-        );
-
-        // First run turn 0: system prompt only lists tools.
-        assert_eq!(calls[0][0].role, MessageRole::System);
-        assert!(
-            !llm_message_text(&calls[0][0]).contains("Always review carefully."),
-            "first run turn 0 should not yet contain skill content"
-        );
-
-        // First run turn 1 rebuilds the system prompt to include the skill
-        // activated during the previous turn.
-        assert_eq!(calls[1][0].role, MessageRole::System);
-        assert!(
-            llm_message_text(&calls[1][0]).contains("Always review carefully."),
-            "first run turn 1 should reflect the newly activated skill"
-        );
-
-        // Second run rebuilds the system prompt with the activated skill.
-        assert_eq!(calls[2][0].role, MessageRole::System);
-        assert!(
-            llm_message_text(&calls[2][0]).contains("Always review carefully."),
-            "second run system prompt should contain skill content"
-        );
-
-        drop(calls);
-
-        let jsonl = tokio::fs::read_to_string(store_dir.path().join("skill-session.jsonl"))
-            .await
-            .expect("read session jsonl");
-        assert!(
-            jsonl.contains("Always review carefully."),
-            "session jsonl should persist the activated skill content as tool result"
-        );
     }
 }

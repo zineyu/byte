@@ -3,7 +3,10 @@ use byte_protocol::{SessionContext, ToolCall};
 use std::path::Path;
 use tokio_util::sync::CancellationToken;
 
-use crate::{Tool, ToolError, resolve_tool_path, unified_diff};
+use crate::{
+    Tool, ToolError, ToolOutputStream, ToolStreamEvent, resolve_tool_path, single_event_stream,
+    unified_diff,
+};
 
 /// A tool that creates or overwrites a file relative to the workspace root.
 #[derive(Debug, Clone, Copy)]
@@ -39,8 +42,23 @@ impl Tool for WriteFileTool {
         }
     }
 
-    /// Invoke the tool with the given call and context.
+    /// Invoke the tool and return its output as a single-event stream.
     async fn invoke(
+        &self,
+        call: &ToolCall,
+        ctx: &SessionContext,
+        cancel: &CancellationToken,
+    ) -> Result<ToolOutputStream, ToolError> {
+        match self.write(call, ctx, cancel).await {
+            Ok(output) => Ok(single_event_stream(Ok(ToolStreamEvent::done(output)))),
+            Err(error) => Ok(single_event_stream(Ok(ToolStreamEvent::done_error(&error)))),
+        }
+    }
+}
+
+impl WriteFileTool {
+    /// Execute the tool's core logic.
+    async fn write(
         &self,
         call: &ToolCall,
         ctx: &SessionContext,
@@ -177,7 +195,7 @@ mod tests {
         };
 
         let result = WriteFileTool
-            .invoke(
+            .write(
                 &call("hello.txt", "Hello, world!"),
                 &ctx,
                 &CancellationToken::new(),
@@ -207,7 +225,7 @@ mod tests {
         };
 
         let result = WriteFileTool
-            .invoke(
+            .write(
                 &call("hello.txt", "new content"),
                 &ctx,
                 &CancellationToken::new(),
@@ -237,7 +255,7 @@ mod tests {
         };
 
         let result = WriteFileTool
-            .invoke(
+            .write(
                 &call("huge.txt", "new content"),
                 &ctx,
                 &CancellationToken::new(),
@@ -263,7 +281,7 @@ mod tests {
         };
 
         let result = WriteFileTool
-            .invoke(
+            .write(
                 &call("missing/dir/hello.txt", "content"),
                 &ctx,
                 &CancellationToken::new(),
@@ -289,7 +307,7 @@ mod tests {
         };
 
         let result = WriteFileTool
-            .invoke(&call, &ctx, &CancellationToken::new())
+            .write(&call, &ctx, &CancellationToken::new())
             .await;
 
         assert!(result.is_err());
@@ -309,7 +327,7 @@ mod tests {
         };
 
         let result = WriteFileTool
-            .invoke(&call, &ctx, &CancellationToken::new())
+            .write(&call, &ctx, &CancellationToken::new())
             .await;
 
         assert!(result.is_err());
@@ -327,7 +345,7 @@ mod tests {
         let oversized = "x".repeat(1024 * 1024 + 1);
 
         let result = WriteFileTool
-            .invoke(
+            .write(
                 &call("huge.txt", &oversized),
                 &ctx,
                 &CancellationToken::new(),
@@ -352,7 +370,7 @@ mod tests {
         };
 
         WriteFileTool
-            .invoke(
+            .write(
                 &call("hello.txt", "Hello, world!"),
                 &ctx,
                 &CancellationToken::new(),
@@ -397,7 +415,7 @@ mod tests {
         };
 
         WriteFileTool
-            .invoke(
+            .write(
                 &call("script.sh", "#!/bin/sh\necho new\n"),
                 &ctx,
                 &CancellationToken::new(),
