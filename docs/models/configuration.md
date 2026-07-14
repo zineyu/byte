@@ -41,4 +41,4 @@ Flat fields take precedence over section fields when both are present.
 
 ## Security note
 
-API keys are stored in plaintext in this file during the MVP. See `docs/adr/0007-store-mvp-secrets-in-plaintext-config.md`.
+API keys are stored in plaintext in this file during the MVP. See `docs/adr/0016-remove-secretstore-seam.md`.

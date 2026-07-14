@@ -23,7 +23,7 @@ Byte Agent MVP is a desktop coding agent for a local code workspace. It uses a T
 - MVP runs in unrestricted local agent mode. See `docs/adr/0004-use-unrestricted-local-agent-mode-for-mvp.md`.
 - Sessions are JSONL trees with `id` / `parent_id`. See `docs/adr/0005-store-sessions-as-jsonl-trees.md`.
 - Auto-compaction persists summaries as `Message` entries with `role = "summary"`. See `docs/adr/0006-store-compaction-as-visible-session-entries.md`.
-- MVP secrets are stored in plaintext config behind a replaceable `SecretStore`. See `docs/adr/0007-store-mvp-secrets-in-plaintext-config.md`.
+- MVP secrets are stored directly in `ModelProviderConfig` as plaintext. See `docs/adr/0016-remove-secretstore-seam.md`.
 
 ## 4. High-level shape
 
@@ -45,7 +45,7 @@ Rust Agent Daemon
   ├─ ToolRegistry
   ├─ SkillRegistry
   ├─ SessionStore(JSONL tree)
-  └─ ConfigStore / SecretStore
+  └─ ConfigStore
 ```
 
 The React app never directly drives the model/tool loop. It sends user/session commands to the daemon, receives snapshots and runtime events, and renders them.
@@ -323,7 +323,7 @@ api_key = "PLACEHOLDER"
 model = "gpt-4.1"
 ```
 
-Keep `ConfigStore` and `SecretStore` separate so plaintext secrets can later move to OS keychain.
+The API key is part of the provider config and is stored in plaintext. A separate secret seam will be introduced only when OS keychain support is planned.
 
 ## 14. Crash recovery
 

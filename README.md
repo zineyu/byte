@@ -90,7 +90,7 @@ apps/desktop/src-tauri → byte-protocol
 ## 安全提醒
 
 - MVP 运行在“无限制本地代理模式”，daemon 会读写文件并执行命令，请在用户信任的本地环境中运行。
-- API key 当前以明文方式存储在可替换的 `SecretStore` 中，详见 [`docs/adr/0007-store-mvp-secrets-in-plaintext-config.md`](docs/adr/0007-store-mvp-secrets-in-plaintext-config.md)。
+- API key 当前以明文方式直接存储在 `ModelProviderConfig` 中，详见 [`docs/adr/0016-remove-secretstore-seam.md`](docs/adr/0016-remove-secretstore-seam.md)。
 - 请勿将真实密钥提交到仓库。
 
 ## 许可证

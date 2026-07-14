@@ -134,5 +134,5 @@ just dev
 ## 安全与风险提醒
 
 - MVP 运行在“无限制本地代理模式”，daemon 会读写文件并执行命令，仅在用户信任的本地环境中运行。
-- API key 当前以明文方式存储在可替换的 `SecretStore` 中（见 `docs/adr/0007-store-mvp-secrets-in-plaintext-config.md`）。
+- API key 当前以明文方式直接存储在 `ModelProviderConfig` 中（见 `docs/adr/0016-remove-secretstore-seam.md`）。
 - 不要提交真实密钥到仓库。
