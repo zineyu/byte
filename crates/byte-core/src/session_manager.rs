@@ -87,7 +87,7 @@ impl SessionManager {
     /// Returns an error if the session cannot be loaded.
     #[instrument(skip(self))]
     pub async fn load_session(&self, session_id: &str) -> Result<LoadSessionResult, RunnerError> {
-        let session = self.services.store.load_session(session_id).await?;
+        let session = self.services.view_repo.load_session(session_id).await?;
         self.emit_session_changed(session_id.to_owned(), SessionChangeAction::Loaded)
             .await;
         debug!(%session_id, message_count = session.messages.len(), "session loaded");
@@ -229,6 +229,7 @@ mod tests {
     };
     use tempfile::tempdir;
 
+    use crate::SessionViewRepository;
     use crate::event_bus::{RecordingEventBus, RuntimeEventBus};
     use crate::runtime_services::RuntimeServices;
 
@@ -292,35 +293,39 @@ mod tests {
         SessionManager,
         Arc<RecordingEventBus>,
         Arc<SessionStore>,
+        Arc<SessionViewRepository>,
         String,
     ) {
         let provider: Arc<dyn ModelProvider> = Arc::new(EchoProvider::default());
         let store = temp_store();
+        let view_repo = Arc::new(SessionViewRepository::new(Arc::clone(&store)));
         let recording_bus = Arc::new(RecordingEventBus::new());
         let bus: Arc<dyn RuntimeEventBus> = recording_bus.clone();
         let manager = SessionManager::new(services(provider, Arc::clone(&store), bus));
         let workspace = temp_workspace();
-        (manager, recording_bus, store, workspace)
+        (manager, recording_bus, store, view_repo, workspace)
     }
     fn manager_without_tools() -> (
         SessionManager,
         Arc<RecordingEventBus>,
         Arc<SessionStore>,
+        Arc<SessionViewRepository>,
         String,
     ) {
         let provider: Arc<dyn ModelProvider> = Arc::new(EchoProvider::default());
         let store = temp_store();
+        let view_repo = Arc::new(SessionViewRepository::new(Arc::clone(&store)));
         let recording_bus = Arc::new(RecordingEventBus::new());
         let bus: Arc<dyn RuntimeEventBus> = recording_bus.clone();
         let manager =
             SessionManager::new(services_without_tools(provider, Arc::clone(&store), bus));
         let workspace = temp_workspace();
-        (manager, recording_bus, store, workspace)
+        (manager, recording_bus, store, view_repo, workspace)
     }
 
     #[tokio::test]
     async fn new_session_creates_file_and_emits_created_event() {
-        let (manager, bus, store, workspace) = manager();
+        let (manager, bus, _store, view_repo, workspace) = manager();
         let result = manager
             .new_session("s1", &workspace)
             .await
@@ -328,7 +333,7 @@ mod tests {
 
         assert_eq!(result.session_id, "s1");
 
-        let view = store.load_session("s1").await.expect("session loads");
+        let view = view_repo.load_session("s1").await.expect("session loads");
         assert_eq!(view.workspace, workspace);
 
         let events = bus.take_events().await;
@@ -341,7 +346,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_session_removes_file_and_emits_deleted_event() {
-        let (manager, bus, store, workspace) = manager();
+        let (manager, bus, _store, view_repo, workspace) = manager();
         manager.new_session("s1", &workspace).await.unwrap();
         bus.take_events().await;
 
@@ -349,8 +354,8 @@ mod tests {
 
         assert_eq!(result.session_id, "s1");
         assert!(matches!(
-            store.load_session("s1").await.unwrap_err(),
-            byte_session::SessionError::NotFound(id) if id == "s1"
+            view_repo.load_session("s1").await.unwrap_err(),
+            crate::SessionViewError::Store(byte_session::SessionError::NotFound(id)) if id == "s1"
         ));
 
         let events = bus.take_events().await;
@@ -369,6 +374,7 @@ mod tests {
             ..Default::default()
         });
         let store = temp_store();
+        let view_repo = Arc::new(SessionViewRepository::new(Arc::clone(&store)));
         let recording_bus = Arc::new(RecordingEventBus::new());
         let bus: Arc<dyn RuntimeEventBus> = recording_bus.clone();
         let manager = SessionManager::new(services(provider, Arc::clone(&store), bus));
@@ -384,7 +390,7 @@ mod tests {
         let err = manager.delete_session("s1").await.expect_err("busy");
         assert!(matches!(err, crate::runner::RunnerError::Busy));
         assert!(
-            store.load_session("s1").await.is_ok(),
+            view_repo.load_session("s1").await.is_ok(),
             "session file must not be deleted while a run is active"
         );
 
@@ -395,7 +401,7 @@ mod tests {
 
     #[tokio::test]
     async fn send_message_lazily_creates_runner_and_rejects_concurrent_runs() {
-        let (manager, bus, store, workspace) = manager_without_tools();
+        let (manager, bus, _store, view_repo, workspace) = manager_without_tools();
         manager.new_session("s1", &workspace).await.unwrap();
         bus.take_events().await;
 
@@ -424,13 +430,13 @@ mod tests {
             "should emit successful run_finished"
         );
 
-        let view = store.load_session("s1").await.unwrap();
+        let view = view_repo.load_session("s1").await.unwrap();
         assert_eq!(view.messages.len(), 2);
     }
 
     #[tokio::test]
     async fn runs_on_different_sessions_execute_concurrently() {
-        let (manager, _bus, _store, workspace) = manager();
+        let (manager, _bus, _store, _view_repo, workspace) = manager();
         manager.new_session("s1", &workspace).await.unwrap();
         manager.new_session("s2", &workspace).await.unwrap();
 
@@ -459,7 +465,7 @@ mod tests {
 
     #[tokio::test]
     async fn load_session_emits_loaded_event() {
-        let (manager, bus, _store, workspace) = manager();
+        let (manager, bus, _store, _view_repo, workspace) = manager();
         manager.new_session("s1", &workspace).await.unwrap();
         bus.take_events().await;
 
@@ -476,7 +482,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_sessions_returns_sessions() {
-        let (manager, _bus, _store, workspace) = manager();
+        let (manager, _bus, _store, _view_repo, workspace) = manager();
         manager.new_session("s1", &workspace).await.unwrap();
         manager.new_session("s2", &workspace).await.unwrap();
 
@@ -498,6 +504,7 @@ mod tests {
             delay: Duration::from_millis(10),
         });
         let store = temp_store();
+        let view_repo = Arc::new(SessionViewRepository::new(Arc::clone(&store)));
         let recording_bus = Arc::new(RecordingEventBus::new());
         let bus: Arc<dyn RuntimeEventBus> = recording_bus.clone();
         let manager =
@@ -529,7 +536,7 @@ mod tests {
             "should emit run_finished(Cancelled)"
         );
 
-        let view = store.load_session("s1").await.expect("session loads");
+        let view = view_repo.load_session("s1").await.expect("session loads");
         assert_eq!(
             view.messages.len(),
             2,
@@ -545,7 +552,7 @@ mod tests {
 
     #[tokio::test]
     async fn cancel_run_without_runner_succeeds() {
-        let (manager, bus, _store, workspace) = manager();
+        let (manager, bus, _store, _view_repo, workspace) = manager();
         manager.new_session("s1", &workspace).await.unwrap();
         bus.take_events().await;
 

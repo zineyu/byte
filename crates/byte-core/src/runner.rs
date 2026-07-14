@@ -15,6 +15,7 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, instrument};
 
+use crate::SessionViewError;
 use crate::llm_context::{LlmContextBuilder, LlmContextInput};
 use crate::runtime_services::RuntimeServices;
 use async_trait::async_trait;
@@ -105,6 +106,9 @@ pub enum RunnerError {
     /// An error originating from the session store.
     #[error(transparent)]
     SessionStore(#[from] SessionError),
+    /// An error originating from the session view repository.
+    #[error(transparent)]
+    SessionView(#[from] SessionViewError),
     /// An error originating from the model provider.
     #[error(transparent)]
     Provider(#[from] ProviderError),
@@ -166,11 +170,16 @@ impl SessionRunner {
         let _ = active.replace((run_id.clone(), token.clone()));
         drop(active);
 
-        let view = match self.services.store.load_session(&params.session_id).await {
+        let view = match self
+            .services
+            .view_repo
+            .load_session(&params.session_id)
+            .await
+        {
             Ok(view) => view,
             Err(error) => {
                 self.clear_active_run().await;
-                return Err(RunnerError::SessionStore(error));
+                return Err(RunnerError::SessionView(error));
             }
         };
         let parent_id = view.messages.last().map(|message| message.id.clone());
@@ -311,6 +320,9 @@ enum RunError {
     /// An error originating from the session store.
     #[error(transparent)]
     SessionStore(#[from] SessionError),
+    /// An error originating from the session view repository.
+    #[error(transparent)]
+    SessionView(#[from] SessionViewError),
     /// An error originating from the skill registry.
     #[error(transparent)]
     SkillRegistry(#[from] SkillError),
@@ -454,7 +466,11 @@ impl RunExecutor {
             })
             .await;
 
-        let view = runner.services.store.load_session(&self.session_id).await?;
+        let view = runner
+            .services
+            .view_repo
+            .load_session(&self.session_id)
+            .await?;
         let session_ctx = SessionContext {
             session_id: Some(self.session_id.clone()),
             workspace_root: PathBuf::from(view.workspace),
@@ -809,7 +825,7 @@ mod tests {
     use byte_models::{EchoProvider, ModelProvider, ProviderError, ProviderEvent, ProviderStream};
     use byte_protocol::{
         BlockDelta, LlmMessage, Message, MessageBlock, MessageBody, MessageRole, RunStatus,
-        RuntimeEventKind, SendMessageParams,
+        RuntimeEventKind, SendMessageParams, SessionView,
     };
     use byte_session::SessionStore;
     use byte_skills::MvpSkillRegistry;
@@ -842,6 +858,7 @@ mod tests {
             .collect()
     }
 
+    use crate::SessionViewRepository;
     use crate::event_bus::RecordingEventBus;
     use crate::runtime_services::RuntimeServices;
 
@@ -850,6 +867,13 @@ mod tests {
     fn temp_store() -> Arc<SessionStore> {
         let dir = tempdir().expect("temp dir");
         Arc::new(SessionStore::new(dir.path().to_path_buf()).expect("store creates"))
+    }
+
+    async fn load_view(store: Arc<SessionStore>, session_id: &str) -> SessionView {
+        SessionViewRepository::new(store)
+            .load_session(session_id)
+            .await
+            .expect("session loads")
     }
     fn runner_with_tools(store: Arc<SessionStore>, bus: Arc<RecordingEventBus>) -> SessionRunner {
         let mut registry = MvpToolRegistry::new();
@@ -975,7 +999,7 @@ mod tests {
             "last event should be successful run_finished"
         );
 
-        let view = store.load_session("s1").await.expect("session loads");
+        let view = load_view(store.clone(), "s1").await;
         assert_eq!(view.messages.len(), 2);
         assert_eq!(view.messages[0].role, MessageRole::Developer);
         assert_eq!(message_text(&view.messages[0]), "hello");
@@ -1094,7 +1118,7 @@ mod tests {
             "should not emit message events on provider error"
         );
 
-        let view = store.load_session("s1").await.expect("session loads");
+        let view = load_view(store.clone(), "s1").await;
         assert_eq!(view.messages.len(), 1);
         assert_eq!(view.messages[0].role, MessageRole::Developer);
     }
@@ -1177,7 +1201,7 @@ mod tests {
             "last event should be run_finished(Cancelled)"
         );
 
-        let view = store.load_session("s1").await.expect("session loads");
+        let view = load_view(store.clone(), "s1").await;
         assert_eq!(
             view.messages.len(),
             2,
@@ -1268,7 +1292,7 @@ mod tests {
             .collect();
         assert_eq!(finished_runs.len(), 1, "second run should finish");
 
-        let view = store.load_session("s1").await.expect("session loads");
+        let view = load_view(store.clone(), "s1").await;
         assert_eq!(
             view.messages.len(),
             4,
@@ -1441,7 +1465,7 @@ mod tests {
             ),
             "seventh event should be message_completed without tool_calls"
         );
-        let view = store.load_session("s1").await.expect("session loads");
+        let view = load_view(store.clone(), "s1").await;
         assert_eq!(
             view.messages.len(),
             4,
@@ -1658,7 +1682,7 @@ mod tests {
             "block should be the read_file tool call"
         );
 
-        let view = store.load_session("s1").await.expect("session loads");
+        let view = load_view(store.clone(), "s1").await;
         let assistant = view
             .messages
             .iter()

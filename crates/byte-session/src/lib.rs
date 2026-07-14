@@ -3,14 +3,15 @@
 //! Sessions are stored as line-delimited JSON records where each entry has a
 //! stable id and an optional parent id, forming a tree inside a single file.
 //! The store supports creating sessions, appending messages and tool results,
-//! listing summaries, loading reconstructed views, and deleting sessions.
+//! listing summaries, reading raw entries, and deleting sessions.
+//! View reconstruction (parent-chain walking, workspace instruction reading,
+//! and `SessionView` assembly) lives in `byte-core`.
 #![deny(rustdoc::broken_intra_doc_links)]
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use byte_protocol::{
-    Message, MessageBody, MessageRole, SessionEntry, SessionSummary, SessionView, encode_json_line,
+    Message, MessageBody, MessageRole, SessionEntry, SessionSummary, encode_json_line,
 };
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
@@ -29,15 +30,6 @@ pub enum SessionError {
     /// The requested session could not be found.
     #[error("session not found: {0}")]
     NotFound(String),
-    /// The session file is missing its header entry.
-    #[error("session {0} has no header")]
-    MissingHeader(String),
-    /// The session entries form a broken parent chain.
-    #[error("session {0} has a broken parent chain")]
-    BrokenChain(String),
-    /// The session is currently busy and cannot be modified.
-    #[error("session {0} is busy")]
-    Busy(String),
     /// An I/O error occurred while reading or writing a session file.
     #[error("failed to read session file: {0}")]
     Read(#[from] std::io::Error),
@@ -148,14 +140,17 @@ impl SessionStore {
     /// Maximum session file size that will be loaded into memory (64 MiB).
     pub const MAX_SESSION_FILE_SIZE: u64 = 64 * 1024 * 1024;
 
-    /// Load a normalized `SessionView` by following the active path from the
-    /// most recent message back to the root.
+    /// Read all persisted entries for a session.
+    ///
+    /// This is the raw persistence read: it validates the file exists, enforces
+    /// the size limit, parses the JSONL lines, and returns the decoded entries.
+    /// It does not reconstruct the active path or read `AGENTS.md`.
     ///
     /// # Errors
     ///
     /// Returns an error if the session is not found, the file is too large, or
-    /// the entries cannot be parsed or reconstructed.
-    pub async fn load_session(&self, session_id: &str) -> Result<SessionView, SessionError> {
+    /// the entries cannot be parsed.
+    pub async fn read_entries(&self, session_id: &str) -> Result<Vec<SessionEntry>, SessionError> {
         let path = self.session_path(session_id)?;
         if !path.exists() {
             return Err(SessionError::NotFound(session_id.to_owned()));
@@ -174,28 +169,7 @@ impl SessionStore {
         }
 
         let contents = tokio::fs::read_to_string(&path).await?;
-        let entries: Vec<SessionEntry> =
-            byte_protocol::decode_json_lines(&contents).map_err(SessionError::Serialize)?;
-
-        let workspace = entries.iter().find_map(|entry| match entry {
-            SessionEntry::Session { id, workspace, .. } if id == session_id => {
-                Some(workspace.clone())
-            }
-            _ => None,
-        });
-        let (workspace_instructions, workspace_instructions_error) =
-            if let Some(workspace) = workspace {
-                read_workspace_instructions(&workspace).await
-            } else {
-                (None, None)
-            };
-
-        reconstruct_view(
-            session_id,
-            entries,
-            workspace_instructions,
-            workspace_instructions_error,
-        )
+        byte_protocol::decode_json_lines(&contents).map_err(SessionError::Serialize)
     }
 
     /// List all sessions as lightweight summaries, ordered by `created_at` descending.
@@ -341,99 +315,21 @@ fn now_epoch_millis() -> String {
     format!("{}.{:03}Z", now.as_secs(), now.subsec_millis())
 }
 
-/// Reads the workspace instruction file (`AGENTS.md`) from `workspace`.
-///
-/// Returns `(Some(content), None)` when the file is readable, `(None, None)`
-/// when it does not exist, and `(None, Some(error))` when it exists but cannot
-/// be read.
-async fn read_workspace_instructions(workspace: &str) -> (Option<String>, Option<String>) {
-    let path = Path::new(workspace).join("AGENTS.md");
-    match tokio::fs::metadata(&path).await {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (None, None),
-        Err(error) => (
-            None,
-            Some(format!("无法读取 Workspace Instructions: {error}")),
-        ),
-        Ok(metadata) => {
-            if !metadata.is_file() {
-                return (None, Some("AGENTS.md 不是文件".to_owned()));
-            }
-            match tokio::fs::read_to_string(&path).await {
-                Ok(content) => (Some(content), None),
-                Err(error) => (
-                    None,
-                    Some(format!("无法读取 Workspace Instructions: {error}")),
-                ),
-            }
-        }
-    }
-}
-
 /// Reads and parses the first line of the session file at `path`.
 async fn read_session_header(path: &Path) -> Result<SessionEntry, SessionError> {
     let file = tokio::fs::File::open(path).await?;
     let reader = tokio::io::BufReader::new(file);
     let mut lines = reader.lines();
 
-    let first = lines
-        .next_line()
-        .await?
-        .ok_or_else(|| SessionError::MissingHeader(path.display().to_string()))?;
+    let first = lines.next_line().await?.ok_or_else(|| {
+        SessionError::Read(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("session file {} is missing its header", path.display()),
+        ))
+    })?;
 
     byte_protocol::decode_json_line::<SessionEntry>(first.trim_end_matches(['\r', '\n']))
         .map_err(SessionError::Serialize)
-}
-
-/// Reconstructs a [`SessionView`] from raw session entries by walking from the
-/// latest message back to the root.
-fn reconstruct_view(
-    session_id: &str,
-    entries: Vec<SessionEntry>,
-    workspace_instructions: Option<String>,
-    workspace_instructions_error: Option<String>,
-) -> Result<SessionView, SessionError> {
-    let mut workspace: Option<String> = None;
-    let mut messages_by_id: HashMap<String, Message> = HashMap::new();
-    let mut message_order: Vec<String> = Vec::new();
-
-    for entry in entries {
-        match entry {
-            SessionEntry::Session {
-                id, workspace: ws, ..
-            } if id == session_id => {
-                workspace = Some(ws);
-            }
-            SessionEntry::Message(message) => {
-                message_order.push(message.id.clone());
-                let _ = messages_by_id.insert(message.id.clone(), message);
-            }
-            SessionEntry::Session { .. } => {}
-        }
-    }
-
-    let mut messages: Vec<Message> = Vec::new();
-    if let Some(latest_id) = message_order.last().cloned() {
-        let mut current: Option<String> = Some(latest_id);
-        while let Some(id) = &current {
-            let message = messages_by_id
-                .get(id)
-                .cloned()
-                .ok_or_else(|| SessionError::BrokenChain(session_id.to_owned()))?;
-            current.clone_from(&message.parent_id);
-            messages.push(message);
-        }
-        messages.reverse();
-    }
-
-    let workspace = workspace.ok_or_else(|| SessionError::MissingHeader(session_id.to_owned()))?;
-
-    Ok(SessionView {
-        session_id: session_id.to_owned(),
-        workspace,
-        workspace_instructions,
-        workspace_instructions_error,
-        messages,
-    })
 }
 
 #[cfg(test)]
@@ -479,8 +375,9 @@ mod tests {
         store.new_session("session-1", "/workspace").await.unwrap();
         store.new_session("session-1", "/workspace").await.unwrap();
 
-        let view = store.load_session("session-1").await.unwrap();
-        assert_eq!(view.messages.len(), 0);
+        let entries = store.read_entries("session-1").await.unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(matches!(&entries[0], SessionEntry::Session { id, .. } if id == "session-1"));
     }
 
     #[tokio::test]
@@ -535,9 +432,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn load_session_reconstructs_active_path() {
+    async fn read_entries_returns_header_and_messages() {
         let store = temp_store();
         store.new_session("session-1", "/workspace").await.unwrap();
+
         let first_id = store
             .append_message(
                 "session-1",
@@ -549,7 +447,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let second_id = store
+        let _second_id = store
             .append_message(
                 "session-1",
                 None,
@@ -561,77 +459,70 @@ mod tests {
             .await
             .unwrap();
 
-        let view = store.load_session("session-1").await.unwrap();
-
-        assert_eq!(view.session_id, "session-1");
-        assert_eq!(view.workspace, "/workspace");
-        assert_eq!(view.messages.len(), 2);
-        assert_eq!(view.messages[0].id, first_id);
-        assert_eq!(view.messages[0].role, MessageRole::Developer);
-        assert_eq!(message_text(&view.messages[0]), "hello");
-        assert_eq!(view.messages[1].id, second_id);
-        assert_eq!(view.messages[1].parent_id, Some(first_id));
-        assert_eq!(view.messages[1].role, MessageRole::Assistant);
-        assert_eq!(message_text(&view.messages[1]), "hi");
-    }
-    #[tokio::test]
-    async fn load_session_preserves_tool_message() {
-        let store = temp_store();
-        store.new_session("session-1", "/workspace").await.unwrap();
-
-        let dev_id = store
-            .append_message(
-                "session-1",
-                None,
-                None,
-                MessageRole::Developer,
-                MessageBody::text("read main.rs"),
-                None,
-            )
-            .await
-            .unwrap();
-        let assistant_id = store
-            .append_message(
-                "session-1",
-                None,
-                Some(&dev_id),
-                MessageRole::Assistant,
-                MessageBody::text(""),
-                None,
-            )
-            .await
-            .unwrap();
-        let _ = store
-            .append_message(
-                "session-1",
-                None,
-                Some(&assistant_id),
-                MessageRole::Tool,
-                MessageBody::text("fn main() {}"),
-                Some("tc-1"),
-            )
-            .await
-            .unwrap();
-
-        let view = store.load_session("session-1").await.unwrap();
-        assert_eq!(view.messages.len(), 3);
-        assert_eq!(view.messages[0].role, MessageRole::Developer);
-        assert_eq!(view.messages[1].role, MessageRole::Assistant);
-        assert_eq!(view.messages[2].role, MessageRole::Tool);
-        assert_eq!(view.messages[2].tool_call_id, Some("tc-1".to_string()));
-        assert_eq!(message_text(&view.messages[2]), "fn main() {}");
+        let entries = store.read_entries("session-1").await.unwrap();
+        assert_eq!(entries.len(), 3);
+        assert!(matches!(
+            &entries[0],
+            SessionEntry::Session { id, workspace, .. } if id == "session-1" && workspace == "/workspace"
+        ));
+        assert!(matches!(
+            &entries[1],
+            SessionEntry::Message(Message { id, role: MessageRole::Developer, .. }) if id == &first_id
+        ));
     }
 
     #[tokio::test]
-    async fn load_missing_session_fails() {
+    async fn read_entries_missing_session_returns_not_found() {
         let store = temp_store();
 
         let err = store
-            .load_session("missing")
+            .read_entries("missing")
             .await
             .expect_err("missing session should fail");
 
         assert!(matches!(err, SessionError::NotFound(id) if id == "missing"));
+    }
+
+    #[tokio::test]
+    async fn read_entries_rejects_oversized_file() {
+        let store = temp_store();
+        store.new_session("session-1", "/workspace").await.unwrap();
+
+        // Write enough data to exceed the limit.
+        let huge_payload = "x".repeat(64 * 1024 * 1024 + 1);
+        let path = store.session_path("session-1").unwrap();
+        tokio::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .await
+            .unwrap()
+            .write_all(huge_payload.as_bytes())
+            .await
+            .unwrap();
+
+        let err = store
+            .read_entries("session-1")
+            .await
+            .expect_err("oversized file should fail");
+        assert!(matches!(err, SessionError::Read(_)));
+    }
+
+    #[tokio::test]
+    async fn read_entries_parses_existing_session_header() {
+        let store = temp_store();
+        store.new_session("session-1", "/workspace").await.unwrap();
+
+        let entries = store.read_entries("session-1").await.unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(matches!(
+            &entries[0],
+            SessionEntry::Session {
+                id,
+                workspace,
+                version,
+                ..
+            } if id == "session-1" && workspace == "/workspace" && *version == byte_protocol::PROTOCOL_VERSION
+        ));
     }
 
     #[tokio::test]
@@ -658,69 +549,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn load_session_reconstructs_summary_on_active_path() {
-        let store = temp_store();
-        store.new_session("session-1", "/workspace").await.unwrap();
-        let first_id = store
-            .append_message(
-                "session-1",
-                None,
-                None,
-                MessageRole::Developer,
-                MessageBody::text("hello"),
-                None,
-            )
-            .await
-            .unwrap();
-        let second_id = store
-            .append_message(
-                "session-1",
-                None,
-                Some(&first_id),
-                MessageRole::Assistant,
-                MessageBody::text("hi"),
-                None,
-            )
-            .await
-            .unwrap();
-
-        // Append a summary message that points to the assistant message.
-        let summary_id = "summary-1";
-        let summary = SessionEntry::Message(Message {
-            id: summary_id.into(),
-            parent_id: Some(second_id.clone()),
-            role: MessageRole::Summary,
-            tool_call_id: None,
-            body: MessageBody::text("assistant message compacted"),
-        });
-        let path = store.session_path("session-1").unwrap();
-        let line = encode_json_line(&summary).unwrap();
-        tokio::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .await
-            .unwrap()
-            .write_all(line.as_bytes())
-            .await
-            .unwrap();
-
-        let view = store.load_session("session-1").await.unwrap();
-        assert_eq!(view.messages.len(), 3);
-        let summary_message = view
-            .messages
-            .iter()
-            .find(|m| m.id == summary_id)
-            .expect("summary message present");
-        assert_eq!(summary_message.parent_id, Some(second_id));
-        assert_eq!(summary_message.role, MessageRole::Summary);
-        assert_eq!(
-            summary_message.body,
-            MessageBody::text("assistant message compacted")
-        );
-    }
-
-    #[tokio::test]
     async fn delete_session_removes_file() {
         let store = temp_store();
         store.new_session("session-1", "/workspace").await.unwrap();
@@ -729,7 +557,7 @@ mod tests {
 
         assert!(!store.session_path("session-1").unwrap().exists());
         assert!(matches!(
-            store.load_session("session-1").await.unwrap_err(),
+            store.read_entries("session-1").await.unwrap_err(),
             SessionError::NotFound(id) if id == "session-1"
         ));
     }
@@ -746,71 +574,5 @@ mod tests {
         let store = temp_store();
         assert!(store.session_path("../escape").is_err());
         assert!(store.session_path("foo/bar").is_err());
-    }
-
-    #[tokio::test]
-    async fn load_session_includes_workspace_instructions_from_agents_md() {
-        let workspace = tempfile::tempdir().expect("temp workspace");
-        let workspace_path = workspace.path().to_str().unwrap();
-        let agents_path = workspace.path().join("AGENTS.md");
-        tokio::fs::write(&agents_path, "Always use Rust.\n")
-            .await
-            .expect("write AGENTS.md");
-
-        let store = temp_store();
-        store
-            .new_session("session-1", workspace_path)
-            .await
-            .unwrap();
-
-        let view = store.load_session("session-1").await.unwrap();
-
-        assert_eq!(view.workspace, workspace_path);
-        assert_eq!(
-            view.workspace_instructions.as_deref(),
-            Some("Always use Rust.\n")
-        );
-        assert_eq!(view.workspace_instructions_error, None);
-    }
-
-    #[tokio::test]
-    async fn load_session_has_no_instructions_when_agents_md_missing() {
-        let workspace = tempfile::tempdir().expect("temp workspace");
-        let workspace_path = workspace.path().to_str().unwrap();
-
-        let store = temp_store();
-        store
-            .new_session("session-1", workspace_path)
-            .await
-            .unwrap();
-
-        let view = store.load_session("session-1").await.unwrap();
-
-        assert_eq!(view.workspace_instructions, None);
-        assert_eq!(view.workspace_instructions_error, None);
-    }
-
-    #[tokio::test]
-    async fn load_session_reports_error_when_agents_md_is_unreadable() {
-        let workspace = tempfile::tempdir().expect("temp workspace");
-        let workspace_path = workspace.path().to_str().unwrap();
-        let agents_path = workspace.path().join("AGENTS.md");
-        tokio::fs::create_dir(&agents_path)
-            .await
-            .expect("create AGENTS.md directory");
-
-        let store = temp_store();
-        store
-            .new_session("session-1", workspace_path)
-            .await
-            .unwrap();
-
-        let view = store.load_session("session-1").await.unwrap();
-
-        assert_eq!(view.workspace_instructions, None);
-        assert!(
-            view.workspace_instructions_error.is_some(),
-            "should report an error for unreadable AGENTS.md"
-        );
     }
 }

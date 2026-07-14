@@ -170,6 +170,11 @@ fn runner_error_response(
             -32603,
             format!("session store error: {session_error}"),
         ),
+        RunnerError::SessionView(view_error) => JsonRpcResponse::failure(
+            request.id.clone(),
+            -32603,
+            format!("session view error: {view_error}"),
+        ),
         RunnerError::Provider(provider_error) => JsonRpcResponse::failure(
             request.id.clone(),
             -32603,

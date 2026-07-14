@@ -14,6 +14,9 @@ pub mod event_bus;
 /// LLM context construction from session state, tools, and active skills.
 pub mod llm_context;
 
+/// Session view repository for reconstructing session views from persisted entries.
+pub mod session_view_repository;
+
 /// Session runner that drives the model/provider conversation loop.
 pub mod runner;
 
@@ -26,5 +29,6 @@ pub mod session_manager;
 pub use runner::{RunId, RunnerError, SessionRunner};
 pub use runtime_services::RuntimeServices;
 pub use session_manager::SessionManager;
+pub use session_view_repository::{SessionViewError, SessionViewRepository};
 
 pub use event_bus::{BroadcastEventBus, RecordingEventBus, RuntimeEventBus};

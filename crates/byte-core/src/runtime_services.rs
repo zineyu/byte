@@ -6,6 +6,7 @@ use byte_skills::SkillRegistry;
 use byte_tools::ToolRegistry;
 
 use crate::event_bus::RuntimeEventBus;
+use crate::session_view_repository::SessionViewRepository;
 
 /// Aggregated runtime dependencies used by [`crate::SessionManager`] and
 /// [`crate::SessionRunner`].
@@ -19,6 +20,8 @@ pub struct RuntimeServices {
     pub provider: Arc<dyn ModelProvider>,
     /// Persistent session storage.
     pub store: Arc<SessionStore>,
+    /// Repository for reconstructing session views from persisted entries.
+    pub view_repo: Arc<SessionViewRepository>,
     /// Bus used to publish runtime events to subscribers.
     pub event_bus: Arc<dyn RuntimeEventBus>,
     /// Registry of tools available during runs.
@@ -31,6 +34,7 @@ impl std::fmt::Debug for RuntimeServices {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RuntimeServices")
             .field("store", &self.store)
+            .field("view_repo", &self.view_repo)
             .finish_non_exhaustive()
     }
 }
@@ -45,9 +49,11 @@ impl RuntimeServices {
         tool_registry: Arc<dyn ToolRegistry>,
         skill_registry: Arc<dyn SkillRegistry>,
     ) -> Self {
+        let view_repo = Arc::new(SessionViewRepository::new(Arc::clone(&store)));
         Self {
             provider,
             store,
+            view_repo,
             event_bus,
             tool_registry,
             skill_registry,
