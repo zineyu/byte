@@ -129,15 +129,25 @@ pub struct SessionRunner {
 }
 
 impl SessionRunner {
-    /// Create a new runner with aggregated runtime services.
+    /// Create a new runner with aggregated runtime services and no active
+    /// skills.
     #[must_use]
     pub fn new(services: RuntimeServices) -> Self {
-        let active_skills = Arc::new(Mutex::new(Vec::new()));
+        Self::with_active_skills(services, Arc::new(Mutex::new(Vec::new())))
+    }
+
+    /// Create a new runner with the given pre-loaded active skills.
+    #[must_use]
+    pub fn with_active_skills(
+        services: RuntimeServices,
+        active_skills: Arc<Mutex<Vec<ActivatedSkill>>>,
+    ) -> Self {
         let tool_registry = Arc::new(crate::activate_skill::SessionToolRegistry::new(
             Arc::clone(&services.tool_registry),
             Arc::new(crate::activate_skill::ActivateSkillTool::new(
                 Arc::clone(&services.skill_registry),
                 Arc::clone(&active_skills),
+                Arc::clone(&services.store),
             )),
             Arc::new(AllowAllPolicy),
         ));
@@ -257,17 +267,6 @@ impl SessionRunner {
     /// Return true if the runner currently has an active run.
     pub async fn is_running(&self) -> bool {
         self.active_run.lock().await.is_some()
-    }
-
-    /// Acquire the active-run mutex guard.
-    ///
-    /// The guard is used by `SessionManager::delete_session` to hold the lock
-    /// across the file deletion so that no run can start on this session while
-    /// the session file is being removed.
-    pub(crate) async fn active_run_guard(
-        &self,
-    ) -> tokio::sync::MutexGuard<'_, Option<(RunId, CancellationToken)>> {
-        self.active_run.lock().await
     }
 
     /// Wait until there is no active run.

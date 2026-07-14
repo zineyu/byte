@@ -85,4 +85,5 @@ issue #19 要求补齐 `byte-tools`、`byte-skills` 与 `byte-core` crate 及 re
   - Workspace 中 crate 数量增加，初次构建时间略有上升。
   - MVP 中 `MvpToolRegistry` 与 `MvpSkillRegistry` 仍是单例 / 进程内实现，未解决多进程共享问题。
   - `activate_skill` 的激活状态保存在 `SessionRunner` 内存中，daemon 重启后清空，未持久化到 session 文件。
+    - **注**：此状态已被 `docs/adr/0018-persist-activated-skills-and-runner-pool.md` 修正。Skill 激活状态现在持久化为 `SessionEntry::SkillActivated`，`RunnerPool` 独立管理 runner 生命周期，runner 被回收后重建时可以从 session 文件恢复已激活 skills。
   - `run_command` 等工具当前返回完整输出，未实现流式 `command_output`，后续扩展接口时需要谨慎保持向后兼容。

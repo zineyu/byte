@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use byte_protocol::{ActivatedSkill, ToolCall, ToolDefinition};
+use byte_session::SessionStore;
 use byte_skills::SkillRegistry;
 use byte_tools::{Tool, ToolError, ToolEventSink, ToolOutputResult, ToolPolicy, ToolRegistry};
 use tokio::sync::Mutex;
@@ -17,6 +18,8 @@ pub struct ActivateSkillTool {
     skill_registry: Arc<dyn SkillRegistry>,
     /// Per-session list of skills that have been activated.
     active_skills: Arc<Mutex<Vec<ActivatedSkill>>>,
+    /// Persistent session store used to record skill activations.
+    store: Arc<SessionStore>,
 }
 
 impl std::fmt::Debug for ActivateSkillTool {
@@ -26,16 +29,18 @@ impl std::fmt::Debug for ActivateSkillTool {
 }
 
 impl ActivateSkillTool {
-    /// Create a new activate-skill tool bound to the given registry and active
-    /// skills list.
+    /// Create a new activate-skill tool bound to the given registry, active
+    /// skills list, and session store.
     #[must_use]
     pub fn new(
         skill_registry: Arc<dyn SkillRegistry>,
         active_skills: Arc<Mutex<Vec<ActivatedSkill>>>,
+        store: Arc<SessionStore>,
     ) -> Self {
         Self {
             skill_registry,
             active_skills,
+            store,
         }
     }
 }
@@ -78,6 +83,13 @@ impl Tool for ActivateSkillTool {
             .activate(Some(ctx.workspace_root.as_path()), name)
             .await
             .map_err(|error| ToolError::new(error.to_string()))?;
+
+        if let Some(session_id) = &ctx.session_id {
+            self.store
+                .append_skill_activation(session_id, &definition.name, &definition.content)
+                .await
+                .map_err(|error| ToolError::new(error.to_string()))?;
+        }
 
         let mut active_skills = self.active_skills.lock().await;
         if let Some(existing) = active_skills
@@ -201,10 +213,17 @@ mod tests {
     use std::collections::HashMap;
     use std::path::{Path, PathBuf};
 
+    use byte_session::SessionStore;
+
     use super::*;
     use async_trait::async_trait;
     use byte_protocol::{SessionContext, SkillDefinition, SkillEntry};
     use byte_tools::{AllowAllPolicy, MvpToolRegistry};
+
+    fn temp_store() -> Arc<SessionStore> {
+        let dir = tempfile::tempdir().expect("temp dir");
+        Arc::new(SessionStore::new(dir.path().to_path_buf()).expect("store creates"))
+    }
 
     struct StubSkillRegistry {
         skills: Mutex<HashMap<String, SkillDefinition>>,
@@ -253,7 +272,7 @@ mod tests {
             )])),
         });
 
-        let tool = ActivateSkillTool::new(registry, Arc::clone(&active_skills));
+        let tool = ActivateSkillTool::new(registry, Arc::clone(&active_skills), temp_store());
         let call = ToolCall {
             id: "call-1".into(),
             name: "activate_skill".into(),
@@ -286,6 +305,7 @@ mod tests {
                     skills: Mutex::new(HashMap::new()),
                 }),
                 Arc::new(Mutex::new(Vec::new())),
+                temp_store(),
             )),
             Arc::new(AllowAllPolicy),
         );
@@ -313,7 +333,8 @@ mod tests {
             )])),
         });
 
-        let tool = ActivateSkillTool::new(registry.clone(), Arc::clone(&active_skills));
+        let tool =
+            ActivateSkillTool::new(registry.clone(), Arc::clone(&active_skills), temp_store());
         let ctx = SessionContext {
             session_id: None,
             workspace_root: PathBuf::from("/workspace"),

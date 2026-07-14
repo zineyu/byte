@@ -1,29 +1,26 @@
-use std::collections::HashMap;
-use std::sync::Arc;
-
 use byte_protocol::{
     CancelRunParams, CancelRunResult, DeleteSessionResult, ListSessionsResult, LoadSessionResult,
     NewSessionResult, RuntimeEventKind, SessionChangeAction,
 };
-use tokio::sync::Mutex;
 use tracing::{debug, info, instrument};
 
-use crate::runner::{RunnerError, SessionRunner};
+use crate::runner::RunnerError;
+use crate::runner_pool::{CloseResult, RunnerPool};
 use crate::runtime_services::RuntimeServices;
 
-/// Manages the lifecycle of per-session runners and session CRUD.
+/// Manages the lifecycle of sessions and delegates runner lifecycle to a
+/// [`RunnerPool`].
 ///
-/// A `SessionManager` is a long-lived service that owns the mapping from
-/// session id to [`SessionRunner`]. Runners are created lazily the first time
-/// a session receives a message. When a session is deleted its runner is
-/// removed from the map so that the manager does not leak runners across
-/// session lifecycles.
+/// A `SessionManager` is a long-lived service that handles session CRUD and
+/// routes run requests to runners managed by the pool. Runners are created
+/// lazily by the pool and can be closed when the session is deleted or when
+/// the pool decides to reclaim idle memory.
 #[derive(Clone)]
 pub struct SessionManager {
     /// Aggregated runtime services.
     services: RuntimeServices,
-    /// Map from session id to active runner.
-    runners: Arc<Mutex<HashMap<String, Arc<SessionRunner>>>>,
+    /// Pool that owns the mapping from session id to cached runner.
+    pool: RunnerPool,
 }
 
 impl std::fmt::Debug for SessionManager {
@@ -37,8 +34,8 @@ impl SessionManager {
     #[must_use]
     pub fn new(services: RuntimeServices) -> Self {
         Self {
+            pool: RunnerPool::new(services.clone()),
             services,
-            runners: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -107,12 +104,7 @@ impl SessionManager {
     /// Delete a session file if it exists.
     ///
     /// Returns `RunnerError::Busy` if the session has an active run. The
-    /// runner is removed from the internal map on success so that a later
-    /// session with the same id gets a fresh runner.
-    ///
-    /// The runners map lock is held across the active-run check, file deletion
-    /// and runner removal so that no other task can observe a deleted file
-    /// while the old runner is still reachable from the map.
+    /// cached runner is closed before the session file is deleted.
     ///
     /// # Errors
     ///
@@ -122,19 +114,12 @@ impl SessionManager {
         &self,
         session_id: &str,
     ) -> Result<DeleteSessionResult, RunnerError> {
-        let mut runners = self.runners.lock().await;
-
-        if let Some(runner) = runners.get(session_id).cloned() {
-            let active = runner.active_run_guard().await;
-            if active.is_some() {
-                return Err(RunnerError::Busy);
-            }
-            self.services.store.delete_session(session_id).await?;
-            let _ = runners.remove(session_id);
-        } else {
-            drop(runners);
-            self.services.store.delete_session(session_id).await?;
+        match self.pool.close(session_id).await {
+            CloseResult::Busy => return Err(RunnerError::Busy),
+            CloseResult::Absent | CloseResult::Closed => {}
         }
+
+        self.services.store.delete_session(session_id).await?;
 
         self.emit_session_changed(session_id.to_owned(), SessionChangeAction::Deleted)
             .await;
@@ -158,7 +143,7 @@ impl SessionManager {
         &self,
         params: byte_protocol::SendMessageParams,
     ) -> Result<crate::runner::RunId, RunnerError> {
-        let runner = self.runner_for(&params.session_id).await;
+        let runner = self.pool.get_or_create(&params.session_id).await;
         runner.send_message(params).await
     }
 
@@ -175,31 +160,14 @@ impl SessionManager {
         &self,
         params: CancelRunParams,
     ) -> Result<CancelRunResult, RunnerError> {
-        let runners = self.runners.lock().await;
-        if let Some(runner) = runners.get(&params.session_id).cloned() {
-            drop(runners);
-            let _ = runner.cancel_run().await?;
-        }
+        let runner = self.pool.get_or_create(&params.session_id).await;
+        let _ = runner.cancel_run().await?;
         Ok(CancelRunResult {})
     }
 
     /// Return true if the session has an active run.
     pub async fn is_running(&self, session_id: &str) -> bool {
-        let runners = self.runners.lock().await;
-        if let Some(runner) = runners.get(session_id) {
-            runner.is_running().await
-        } else {
-            false
-        }
-    }
-
-    /// Get or create the runner for a session.
-    async fn runner_for(&self, session_id: &str) -> Arc<SessionRunner> {
-        let mut runners = self.runners.lock().await;
-        runners
-            .entry(session_id.to_owned())
-            .or_insert_with(|| Arc::new(SessionRunner::new(self.services.clone())))
-            .clone()
+        self.pool.get_or_create(session_id).await.is_running().await
     }
 
     /// Emit a session-changed runtime event.
@@ -395,7 +363,7 @@ mod tests {
         );
 
         // Cleanup active run before exit to avoid leaking tasks.
-        let runner = manager.runner_for("s1").await;
+        let runner = manager.pool.get_or_create("s1").await;
         runner.wait_until_idle().await;
     }
 
@@ -417,7 +385,7 @@ mod tests {
         let second = manager.send_message(params).await;
         assert!(matches!(second, Err(crate::runner::RunnerError::Busy)));
 
-        let runner = manager.runner_for("s1").await;
+        let runner = manager.pool.get_or_create("s1").await;
         runner.wait_until_idle().await;
 
         let events = bus.take_events().await;
@@ -457,8 +425,8 @@ mod tests {
         assert!(second.is_ok(), "s2 run should be accepted");
         assert_ne!(first.unwrap(), second.unwrap());
 
-        let r1 = manager.runner_for("s1").await;
-        let r2 = manager.runner_for("s2").await;
+        let r1 = manager.pool.get_or_create("s1").await;
+        let r2 = manager.pool.get_or_create("s2").await;
         r1.wait_until_idle().await;
         r2.wait_until_idle().await;
     }

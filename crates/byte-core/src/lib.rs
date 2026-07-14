@@ -20,6 +20,9 @@ pub mod session_view_repository;
 /// Session runner that drives the model/provider conversation loop.
 pub mod runner;
 
+/// Pool that manages the lifecycle of per-session runners.
+pub mod runner_pool;
+
 /// Aggregated runtime dependencies shared across sessions and runs.
 pub mod runtime_services;
 
@@ -27,6 +30,7 @@ pub mod runtime_services;
 pub mod session_manager;
 
 pub use runner::{RunId, RunnerError, SessionRunner};
+pub use runner_pool::{CloseResult, RunnerPool};
 pub use runtime_services::RuntimeServices;
 pub use session_manager::SessionManager;
 pub use session_view_repository::{SessionViewError, SessionViewRepository};

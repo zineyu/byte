@@ -91,7 +91,7 @@ impl SessionViewRepository {
                     message_order.push(message.id.clone());
                     let _ = messages_by_id.insert(message.id.clone(), message);
                 }
-                SessionEntry::Session { .. } => {}
+                SessionEntry::Session { .. } | SessionEntry::SkillActivated { .. } => {}
             }
         }
 

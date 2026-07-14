@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::ActivatedSkill;
+
 use crate::{MessageRole, ToolCall};
 
 /// A lightweight summary of a Session for listing in the UI.
@@ -134,6 +136,8 @@ pub enum SessionEntry {
     },
     /// Message record.
     Message(Message),
+    /// Skill activation record.
+    SkillActivated(ActivatedSkill),
 }
 
 /// Parameters for creating a new session.

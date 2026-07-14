@@ -11,7 +11,8 @@
 use std::path::{Path, PathBuf};
 
 use byte_protocol::{
-    Message, MessageBody, MessageRole, SessionEntry, SessionSummary, encode_json_line,
+    ActivatedSkill, Message, MessageBody, MessageRole, SessionEntry, SessionSummary,
+    encode_json_line,
 };
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
@@ -135,6 +136,26 @@ impl SessionStore {
         });
         self.write_line(&path, &entry).await?;
         Ok(id)
+    }
+
+    /// Append a skill activation record to the session file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the session id is invalid or the entry cannot be
+    /// written.
+    pub async fn append_skill_activation(
+        &self,
+        session_id: &str,
+        name: &str,
+        content: &str,
+    ) -> Result<(), SessionError> {
+        let path = self.session_path(session_id)?;
+        let entry = SessionEntry::SkillActivated(ActivatedSkill {
+            name: name.to_owned(),
+            content: content.to_owned(),
+        });
+        self.write_line(&path, &entry).await
     }
 
     /// Maximum session file size that will be loaded into memory (64 MiB).
@@ -429,6 +450,27 @@ mod tests {
         if let SessionEntry::Message(message) = &second {
             assert_eq!(message_text(message), "hi");
         }
+    }
+
+    #[tokio::test]
+    async fn append_skill_activation_writes_skill_entry() {
+        let store = temp_store();
+        store.new_session("session-1", "/workspace").await.unwrap();
+
+        store
+            .append_skill_activation("session-1", "review", "Review carefully.")
+            .await
+            .expect("append skill activation");
+
+        let entries = store.read_entries("session-1").await.unwrap();
+        assert_eq!(entries.len(), 2);
+        assert!(
+            matches!(
+                &entries[1],
+                SessionEntry::SkillActivated(ActivatedSkill { name, content }) if name == "review" && content == "Review carefully."
+            ),
+            "second entry should be skill activation"
+        );
     }
 
     #[tokio::test]
