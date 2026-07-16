@@ -1,6 +1,5 @@
 use byte_protocol::{
-    ActivatedSkill, LlmMessage, Message, MessageBlock, MessageBody, MessageRole, SkillEntry,
-    ToolDefinition,
+    ActivatedSkill, LlmMessage, MessageBlock, MessageBody, MessageRole, SkillEntry, ToolDefinition,
 };
 use std::fmt::Write;
 
@@ -9,8 +8,9 @@ use std::fmt::Write;
 pub struct LlmContextInput {
     /// The current user message for this run.
     pub user_message: String,
-    /// Prior messages in the session, in chronological order.
-    pub history: Vec<Message>,
+    /// Prior messages in the session, in chronological order, as LLM context
+    /// messages (including summary-role compaction entries).
+    pub history: Vec<LlmMessage>,
     /// Tool definitions available to the model for this run.
     pub tools: Vec<ToolDefinition>,
     /// Skills that have been activated for the current session.
@@ -76,21 +76,13 @@ impl LlmContextBuilder {
             if message.role == MessageRole::Summary {
                 messages.push(LlmMessage::text(
                     MessageRole::System,
-                    format!(
-                        "Earlier conversation summary ({}): {}",
-                        message.id,
-                        body_text(&message.body)
-                    ),
+                    format!("Earlier conversation summary: {}", body_text(&message.body)),
                 ));
             }
         }
         for message in &context.history {
             if message.role != MessageRole::Summary {
-                messages.push(LlmMessage {
-                    role: message.role,
-                    body: message.body.clone(),
-                    tool_call_id: message.tool_call_id.clone(),
-                });
+                messages.push(message.clone());
             }
         }
 
@@ -170,16 +162,10 @@ mod tests {
     #![allow(clippy::expect_used, clippy::unwrap_used, unused_results)]
 
     use super::*;
-    use byte_protocol::Message;
+    use byte_protocol::LlmMessage;
 
-    fn message_text(role: MessageRole, content: &str) -> Message {
-        Message {
-            id: "m1".into(),
-            parent_id: None,
-            role,
-            tool_call_id: None,
-            body: MessageBody::text(content),
-        }
+    fn message_text(role: MessageRole, content: &str) -> LlmMessage {
+        LlmMessage::text(role, content)
     }
 
     #[test]
@@ -213,9 +199,7 @@ mod tests {
             user_message: "current".into(),
             history: vec![
                 message_text(MessageRole::Developer, "past"),
-                Message {
-                    id: "s1".into(),
-                    parent_id: Some("m1".into()),
+                LlmMessage {
                     role: MessageRole::Summary,
                     tool_call_id: None,
                     body: MessageBody::text("old topic"),
@@ -243,9 +227,7 @@ mod tests {
         let builder = LlmContextBuilder::new();
         let context = LlmContextInput {
             user_message: "current".into(),
-            history: vec![Message {
-                id: "m2".into(),
-                parent_id: Some("m1".into()),
+            history: vec![LlmMessage {
                 role: MessageRole::Tool,
                 tool_call_id: Some("call-1".into()),
                 body: MessageBody::text("tool output"),

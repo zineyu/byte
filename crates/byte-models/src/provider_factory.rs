@@ -56,6 +56,7 @@ mod tests {
             model: "gpt-test".to_owned(),
             echo_chunk_size: None,
             echo_delay_ms: None,
+            context_budget: None,
         }
     }
 

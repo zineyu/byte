@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { initialState } from "./initialState";
 import { reducer } from "./reducer";
-import type { BlockDelta, RuntimeEvent, SessionView } from "./types";
+import type { AppState, BlockDelta, RuntimeEvent, SessionView } from "./types";
 
 const readyDaemonEvent: RuntimeEvent = {
   sequence: 1,
@@ -206,6 +206,104 @@ describe("runtime event reducer", () => {
     expect(afterError.connection.error).toBe("Provider config not found");
   });
 
+  it("records a compaction_started event without creating a message", () => {
+    const next = reducer(initialState, {
+      type: "runtime_event",
+      event: {
+        sequence: 1,
+        type: "compaction_started",
+        run_id: "r1",
+        session_id: "s1",
+        compacted_range: { firstMessageId: "m1", lastMessageId: "m2" },
+      },
+    });
+
+    expect(next.events).toHaveLength(1);
+    expect(next.events[0].type).toBe("compaction_started");
+    expect(next.messages).toHaveLength(0);
+  });
+
+  it("appends a summary message on compaction_completed", () => {
+    const next = reducer(initialState, {
+      type: "runtime_event",
+      event: {
+        sequence: 1,
+        type: "compaction_completed",
+        run_id: "r1",
+        session_id: "s1",
+        compaction_entry_id: "ce1",
+        summary: "earlier messages summarized",
+        compacted_range: { firstMessageId: "m1", lastMessageId: "m2" },
+      },
+    });
+
+    expect(next.messages).toHaveLength(1);
+    expect(next.messages[0]).toMatchObject({
+      id: "ce1",
+      role: "summary",
+      content: "earlier messages summarized",
+      body: [{ type: "text", text: "earlier messages summarized" }],
+      status: "completed",
+    });
+  });
+
+  it("updates a streaming placeholder summary on compaction_completed", () => {
+    const withPlaceholder: AppState = {
+      ...initialState,
+      messages: [
+        {
+          id: "ce1",
+          role: "summary",
+          content: "Compacting earlier messages...",
+          body: [{ type: "text", text: "Compacting earlier messages..." }],
+          status: "streaming",
+          timestamp: null,
+          firstMessageId: "m1",
+          lastMessageId: "m2",
+        },
+      ],
+    };
+
+    const next = reducer(withPlaceholder, {
+      type: "runtime_event",
+      event: {
+        sequence: 1,
+        type: "compaction_completed",
+        run_id: "r1",
+        session_id: "s1",
+        compaction_entry_id: "ce1",
+        summary: "earlier messages summarized",
+        compacted_range: { firstMessageId: "m1", lastMessageId: "m2" },
+      },
+    });
+
+    expect(next.messages).toHaveLength(1);
+    expect(next.messages[0]).toMatchObject({
+      id: "ce1",
+      role: "summary",
+      content: "earlier messages summarized",
+      body: [{ type: "text", text: "earlier messages summarized" }],
+      status: "completed",
+    });
+  });
+
+  it("records a compaction_failed event without creating a message", () => {
+    const next = reducer(initialState, {
+      type: "runtime_event",
+      event: {
+        sequence: 1,
+        type: "compaction_failed",
+        run_id: "r1",
+        session_id: "s1",
+        error: "compaction failed",
+      },
+    });
+
+    expect(next.events).toHaveLength(1);
+    expect(next.events[0].type).toBe("compaction_failed");
+    expect(next.messages).toHaveLength(0);
+  });
+
   it("loads a session snapshot as completed messages", () => {
     const session: SessionView = {
       sessionId: "session-load-1",
@@ -226,6 +324,7 @@ describe("runtime event reducer", () => {
           body: [{ type: "text", text: "Hi there" }],
         },
       ],
+      compactionEntries: [],
     };
 
     const next = reducer(initialState, { type: "load_session", session });
@@ -266,6 +365,7 @@ describe("runtime event reducer", () => {
             body: [{ type: "text", text: "Hello" }],
           },
         ],
+        compactionEntries: [],
       },
     });
     const running = reducer(withMessage, {
@@ -576,6 +676,7 @@ describe("runtime event reducer", () => {
           body: [{ type: "text", text: "file contents" }],
         },
       ],
+      compactionEntries: [],
     };
 
     const next = reducer(initialState, { type: "load_session", session });
@@ -627,6 +728,7 @@ describe("runtime event reducer", () => {
           ],
         },
       ],
+      compactionEntries: [],
     };
 
     const next = reducer(initialState, { type: "load_session", session });
@@ -678,6 +780,7 @@ describe("runtime event reducer", () => {
           body: [{ type: "text", text: "file contents" }],
         },
       ],
+      compactionEntries: [],
     };
 
     const next = reducer(initialState, { type: "load_session", session });

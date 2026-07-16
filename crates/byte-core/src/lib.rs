@@ -29,6 +29,12 @@ pub mod runtime_services;
 /// Session lifecycle manager (create, load, delete, dispatch messages).
 pub mod session_manager;
 
+/// Session reconstruction and budget estimation helpers.
+pub mod session;
+
+/// Automatic compaction of older session history into summary entries.
+pub mod compaction;
+
 pub use runner::{RunId, RunnerError, SessionRunner};
 pub use runner_pool::{CloseResult, RunnerPool};
 pub use runtime_services::RuntimeServices;

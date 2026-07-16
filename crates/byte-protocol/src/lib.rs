@@ -7,7 +7,7 @@ use std::path::PathBuf;
 /// JSON-RPC protocol version.
 pub const JSON_RPC_VERSION: &str = "2.0";
 /// Wire format version supported by this crate.
-pub const PROTOCOL_VERSION: u16 = 8;
+pub const PROTOCOL_VERSION: u16 = 9;
 
 /// JSON-RPC method name used for runtime event notifications.
 pub const RUNTIME_EVENT_METHOD: &str = "runtime_event";
@@ -22,9 +22,9 @@ pub mod session;
 
 /// Re-exported session request/result and view types.
 pub use session::{
-    BlockDelta, DeleteSessionParams, DeleteSessionResult, ListSessionsResult, LoadSessionParams,
-    LoadSessionResult, Message, MessageBlock, MessageBody, NewSessionParams, NewSessionResult,
-    SessionEntry, SessionSummary, SessionView,
+    BlockDelta, CompactionEntry, CompactionRange, DeleteSessionParams, DeleteSessionResult,
+    ListSessionsResult, LoadSessionParams, LoadSessionResult, Message, MessageBlock, MessageBody,
+    NewSessionParams, NewSessionResult, SessionEntry, SessionSummary, SessionView,
 };
 
 /// JSON-RPC request identifier, which may be a number or a string.
@@ -466,6 +466,52 @@ impl RuntimeEventKind {
             action,
         }
     }
+
+    /// Compaction started for the given run and session.
+    #[must_use]
+    pub fn compaction_started(
+        run_id: impl Into<String>,
+        session_id: impl Into<String>,
+        compacted_range: CompactionRange,
+    ) -> Self {
+        Self::CompactionStarted {
+            run_id: run_id.into(),
+            session_id: session_id.into(),
+            compacted_range,
+        }
+    }
+
+    /// Compaction completed and produced a compaction entry.
+    #[must_use]
+    pub fn compaction_completed(
+        run_id: impl Into<String>,
+        session_id: impl Into<String>,
+        compaction_entry_id: impl Into<String>,
+        summary: impl Into<String>,
+        compacted_range: CompactionRange,
+    ) -> Self {
+        Self::CompactionCompleted {
+            run_id: run_id.into(),
+            session_id: session_id.into(),
+            compaction_entry_id: compaction_entry_id.into(),
+            summary: summary.into(),
+            compacted_range,
+        }
+    }
+
+    /// Compaction failed with an error.
+    #[must_use]
+    pub fn compaction_failed(
+        run_id: impl Into<String>,
+        session_id: impl Into<String>,
+        error: impl Into<String>,
+    ) -> Self {
+        Self::CompactionFailed {
+            run_id: run_id.into(),
+            session_id: session_id.into(),
+            error: error.into(),
+        }
+    }
 }
 
 /// Specific kind of a [`RuntimeEvent`].
@@ -581,6 +627,37 @@ pub enum RuntimeEventKind {
         session_id: String,
         /// Change action.
         action: SessionChangeAction,
+    },
+    /// Compaction started during a run.
+    CompactionStarted {
+        /// Run identifier.
+        run_id: String,
+        /// Session identifier.
+        session_id: String,
+        /// Identifiers of the messages being compacted.
+        compacted_range: CompactionRange,
+    },
+    /// Compaction finished successfully and a compaction entry was persisted.
+    CompactionCompleted {
+        /// Run identifier.
+        run_id: String,
+        /// Session identifier.
+        session_id: String,
+        /// Newly created compaction entry identifier.
+        compaction_entry_id: String,
+        /// Summary text produced by the model provider.
+        summary: String,
+        /// Identifiers of the messages that were compacted.
+        compacted_range: CompactionRange,
+    },
+    /// Compaction failed.
+    CompactionFailed {
+        /// Run identifier.
+        run_id: String,
+        /// Session identifier.
+        session_id: String,
+        /// Human-readable error message.
+        error: String,
     },
 }
 
@@ -1119,24 +1196,91 @@ mod tests {
     }
 
     #[test]
-    fn message_completed_with_tool_calls_roundtrips() {
+    fn message_role_summary_serializes_as_snake_case() {
+        let value = serde_json::to_value(MessageRole::Summary).unwrap();
+        assert_eq!(value, serde_json::json!("summary"));
+    }
+
+    #[test]
+    fn compaction_started_event_roundtrips() {
         let event = RuntimeEvent {
-            sequence: 7,
-            kind: RuntimeEventKind::message_completed(
+            sequence: 20,
+            kind: RuntimeEventKind::compaction_started(
                 "run-1",
-                "msg-1",
-                Some(MessageBody(vec![MessageBlock::ToolCall(ToolCall {
-                    id: "call-1".into(),
-                    name: "read_file".into(),
-                    arguments: serde_json::json!({"path": "src/main.rs"}),
-                })])),
+                "session-1",
+                CompactionRange {
+                    first_message_id: "msg-1".into(),
+                    last_message_id: "msg-5".into(),
+                },
             ),
         };
         let decoded: RuntimeEvent = decode_json_line(&encode_json_line(&event).unwrap()).unwrap();
+
         assert!(matches!(
             decoded.kind,
-            RuntimeEventKind::MessageCompleted { run_id, message_id, body }
-            if run_id == "run-1" && message_id == "msg-1" && body.as_ref().map(|b| b.0.len()) == Some(1)
+            RuntimeEventKind::CompactionStarted {
+                run_id,
+                session_id,
+                compacted_range,
+            } if run_id == "run-1" && session_id == "session-1"
+                && compacted_range.first_message_id == "msg-1"
+                && compacted_range.last_message_id == "msg-5"
+        ));
+    }
+
+    #[test]
+    fn compaction_completed_event_roundtrips() {
+        let event = RuntimeEvent {
+            sequence: 21,
+            kind: RuntimeEventKind::compaction_completed(
+                "run-1",
+                "session-1",
+                "ce-1",
+                "summary text",
+                CompactionRange {
+                    first_message_id: "msg-1".into(),
+                    last_message_id: "msg-2".into(),
+                },
+            ),
+        };
+        let decoded: RuntimeEvent = decode_json_line(&encode_json_line(&event).unwrap()).unwrap();
+
+        assert!(matches!(
+            decoded.kind,
+            RuntimeEventKind::CompactionCompleted {
+                run_id,
+                session_id,
+                compaction_entry_id,
+                summary,
+                compacted_range,
+            } if run_id == "run-1" && session_id == "session-1"
+                && compaction_entry_id == "ce-1"
+                && summary == "summary text"
+                && compacted_range.first_message_id == "msg-1"
+                && compacted_range.last_message_id == "msg-2"
+        ));
+    }
+
+    #[test]
+    fn compaction_failed_event_roundtrips() {
+        let event = RuntimeEvent {
+            sequence: 22,
+            kind: RuntimeEventKind::compaction_failed(
+                "run-1",
+                "session-1",
+                "compaction did not reduce context below budget",
+            ),
+        };
+        let decoded: RuntimeEvent = decode_json_line(&encode_json_line(&event).unwrap()).unwrap();
+
+        assert!(matches!(
+            decoded.kind,
+            RuntimeEventKind::CompactionFailed {
+                run_id,
+                session_id,
+                error,
+            } if run_id == "run-1" && session_id == "session-1"
+                && error == "compaction did not reduce context below budget"
         ));
     }
 }

@@ -5,6 +5,7 @@ use byte_session::SessionStore;
 use byte_skills::SkillRegistry;
 use byte_tools::ToolRegistry;
 
+use crate::compaction::CompactionConfig;
 use crate::event_bus::RuntimeEventBus;
 use crate::session_view_repository::SessionViewRepository;
 
@@ -28,6 +29,8 @@ pub struct RuntimeServices {
     pub tool_registry: Arc<dyn ToolRegistry>,
     /// Registry of skills that can be activated at runtime.
     pub skill_registry: Arc<dyn SkillRegistry>,
+    /// Compaction configuration for context-budget management.
+    pub compaction_config: CompactionConfig,
 }
 
 impl std::fmt::Debug for RuntimeServices {
@@ -35,6 +38,7 @@ impl std::fmt::Debug for RuntimeServices {
         f.debug_struct("RuntimeServices")
             .field("store", &self.store)
             .field("view_repo", &self.view_repo)
+            .field("compaction_config", &self.compaction_config)
             .finish_non_exhaustive()
     }
 }
@@ -48,6 +52,7 @@ impl RuntimeServices {
         event_bus: Arc<dyn RuntimeEventBus>,
         tool_registry: Arc<dyn ToolRegistry>,
         skill_registry: Arc<dyn SkillRegistry>,
+        compaction_config: CompactionConfig,
     ) -> Self {
         let view_repo = Arc::new(SessionViewRepository::new(Arc::clone(&store)));
         Self {
@@ -57,6 +62,7 @@ impl RuntimeServices {
             event_bus,
             tool_registry,
             skill_registry,
+            compaction_config,
         }
     }
 }

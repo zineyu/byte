@@ -30,6 +30,14 @@ A one-way notification emitted by the daemon and forwarded by the desktop shell 
 
 _Avoid_: Log line, notification, bus message
 
+### Compaction Entry
+
+A durable, persisted Session node representing a compaction summary. It appears in the persisted tree as the `SessionEntry::CompactionEntry` variant and is projected into the LLM context with `MessageRole::Summary`.
+
+It contains a `summary` (natural-language summary of the compacted older active-path messages) and a `compacted_range` (the contiguous block of older active-path messages being replaced).
+
+_Avoid_: Hidden summary cache, overwritten history
+
 ### Message Role
 
 The role of a message inside a Run or a persisted Session history node:
@@ -38,7 +46,7 @@ The role of a message inside a Run or a persisted Session history node:
 - `developer`: the human Developer message.
 - `assistant`: the model-generated response.
 - `tool`: a tool result returned to the model, persisted as a `Message` entry with a `text` body block.
-- `summary`: a compacted summary of earlier conversation history, persisted as a `Message` entry with `role = "summary"` and a `text` body block.
+- `summary`: a compacted summary of earlier conversation history, represented in the persisted Session as a `CompactionEntry` and projected as a `Message` with `role = "summary"` and a `text` body block.
 
 At the provider adapter boundary, `system` maps to the OpenAI `system` role and `developer` maps to the OpenAI `user` role. `summary` messages are converted to `system` messages before being sent to the Model Provider.
 

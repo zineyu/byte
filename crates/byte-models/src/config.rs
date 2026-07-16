@@ -26,6 +26,8 @@ pub struct ModelProviderConfig {
     pub echo_chunk_size: Option<usize>,
     /// Optional delay in milliseconds between `echo` provider chunks.
     pub echo_delay_ms: Option<u64>,
+    /// Optional context budget in tokens. Defaults to 8192 when unset.
+    pub context_budget: Option<usize>,
 }
 
 impl ModelProviderConfig {
@@ -39,6 +41,12 @@ impl ModelProviderConfig {
     #[must_use]
     pub fn echo_delay_or_default(&self) -> std::time::Duration {
         std::time::Duration::from_millis(self.echo_delay_ms.unwrap_or(0))
+    }
+
+    /// Returns the configured context budget or a sensible default.
+    #[must_use]
+    pub fn context_budget_or_default(&self) -> usize {
+        self.context_budget.unwrap_or(8192)
     }
 }
 
@@ -57,6 +65,8 @@ struct RawConfig {
     echo_chunk_size: Option<usize>,
     /// Optional delay in milliseconds between `echo` provider chunks.
     echo_delay_ms: Option<u64>,
+    /// Optional context budget in tokens. Defaults to 8192 when unset.
+    context_budget: Option<usize>,
     /// OpenAI-specific overrides for `openai-compatible` providers.
     openai: Option<OpenAiSection>,
 }
@@ -192,6 +202,7 @@ fn parse_config(contents: &str) -> Result<ModelProviderConfig, ConfigError> {
         model,
         echo_chunk_size: raw.echo_chunk_size,
         echo_delay_ms: raw.echo_delay_ms,
+        context_budget: raw.context_budget,
     })
 }
 
@@ -278,6 +289,33 @@ mod tests {
         assert_eq!(config.base_url, "https://api.openai.com/v1/");
         assert_eq!(config.api_key, "sk-test");
         assert_eq!(config.model, "gpt-4o");
+        assert_eq!(config.context_budget, None);
+    }
+
+    #[tokio::test]
+    async fn context_budget_is_loaded_from_config() {
+        let path = temp_config_file(
+            "provider = 'openai'\nbase_url = 'https://api.openai.com/v1/'\napi_key = 'sk-test'\nmodel = 'gpt-4o'\ncontext_budget = 4096",
+        );
+
+        let config = load_config_at_path(&path)
+            .await
+            .expect("valid config loads");
+        assert_eq!(config.context_budget, Some(4096));
+        assert_eq!(config.context_budget_or_default(), 4096);
+    }
+
+    #[tokio::test]
+    async fn context_budget_or_default_uses_default_when_unset() {
+        let path = temp_config_file(
+            "provider = 'openai'\nbase_url = 'https://api.openai.com/v1/'\napi_key = 'sk-test'\nmodel = 'gpt-4o'",
+        );
+
+        let config = load_config_at_path(&path)
+            .await
+            .expect("valid config loads");
+        assert_eq!(config.context_budget, None);
+        assert_eq!(config.context_budget_or_default(), 8192);
     }
 
     #[tokio::test]

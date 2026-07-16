@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, bail};
 use async_trait::async_trait;
+use byte_core::compaction::CompactionConfig;
 use byte_core::event_bus::{BroadcastEventBus, RuntimeEventBus};
 use byte_core::runtime_services::RuntimeServices;
 use byte_core::session_manager::SessionManager;
@@ -68,6 +69,14 @@ async fn run_websocket_server(address: &DaemonAddress) -> anyhow::Result<()> {
         Arc::new(SessionStore::with_default_dir().context("failed to initialize session store")?);
     let provider: Arc<dyn ModelProvider> = Arc::new(LazyConfigProvider::new());
 
+    let model_config = load_config()
+        .await
+        .context("failed to load model provider config")?;
+    let compaction_config = CompactionConfig {
+        context_budget: model_config.context_budget_or_default(),
+        threshold_percent: 90,
+    };
+
     let mut registry = MvpToolRegistry::new();
     registry.register(
         "read_file".to_string(),
@@ -113,6 +122,7 @@ async fn run_websocket_server(address: &DaemonAddress) -> anyhow::Result<()> {
         Arc::clone(&event_bus),
         tool_registry,
         skill_registry,
+        compaction_config,
     );
     let session_manager = SessionManager::new(services);
     let rpc_context = RpcContext { session_manager };

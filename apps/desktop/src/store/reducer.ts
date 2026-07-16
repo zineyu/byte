@@ -8,6 +8,7 @@ import type {
   StoreAction,
   ToolCallState,
 } from "./types";
+import type { CompactionEntry } from "../generated/CompactionEntry";
 import { getMessageBodyText, getMessageBodyToolCalls } from "./types";
 
 // Hard cap for the in-memory runtime event log.
@@ -95,8 +96,12 @@ function loadSession(
     workspaceInstructions: string | null;
     workspaceInstructionsError: string | null;
     messages: Message[];
+    compactionEntries: CompactionEntry[];
   },
 ): AppState {
+  const compactionById = new Map(
+    session.compactionEntries.map((entry) => [entry.id, entry.compactedRange]),
+  );
   const messages: ChatMessage[] = session.messages
     .filter(
       (
@@ -111,6 +116,7 @@ function loadSession(
     )
     .map((message) => {
       const content = getMessageBodyText(message.body);
+      const range = compactionById.get(message.id);
       return {
         id: message.id,
         role: message.role,
@@ -118,6 +124,8 @@ function loadSession(
         body: message.body,
         status: "completed" as const,
         timestamp: null,
+        firstMessageId: range?.firstMessageId,
+        lastMessageId: range?.lastMessageId,
       };
     });
 
@@ -402,6 +410,54 @@ function applyRuntimeEvent(state: AppState, event: RuntimeEvent): AppState {
             exitCode: event.exit_code ?? null,
           },
         },
+      };
+    }
+    case "compaction_started":
+    case "compaction_failed":
+      return { ...state, events };
+    case "compaction_completed": {
+      const existingIndex = state.messages.findIndex(
+        (message) =>
+          message.role === "summary" &&
+          message.status === "streaming" &&
+          message.id === event.compaction_entry_id,
+      );
+      if (existingIndex !== -1) {
+        return {
+          ...state,
+          events,
+          messages: state.messages.map((message, index) =>
+            index === existingIndex
+              ? {
+                  ...message,
+                  content: event.summary,
+                  body: [{ type: "text", text: event.summary }],
+                  status: "completed" as const,
+                  timestamp: new Date().toISOString(),
+                  firstMessageId: event.compacted_range.firstMessageId,
+                  lastMessageId: event.compacted_range.lastMessageId,
+                }
+              : message,
+          ),
+        };
+      }
+
+      return {
+        ...state,
+        events,
+        messages: [
+          ...state.messages,
+          {
+            id: event.compaction_entry_id,
+            role: "summary",
+            content: event.summary,
+            body: [{ type: "text", text: event.summary }],
+            status: "completed" as const,
+            timestamp: new Date().toISOString(),
+            firstMessageId: event.compacted_range.firstMessageId,
+            lastMessageId: event.compacted_range.lastMessageId,
+          },
+        ],
       };
     }
     case "session_changed":

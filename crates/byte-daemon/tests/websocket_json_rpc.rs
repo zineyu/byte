@@ -25,7 +25,12 @@ fn message_text(message: &byte_protocol::Message) -> &str {
 #[test]
 fn daemon_returns_state_and_runtime_event_over_websocket() {
     let addr = unique_address();
-    let child = start_daemon(&addr);
+    let data_dir = unique_data_dir();
+    let child = start_daemon_with_config(
+        &addr,
+        &write_config("provider = 'echo'\nbase_url = ''\napi_key = ''\nmodel = 'echo'"),
+        &data_dir,
+    );
 
     let mut socket = connect_with_retry(&addr);
     let request = JsonRpcRequest::new(42, "get_state", None);
@@ -59,99 +64,34 @@ fn daemon_returns_state_and_runtime_event_over_websocket() {
         }
     }
 
-    stop_daemon(child, None);
+    stop_daemon(child, Some(&data_dir));
 }
 
 #[test]
-fn send_message_with_missing_config_emits_visible_error_event() {
+fn missing_config_causes_daemon_startup_failure() {
     let addr = unique_address();
     let config_path = unique_config_path();
     let data_dir = unique_data_dir();
-    let child = start_daemon_with_config(&addr, &config_path, &data_dir);
+    let mut child = start_daemon_with_config(&addr, &config_path, &data_dir);
 
-    let mut socket = connect_with_retry(&addr);
-    // Wait for daemon_started so we know the broadcast channel is ready.
-    wait_for_event_type(&mut socket, |kind| {
-        matches!(kind, RuntimeEventKind::DaemonStarted { .. })
-    });
-
-    let workspace_dir = unique_workspace_dir();
-    std::fs::create_dir_all(&workspace_dir).expect("workspace dir creates");
-    let new_params = serde_json::to_value(NewSessionParams {
-        workspace: workspace_dir.to_string_lossy().into_owned(),
-    })
-    .expect("new session params encode");
-    let new_request = JsonRpcRequest::new(0, "new_session", Some(new_params));
-    write_request(&mut socket, &new_request);
-
-    let mut session_id: Option<String> = None;
-    while session_id.is_none() {
-        let line = read_line(&mut socket);
-        if let JsonRpcMessage::Response(response) =
-            decode_json_line::<JsonRpcMessage>(&line).expect("message decodes")
-        {
-            assert_eq!(response.id, RpcId::Number(0));
-            assert!(response.error.is_none(), "new_session should succeed");
-            let result: NewSessionResult =
-                serde_json::from_value(response.result.expect("response has result"))
-                    .expect("new_session result decodes");
-            session_id = Some(result.session_id);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let exit = loop {
+        if let Some(status) = child.try_wait().expect("try_wait works") {
+            break status;
         }
-    }
-    let session_id = session_id.expect("session was created");
-
-    let params = serde_json::to_value(SendMessageParams {
-        session_id,
-        message: "hello".to_owned(),
-    })
-    .expect("params encode");
-    let request = JsonRpcRequest::new(1, "send_message", Some(params));
-    write_request(&mut socket, &request);
-
-    let mut saw_run_id_response = false;
-    let mut saw_error = false;
-    let mut saw_run_finished_failed = false;
-
-    while !(saw_run_id_response && saw_error && saw_run_finished_failed) {
-        let line = read_line(&mut socket);
-
-        match decode_json_line::<JsonRpcMessage>(&line).expect("message decodes") {
-            JsonRpcMessage::Response(response) => {
-                assert_eq!(response.id, RpcId::Number(1));
-                assert!(
-                    response.error.is_none(),
-                    "send_message should return run_id"
-                );
-                let result: serde_json::Value = response.result.expect("response has result");
-                assert!(result.get("run_id").is_some());
-                saw_run_id_response = true;
-            }
-            JsonRpcMessage::Notification(notification) => {
-                assert_eq!(notification.method, byte_protocol::RUNTIME_EVENT_METHOD);
-                let event: byte_protocol::RuntimeEvent =
-                    serde_json::from_value(notification.params.expect("notification has params"))
-                        .expect("runtime event decodes");
-                match event.kind {
-                    RuntimeEventKind::Error {
-                        run_id: Some(_), ..
-                    } => {
-                        saw_error = true;
-                    }
-                    RuntimeEventKind::RunFinished {
-                        status: RunStatus::Failed,
-                        ..
-                    } => {
-                        saw_run_finished_failed = true;
-                    }
-                    _ => {}
-                }
-            }
-            JsonRpcMessage::Request(_) => panic!("daemon must not send requests to clients"),
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            panic!("daemon did not exit after missing config");
         }
-    }
+        std::thread::sleep(Duration::from_millis(50));
+    };
 
-    drop(socket);
-    stop_daemon(child, Some(&data_dir));
+    assert!(
+        !exit.success(),
+        "daemon should fail at startup when config is missing"
+    );
+
+    let _ = std::fs::remove_dir_all(&data_dir);
 }
 
 #[test]
@@ -788,17 +728,6 @@ fn unique_workspace_dir() -> PathBuf {
         std::process::id(),
         unique_suffix()
     ))
-}
-
-fn start_daemon(addr: &SocketAddr) -> std::process::Child {
-    Command::new(env!("CARGO_BIN_EXE_byte-daemon"))
-        .arg("--rpc-websocket")
-        .arg(addr.to_string())
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("daemon starts")
 }
 
 fn start_daemon_with_config(

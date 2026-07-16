@@ -162,6 +162,7 @@ mod tests {
     };
     use tempfile::tempdir;
 
+    use crate::compaction::CompactionConfig;
     use crate::event_bus::{RecordingEventBus, RuntimeEventBus};
     use crate::runtime_services::RuntimeServices;
 
@@ -197,6 +198,7 @@ mod tests {
             bus,
             Arc::new(registry),
             Arc::new(MvpSkillRegistry::new()),
+            CompactionConfig::default(),
         )
     }
 

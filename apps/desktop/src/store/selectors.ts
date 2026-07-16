@@ -33,7 +33,15 @@ export function buildTimelineItems(messages: ChatMessage[]): TimelineItem[] {
   const items: TimelineItem[] = [];
   for (const message of messages) {
     if (message.role === "summary") {
-      items.push({ type: "summary", id: message.id, message });
+      const firstMessageId = message.firstMessageId ?? "";
+      const lastMessageId = message.lastMessageId ?? "";
+      items.push({
+        type: "summary",
+        id: message.id,
+        message,
+        firstMessageId,
+        lastMessageId,
+      });
       continue;
     }
     // Tool result messages are visualized through their corresponding tool

@@ -1,3 +1,5 @@
+import type { CompactionEntry } from "../generated/CompactionEntry";
+import type { CompactionRange } from "../generated/CompactionRange";
 import type { DaemonConnectionView as GeneratedDaemonConnectionView } from "../generated/DaemonConnectionView";
 import type { JsonValue } from "../generated/serde_json/JsonValue";
 import type { RuntimeEvent as GeneratedRuntimeEvent } from "../generated/RuntimeEvent";
@@ -37,6 +39,7 @@ export type Message = Omit<GeneratedMessage, "body" | "toolCallId"> & {
 
 export type SessionView = Omit<GeneratedSessionView, "messages"> & {
   messages: Message[];
+  compactionEntries: CompactionEntry[];
 };
 
 export type SessionSummary = GeneratedSessionSummary;
@@ -50,7 +53,11 @@ export function asMessage(message: GeneratedMessage): Message {
 }
 
 export function asSessionView(session: GeneratedSessionView): SessionView {
-  return { ...session, messages: session.messages.map(asMessage) };
+  return {
+    ...session,
+    messages: session.messages.map(asMessage),
+    compactionEntries: session.compactionEntries,
+  };
 }
 
 // ts-rs flattens tagged enums into an intersection whose keys are the variant
@@ -86,6 +93,8 @@ export type ChatMessage = {
   status: "streaming" | "completed" | "error";
   error?: string;
   timestamp: string | null;
+  firstMessageId?: string;
+  lastMessageId?: string;
 };
 
 export function getMessageBodyText(body: MessageBody): string {
@@ -143,6 +152,8 @@ export type TimelineSummaryItem = {
   type: "summary";
   id: string;
   message: ChatMessage;
+  firstMessageId: string;
+  lastMessageId: string;
 };
 
 export type TimelineItem = TimelineMessageItem | TimelineSummaryItem;

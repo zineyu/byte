@@ -8,11 +8,14 @@
 //! and `SessionView` assembly) lives in `byte-core`.
 #![deny(rustdoc::broken_intra_doc_links)]
 
+pub mod persistence;
+pub mod tree;
+
 use std::path::{Path, PathBuf};
 
 use byte_protocol::{
-    ActivatedSkill, Message, MessageBody, MessageRole, SessionEntry, SessionSummary,
-    encode_json_line,
+    ActivatedSkill, CompactionEntry, Message, MessageBody, MessageRole, SessionEntry,
+    SessionSummary, encode_json_line,
 };
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
@@ -158,6 +161,24 @@ impl SessionStore {
         self.write_line(&path, &entry).await
     }
 
+    /// Append a compaction entry to the session file and return its identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the session id is invalid or the entry cannot be
+    /// written.
+    pub async fn append_compaction_entry(
+        &self,
+        session_id: &str,
+        entry: CompactionEntry,
+    ) -> Result<String, SessionError> {
+        let path = self.session_path(session_id)?;
+        let id = entry.id.clone();
+        self.write_line(&path, &SessionEntry::CompactionEntry(entry))
+            .await?;
+        Ok(id)
+    }
+
     /// Maximum session file size that will be loaded into memory (64 MiB).
     pub const MAX_SESSION_FILE_SIZE: u64 = 64 * 1024 * 1024;
 
@@ -190,7 +211,7 @@ impl SessionStore {
         }
 
         let contents = tokio::fs::read_to_string(&path).await?;
-        byte_protocol::decode_json_lines(&contents).map_err(SessionError::Serialize)
+        persistence::decode_session_entries(&contents).map_err(SessionError::Serialize)
     }
 
     /// List all sessions as lightweight summaries, ordered by `created_at` descending.
@@ -261,7 +282,12 @@ impl SessionStore {
     }
 
     /// Returns the file path for `session_id` inside `base_dir`, validating the id.
-    fn session_path(&self, session_id: &str) -> Result<PathBuf, SessionError> {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionError::InvalidSessionId`] when `session_id` is empty, too long,
+    /// contains path traversal characters, starts with a dot, or contains control characters.
+    pub fn session_path(&self, session_id: &str) -> Result<PathBuf, SessionError> {
         if session_id.is_empty() {
             return Err(SessionError::InvalidSessionId(
                 "session id must not be empty".into(),

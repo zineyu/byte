@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use byte_models::{ProviderError, ProviderEvent, ProviderStream};
 use byte_protocol::{
-    ActivatedSkill, BlockDelta, CancelRunResult, LlmMessage, Message, MessageBlock, MessageBody,
+    ActivatedSkill, BlockDelta, CancelRunResult, LlmMessage, MessageBlock, MessageBody,
     MessageRole, RunStatus, RuntimeEventKind, SendMessageParams, SessionContext, ToolCall,
 };
 use byte_session::SessionError;
@@ -197,7 +197,6 @@ impl SessionRunner {
             session_id: params.session_id,
             message: params.message,
             developer_message_id,
-            history: view.messages,
             workspace_instructions: view.workspace_instructions,
             cancel_token: token.child_token(),
         };
@@ -282,8 +281,6 @@ struct RunExecutor {
     message: String,
     /// Stable id assigned to the user/developer message.
     developer_message_id: String,
-    /// Prior session messages.
-    history: Vec<Message>,
     /// Raw content of the workspace's AGENTS.md instruction file, if found.
     workspace_instructions: Option<String>,
     /// Token used to cancel this run.
@@ -437,6 +434,90 @@ impl RunExecutor {
         }
     }
 
+    /// Possibly compact the oldest contiguous block of messages if the active
+    /// path exceeds the configured budget threshold. Emits compaction lifecycle
+    /// events and returns the (possibly unchanged) entries.
+    async fn maybe_compact(
+        &self,
+        runner: &Arc<SessionRunner>,
+        entries: &[byte_protocol::SessionEntry],
+    ) -> Result<Vec<byte_protocol::SessionEntry>, RunError> {
+        let active_path = crate::session::active_path::build_active_path(entries);
+        let compaction_service = crate::compaction::CompactionService::new(
+            Arc::clone(&runner.services.provider),
+            Arc::clone(&runner.services.store),
+            runner.services.compaction_config,
+        );
+
+        if !compaction_service.is_compaction_needed(&active_path) {
+            return Ok(entries.to_vec());
+        }
+
+        let messages: Vec<byte_protocol::Message> = entries
+            .iter()
+            .filter_map(|entry| match entry {
+                byte_protocol::SessionEntry::Message(message) => Some(message.clone()),
+                _ => None,
+            })
+            .collect();
+        let compacted_ids = crate::compaction::CompactionService::collect_compacted_ids(entries);
+        let range = crate::compaction::CompactionService::select_compaction_range(
+            &messages,
+            &compacted_ids,
+        );
+
+        let Some(range) = range else {
+            return Ok(entries.to_vec());
+        };
+
+        runner
+            .emit(RuntimeEventKind::compaction_started(
+                self.run_id.clone(),
+                self.session_id.clone(),
+                range.clone(),
+            ))
+            .await;
+
+        let cancel_token = self.cancel_token.child_token();
+
+        match compaction_service
+            .compact_if_needed(&self.run_id, &self.session_id, entries, Some(&cancel_token))
+            .await
+        {
+            Ok(Some(entry)) => {
+                runner
+                    .emit(RuntimeEventKind::compaction_completed(
+                        self.run_id.clone(),
+                        self.session_id.clone(),
+                        entry.id,
+                        entry.summary,
+                        range,
+                    ))
+                    .await;
+            }
+            Ok(None) => {
+                // Should not happen because we already checked, but safe.
+            }
+            Err(error) => {
+                runner
+                    .emit(RuntimeEventKind::compaction_failed(
+                        self.run_id.clone(),
+                        self.session_id.clone(),
+                        error.to_string(),
+                    ))
+                    .await;
+                return Err(RunError::Other(error.to_string()));
+            }
+        }
+
+        runner
+            .services
+            .store
+            .read_entries(&self.session_id)
+            .await
+            .map_err(RunError::SessionStore)
+    }
+
     /// Run the conversation loop until the run succeeds, is cancelled, or
     /// encounters a fatal error.
     async fn run_inner(&self, runner: &Arc<SessionRunner>) -> Result<RunOutcome, RunError> {
@@ -463,11 +544,15 @@ impl RunExecutor {
             .catalog(Some(session_ctx.workspace_root.as_path()))
             .await?;
 
+        let entries = runner.services.store.read_entries(&self.session_id).await?;
+        let entries = self.maybe_compact(runner, &entries).await?;
+        let active_path = crate::session::active_path::build_active_path(&entries);
+
         let tools = runner.services.tool_registry.definitions();
         let active_skills = runner.active_skills.lock().await.clone();
         let prompt_context = LlmContextInput {
             user_message: self.message.clone(),
-            history: self.history.clone(),
+            history: active_path,
             tools,
             active_skills,
             available_skills: available_skills.clone(),
@@ -798,7 +883,15 @@ impl RunExecutor {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used, clippy::unwrap_used, unused_results)]
+    #![allow(
+        clippy::expect_used,
+        clippy::unwrap_used,
+        unused_results,
+        clippy::redundant_closure,
+        clippy::uninlined_format_args,
+        clippy::useless_conversion,
+        clippy::too_many_lines
+    )]
 
     use std::sync::Arc;
     use std::time::Duration;
@@ -809,8 +902,8 @@ mod tests {
         ProviderStream,
     };
     use byte_protocol::{
-        BlockDelta, LlmMessage, Message, MessageBlock, MessageRole, RunStatus, RuntimeEventKind,
-        SendMessageParams, SessionContext, SessionView, ToolCall, ToolDefinition,
+        BlockDelta, LlmMessage, Message, MessageBlock, MessageBody, MessageRole, RunStatus,
+        RuntimeEventKind, SendMessageParams, SessionContext, SessionView, ToolCall, ToolDefinition,
     };
     use byte_session::SessionStore;
     use byte_skills::MvpSkillRegistry;
@@ -979,6 +1072,7 @@ mod tests {
             bus.clone(),
             Arc::new(registry),
             Arc::new(MvpSkillRegistry::new()),
+            CompactionConfig::default(),
         );
         let runner = SessionRunner::new(services);
 
@@ -1056,6 +1150,7 @@ mod tests {
             bus.clone(),
             Arc::new(registry),
             Arc::new(MvpSkillRegistry::new()),
+            CompactionConfig::default(),
         );
         let runner = SessionRunner::new(services);
 
@@ -1120,6 +1215,7 @@ mod tests {
     }
 
     use crate::SessionViewRepository;
+    use crate::compaction::CompactionConfig;
     use crate::event_bus::RecordingEventBus;
     use crate::runtime_services::RuntimeServices;
 
@@ -1150,6 +1246,7 @@ mod tests {
             bus,
             Arc::new(registry),
             Arc::new(MvpSkillRegistry::new()),
+            CompactionConfig::default(),
         );
         SessionRunner::new(services)
     }
@@ -1165,6 +1262,7 @@ mod tests {
             bus,
             Arc::new(MvpToolRegistry::new()),
             Arc::new(MvpSkillRegistry::new()),
+            CompactionConfig::default(),
         );
         SessionRunner::new(services)
     }
@@ -1196,6 +1294,7 @@ mod tests {
             bus,
             Arc::new(registry),
             Arc::new(MvpSkillRegistry::new()),
+            CompactionConfig::default(),
         );
         SessionRunner::new(services)
     }
@@ -1229,8 +1328,209 @@ mod tests {
             bus,
             Arc::new(registry),
             Arc::new(MvpSkillRegistry::new()),
+            CompactionConfig::default(),
         );
         SessionRunner::new(services)
+    }
+
+    fn runner_with_compaction(
+        provider: Arc<dyn ModelProvider>,
+        store: Arc<SessionStore>,
+        bus: Arc<RecordingEventBus>,
+        config: CompactionConfig,
+    ) -> SessionRunner {
+        let services = RuntimeServices::new(
+            provider,
+            store,
+            bus,
+            Arc::new(MvpToolRegistry::new()),
+            Arc::new(MvpSkillRegistry::new()),
+            config,
+        );
+        SessionRunner::new(services)
+    }
+
+    /// A provider that detects summarization prompts and returns a fixed summary,
+    /// otherwise echoes the last developer message like `EchoProvider`.
+    struct TestCompactionProvider;
+
+    #[async_trait]
+    impl ModelProvider for TestCompactionProvider {
+        async fn send_message(
+            &self,
+            messages: Vec<LlmMessage>,
+            _tools: Vec<ToolDefinition>,
+        ) -> Result<ProviderStream, ProviderError> {
+            let is_summary_request = messages.first().is_some_and(|message| {
+                message.role == MessageRole::System
+                    && llm_message_text(message).contains("Summarize")
+            });
+
+            if is_summary_request {
+                let message_id = uuid::Uuid::new_v4().to_string();
+                let events: Vec<Result<ProviderEvent, ProviderError>> = vec![
+                    Ok(ProviderEvent::MessageStarted {
+                        message_id: message_id.clone(),
+                    }),
+                    Ok(ProviderEvent::TextDelta {
+                        message_id: message_id.clone(),
+                        delta: "summary of prior conversation".into(),
+                    }),
+                    Ok(ProviderEvent::MessageCompleted {
+                        message_id,
+                        tool_calls: None,
+                    }),
+                ];
+                return Ok(Box::pin(stream::iter(events)));
+            }
+
+            let last = messages
+                .iter()
+                .rev()
+                .filter(|message| message.role == MessageRole::Developer)
+                .map(|message| llm_message_text(message))
+                .next()
+                .unwrap_or_default();
+            let content = format!("Echo: {}", last);
+            let message_id = uuid::Uuid::new_v4().to_string();
+            let events: Vec<Result<ProviderEvent, ProviderError>> = vec![
+                Ok(ProviderEvent::MessageStarted {
+                    message_id: message_id.clone(),
+                }),
+                Ok(ProviderEvent::TextDelta {
+                    message_id: message_id.clone(),
+                    delta: content.into(),
+                }),
+                Ok(ProviderEvent::MessageCompleted {
+                    message_id,
+                    tool_calls: None,
+                }),
+            ];
+            Ok(Box::pin(stream::iter(events)))
+        }
+    }
+
+    #[tokio::test]
+    async fn compaction_triggered_when_budget_exceeded() {
+        let bus = Arc::new(RecordingEventBus::new());
+        let store = temp_store();
+        store
+            .new_session("s1", "/workspace")
+            .await
+            .expect("create session");
+
+        let mut last_id: Option<String> = None;
+        for i in 0..4 {
+            let developer_text =
+                format!("This is a long developer message number {} with text.", i);
+            let developer_id = store
+                .append_message(
+                    "s1",
+                    None,
+                    last_id.as_deref(),
+                    MessageRole::Developer,
+                    MessageBody::text(&developer_text),
+                    None,
+                )
+                .await
+                .expect("append developer message");
+
+            let assistant_text = format!(
+                "This is an assistant response number {} with many chars.",
+                i
+            );
+            let assistant_id = store
+                .append_message(
+                    "s1",
+                    None,
+                    Some(&developer_id),
+                    MessageRole::Assistant,
+                    MessageBody::text(&assistant_text),
+                    None,
+                )
+                .await
+                .expect("append assistant message");
+
+            last_id = Some(assistant_id);
+        }
+
+        let runner = runner_with_compaction(
+            Arc::new(TestCompactionProvider),
+            store.clone(),
+            bus.clone(),
+            CompactionConfig {
+                context_budget: 20,
+                threshold_percent: 90,
+            },
+        );
+
+        let run_id = runner
+            .send_message(SendMessageParams {
+                session_id: "s1".into(),
+                message: "Hello again".into(),
+            })
+            .await
+            .expect("send accepted");
+        runner.wait_until_idle().await;
+
+        let events = bus.take_events().await;
+
+        assert!(
+            events.iter().any(|event| matches!(
+                &event.kind,
+                RuntimeEventKind::CompactionStarted { run_id: rid, session_id, .. }
+                if rid == &run_id && session_id == "s1"
+            )),
+            "should emit CompactionStarted"
+        );
+
+        let completed_summary = events.iter().find_map(|event| match &event.kind {
+            RuntimeEventKind::CompactionCompleted {
+                run_id: rid,
+                session_id,
+                summary,
+                ..
+            } if rid == &run_id && session_id == "s1" => Some(summary.clone()),
+            _ => None,
+        });
+        assert!(
+            completed_summary.is_some(),
+            "should emit CompactionCompleted"
+        );
+        assert!(
+            !completed_summary.unwrap().is_empty(),
+            "summary should be non-empty"
+        );
+
+        assert!(
+            events.iter().any(|event| matches!(
+                &event.kind,
+                RuntimeEventKind::RunFinished {
+                    run_id: rid,
+                    status: RunStatus::Succeeded,
+                    ..
+                } if rid == &run_id
+            )),
+            "run should finish successfully"
+        );
+
+        let entries = store.read_entries("s1").await.expect("read entries");
+        let compaction_entry = entries.iter().find_map(|entry| match entry {
+            byte_protocol::SessionEntry::CompactionEntry(ce) => Some(ce),
+            _ => None,
+        });
+        assert!(
+            compaction_entry.is_some(),
+            "should persist a compaction entry"
+        );
+
+        let active_path = crate::session::active_path::build_active_path(&entries);
+        assert!(
+            active_path
+                .iter()
+                .any(|message| message.role == MessageRole::Summary),
+            "active path should contain a Summary message"
+        );
     }
 
     /// Wraps [`CodingLoopProvider`] so the test can inspect the messages sent
@@ -1506,6 +1806,7 @@ mod tests {
             bus.clone(),
             Arc::new(registry),
             Arc::new(MvpSkillRegistry::new()),
+            CompactionConfig::default(),
         );
         let runner = SessionRunner::new(services);
         let params = SendMessageParams {
@@ -1563,6 +1864,7 @@ mod tests {
             bus.clone(),
             Arc::new(registry),
             Arc::new(MvpSkillRegistry::new()),
+            CompactionConfig::default(),
         );
         let runner = SessionRunner::new(services);
         let params = SendMessageParams {
@@ -1987,6 +2289,7 @@ mod tests {
             bus.clone(),
             Arc::new(registry),
             Arc::new(MvpSkillRegistry::new()),
+            CompactionConfig::default(),
         );
         let runner = SessionRunner::new(services);
         let params = SendMessageParams {
@@ -2193,6 +2496,7 @@ mod tests {
             bus.clone(),
             Arc::new(registry),
             Arc::new(MvpSkillRegistry::new()),
+            CompactionConfig::default(),
         );
         let runner = SessionRunner::new(services);
 
@@ -2340,6 +2644,7 @@ mod tests {
             bus.clone(),
             Arc::new(registry),
             Arc::new(MvpSkillRegistry::new()),
+            CompactionConfig::default(),
         );
         let runner = SessionRunner::new(services);
 
@@ -2394,6 +2699,7 @@ mod tests {
             bus.clone(),
             Arc::new(registry),
             Arc::new(MvpSkillRegistry::new()),
+            CompactionConfig::default(),
         );
         let runner = SessionRunner::new(services);
 
@@ -2471,6 +2777,7 @@ mod tests {
             bus.clone(),
             Arc::new(registry),
             Arc::new(MvpSkillRegistry::new()),
+            CompactionConfig::default(),
         );
         let runner = SessionRunner::new(services);
 
@@ -2589,6 +2896,7 @@ mod tests {
             bus.clone(),
             Arc::new(MvpToolRegistry::new()),
             Arc::new(MvpSkillRegistry::new()),
+            CompactionConfig::default(),
         );
         let runner = SessionRunner::new(services);
 

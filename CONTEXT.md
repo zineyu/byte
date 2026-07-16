@@ -68,7 +68,7 @@ The content contributed by Workspace Instruction Files to the system prompt for 
 _Avoid_: Hidden prompt injection, global instructions
 
 **Compaction Entry**:
-A visible Session entry containing a summary of older conversation history for continued context construction.
+A visible Session entry containing a natural-language summary of older conversation history and the range of messages it replaces, used for continued context construction. It is a durable, persisted entity and is rendered as a distinct timeline item.
 _Avoid_: Hidden summary cache, overwritten history
 
 **Message History**:

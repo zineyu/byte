@@ -81,6 +81,32 @@ function makeEvent(
       return { ...base, type, run_id: "r1" };
     case "session_changed":
       return { ...base, type, session_id: "s1", action: "created" };
+    case "compaction_started":
+      return {
+        ...base,
+        type,
+        run_id: "r1",
+        session_id: "s1",
+        compacted_range: { firstMessageId: "m1", lastMessageId: "m2" },
+      };
+    case "compaction_completed":
+      return {
+        ...base,
+        type,
+        run_id: "r1",
+        session_id: "s1",
+        compaction_entry_id: "ce1",
+        summary: "earlier messages summarized",
+        compacted_range: { firstMessageId: "m1", lastMessageId: "m2" },
+      };
+    case "compaction_failed":
+      return {
+        ...base,
+        type,
+        run_id: "r1",
+        session_id: "s1",
+        error: "compaction failed",
+      };
   }
 }
 
@@ -234,6 +260,8 @@ describe("buildTimelineItems", () => {
       type: "summary",
       id: "s1",
       message: messages[1],
+      firstMessageId: "",
+      lastMessageId: "",
     });
   });
 

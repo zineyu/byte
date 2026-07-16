@@ -18,6 +18,7 @@ import type { SessionView } from "./generated/SessionView";
 import { open } from "@tauri-apps/plugin-dialog";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { ToolCallCard } from "./ToolCallCard";
+import { CompactionEntry } from "./CompactionEntry";
 import {
   ConnectionDialog,
   type ConnectionDialogMode,
@@ -593,27 +594,14 @@ export default function App() {
               {timelineItems.map((item) => {
                 if (item.type === "summary") {
                   return (
-                    <div
+                    <CompactionEntry
                       key={item.id}
-                      className="chat-message chat-message--summary"
-                    >
-                      <div className="chat-message__body">
-                        <div className="chat-message__summary-header">
-                          <span>会话摘要</span>
-                          {item.message.timestamp && (
-                            <time
-                              className="chat-message__timestamp"
-                              dateTime={item.message.timestamp}
-                            >
-                              {formatMessageTimestamp(item.message.timestamp)}
-                            </time>
-                          )}
-                        </div>
-                        <div className="chat-message__content chat-message__content--summary">
-                          {item.message.content}
-                        </div>
-                      </div>
-                    </div>
+                      id={item.id}
+                      summary={item.message.content}
+                      firstMessageId={item.firstMessageId}
+                      lastMessageId={item.lastMessageId}
+                      timestamp={item.message.timestamp}
+                    />
                   );
                 }
 

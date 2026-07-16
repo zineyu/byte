@@ -982,6 +982,31 @@ textarea {
   border-radius: 14px;
 }
 
+.compaction-footer {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid #fde68a;
+  font-size: 0.8125rem;
+}
+
+.compaction-footer-label {
+  color: #92400e;
+  font-weight: 500;
+}
+
+.compaction-footer-range {
+  color: #78350f;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  word-break: break-all;
+}
+
+.compaction-toggle {
+  color: #92400e;
+}
+
 .chat-message__summary-header {
   display: flex;
   align-items: center;
