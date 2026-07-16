@@ -29,13 +29,18 @@ Use this index to find the right doc before making changes.
 | Domain terminology and product language | `CONTEXT.md` |
 ## 项目概述
 
-Byte Agent 是一个本地桌面编程助手，采用 **Tauri v2 + React** 桌面壳与 **Rust 本地 daemon** 分层的架构。当前骨架通过 LF 分隔的 JSON-RPC over Unix Domain Socket 启动并驱动本地 daemon，并通过 Tauri event 将 daemon runtime event 转发到 React。
+Byte Agent 是一个本地桌面编程助手，采用 **Tauri v2 + React** 桌面壳与 **Rust 本地 daemon** 分层的架构。当前骨架通过 JSON-RPC over WebSocket 连接由用户手动启动的本地 daemon，并通过 Tauri event 将 daemon runtime event 转发到 React。daemon 只监听 `127.0.0.1` 或 `localhost` 地址。
 
 ## 技术栈
 
 - **后端 / daemon**：Rust workspace（`crates/*`）
-  - `byte-protocol`：共享的 JSON-RPC 协议、JSONL 编解码、daemon 状态类型
-  - `byte-daemon`：Unix socket JSONL JSON-RPC daemon 入口
+  - `byte-protocol`：共享的 JSON-RPC 协议、daemon 地址验证、runtime event 类型
+  - `byte-daemon`：WebSocket JSON-RPC daemon 入口，由用户手动启动
+  - `byte-core`：SessionRunner、运行时服务聚合、LlmContextBuilder
+  - `byte-tools`：Tool trait、ToolRegistry 与内置工具实现
+  - `byte-skills`：SkillRegistry 与 skill 扫描/激活
+  - `byte-models`：模型提供者抽象与 OpenAI-compatible 实现
+  - `byte-session`：JSONL 树 session 持久化
 - **桌面端**：Tauri v2 + React + Vite + TypeScript（`apps/desktop`）
 - **包管理 / 任务运行**：
   - Rust：`cargo`
@@ -85,18 +90,23 @@ just verify audit
 just fmt
 just fmt-check
 
-# 启动开发模式（先构建 daemon，再启动 Tauri）
-just dev
+# 启动开发模式（先手动启动 daemon，再启动 Tauri 桌面端）
+# 1. 启动 daemon（默认监听 127.0.0.1:8787）
+just start-daemon
+# 2. 在另一个终端启动桌面端
+just start-desktop
+# 3. 在设置对话框中输入 daemon 地址，或配置 ~/.config/byte/daemon.toml
 ```
 
 ## 模块边界与复用约定
 
-- **协议共享**：`byte-protocol` 同时被 `byte-daemon` 和 Tauri (`apps/desktop/src-tauri`) 依赖，所有跨边界类型必须放在这里，禁止在前端或 daemon 里重新定义 JSON-RPC 结构。
-- **桌面壳职责**：只负责启动 daemon、维护 Unix socket JSONL 传输、暴露 `get_daemon_state` 等 Tauri command，并把 daemon runtime event 转发为 Tauri event。不实现业务逻辑或工具调用。
-- **daemon 职责**：实现 JSON-RPC 方法、管理运行时状态、执行模型/工具循环。未来通过 `byte-protocol` 扩展命令面。
+- **协议共享**：`byte-protocol` 同时被 `byte-daemon`、`byte-core`、`byte-tools`、`byte-skills` 和 `apps/desktop/src-tauri` 依赖，所有跨边界类型必须放在这里，禁止在前端或 daemon 里重新定义 JSON-RPC 结构。
+- **daemon 职责**：实现 JSON-RPC 方法、管理运行时状态、执行模型/工具循环；`byte-core` 提供 SessionRunner 与运行时服务聚合。
+- **工具/技能注册表**：`byte-tools` 与 `byte-skills` 实现工具与技能注册表，由 `byte-core` 协调；二者互不依赖。
+- **桌面壳职责**：只负责连接手动启动的 daemon、维护 WebSocket JSON-RPC 传输、暴露 `get_daemon_state` 等 Tauri command，并把 daemon runtime event 转发为 Tauri event。不实现业务逻辑或工具调用。
 - **依赖方向**：
-  - `byte-daemon` → `byte-protocol`
-  - `apps/desktop/src-tauri` → `byte-protocol`
+  - `byte-daemon` → `byte-core` → `byte-tools`, `byte-skills`, `byte-models`, `byte-session`
+  - `byte-tools`, `byte-skills`, `byte-models`, `byte-session`, `byte-daemon`, `apps/desktop/src-tauri` → `byte-protocol`
   - 禁止反向依赖
 
 ## 设计系统约定
