@@ -507,14 +507,16 @@ mod tests {
         let view = view_repo.load_session("s1").await.expect("session loads");
         assert_eq!(
             view.messages.len(),
-            2,
-            "developer message and partial assistant message should be persisted"
+            1,
+            "only the developer message should be persisted; partial assistant messages are dropped on cancellation"
         );
         assert_eq!(view.messages[0].role, byte_protocol::MessageRole::Developer);
-        assert_eq!(view.messages[1].role, byte_protocol::MessageRole::Assistant);
         assert!(
-            !view.messages[1].body.0.is_empty(),
-            "partial assistant message should have a body"
+            view.messages[0].body.0.iter().any(|block| matches!(
+                block,
+                byte_protocol::MessageBlock::Text { text } if text == "hi"
+            )),
+            "developer message should be preserved"
         );
     }
 

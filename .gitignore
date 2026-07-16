@@ -16,6 +16,8 @@ node_modules/
 devenv.local.nix
 devenv.local.yaml
 
-# OS/editor
-.DS_Store
-*.swp
+.pi-subagents/
+
+*.log
+.env*
+!.env.example

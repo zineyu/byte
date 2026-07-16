@@ -253,12 +253,227 @@ fn tool_call_stream(
         };
     })
 }
+/// Build a provider stream that emits `content` as text deltas.
+fn text_stream(content: &str, chunk_size: usize, delay: std::time::Duration) -> ProviderStream {
+    let chunks: Vec<String> = content
+        .chars()
+        .collect::<Vec<_>>()
+        .chunks(chunk_size)
+        .map(|chunk| chunk.iter().collect())
+        .collect();
+
+    Box::pin(async_stream::try_stream! {
+        let message_id = uuid::Uuid::new_v4().to_string();
+        yield ProviderEvent::MessageStarted { message_id: message_id.clone() };
+        for chunk in chunks {
+            if !delay.is_zero() {
+                tokio::time::sleep(delay).await;
+            }
+            yield ProviderEvent::TextDelta { message_id: message_id.clone(), delta: chunk };
+        }
+        yield ProviderEvent::MessageCompleted { message_id, tool_calls: None };
+    })
+}
+
+/// A deterministic test provider that drives a read → `apply_patch` → `run_command`
+/// → final response demo. It is intended for byte-core integration tests and
+/// produces a fixed sequence of tool calls followed by an assistant summary.
+///
+/// The provider expects `read_file`, `apply_patch`, and `run_command` to be
+/// registered in the tool set. It returns the next action based on the last
+/// tool result in the conversation history, so the loop terminates naturally
+/// after the command result is returned. An optional `delay` can be inserted
+/// between events to keep the run active for concurrency tests.
+#[derive(Debug, Clone, Copy)]
+pub struct CodingLoopProvider {
+    /// Delay between consecutive provider events.
+    pub delay: std::time::Duration,
+}
+
+impl Default for CodingLoopProvider {
+    fn default() -> Self {
+        Self {
+            delay: std::time::Duration::ZERO,
+        }
+    }
+}
+
+#[async_trait]
+impl ModelProvider for CodingLoopProvider {
+    async fn send_message(
+        &self,
+        messages: Vec<LlmMessage>,
+        tools: Vec<byte_protocol::ToolDefinition>,
+    ) -> Result<ProviderStream, ProviderError> {
+        let has_read_file = tools.iter().any(|tool| tool.name == "read_file");
+        let has_apply_patch = tools.iter().any(|tool| tool.name == "apply_patch");
+        let has_run_command = tools.iter().any(|tool| tool.name == "run_command");
+
+        let last_tool = messages
+            .iter()
+            .rev()
+            .find(|message| message.role == MessageRole::Tool);
+
+        if has_read_file && has_apply_patch && has_run_command {
+            match last_tool {
+                None => {
+                    return Ok(tool_call_stream(
+                        byte_protocol::ToolCall {
+                            id: "read-call".into(),
+                            name: "read_file".into(),
+                            arguments: serde_json::json!({"path": "main.rs"}),
+                        },
+                        self.delay,
+                    ));
+                }
+                Some(tool) if tool.tool_call_id.as_deref() == Some("read-call") => {
+                    return Ok(tool_call_stream(
+                        byte_protocol::ToolCall {
+                            id: "edit-call".into(),
+                            name: "apply_patch".into(),
+                            arguments: serde_json::json!({
+                                "path": "main.rs",
+                                "patch": [
+                                    {"search": "fn main() { println!(\"old\"); }", "replace": "fn main() { println!(\"new\"); }"}
+                                ]
+                            }),
+                        },
+                        self.delay,
+                    ));
+                }
+                Some(tool) if tool.tool_call_id.as_deref() == Some("edit-call") => {
+                    return Ok(tool_call_stream(
+                        byte_protocol::ToolCall {
+                            id: "cmd-call".into(),
+                            name: "run_command".into(),
+                            arguments: serde_json::json!({"command": "cat main.rs"}),
+                        },
+                        self.delay,
+                    ));
+                }
+                Some(tool) if tool.tool_call_id.as_deref() == Some("cmd-call") => {
+                    let output = message_text(tool);
+                    let content = format!("Done. {output}");
+                    return Ok(text_stream(&content, 5, self.delay));
+                }
+                _ => {}
+            }
+        }
+
+        let last = messages
+            .into_iter()
+            .filter(|m| m.role == MessageRole::Developer)
+            .map(|m| message_text(&m))
+            .next_back()
+            .unwrap_or_default();
+        let content = format!("Echo: {last}");
+        Ok(text_stream(&content, 5, self.delay))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::expect_used, clippy::unwrap_used)]
 
     use super::*;
     use futures::StreamExt;
+
+    #[tokio::test]
+    async fn coding_loop_provider_returns_read_edit_command_sequence() {
+        let provider = CodingLoopProvider::default();
+        let tools = vec![
+            byte_protocol::ToolDefinition {
+                name: "read_file".into(),
+                description: "Read a file".into(),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+            byte_protocol::ToolDefinition {
+                name: "apply_patch".into(),
+                description: "Apply a patch".into(),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+            byte_protocol::ToolDefinition {
+                name: "run_command".into(),
+                description: "Run a command".into(),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+        ];
+
+        // First turn: read_file
+        let events = collect_events(
+            provider
+                .send_message(
+                    vec![LlmMessage::text(MessageRole::Developer, "update")],
+                    tools.clone(),
+                )
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert!(matches!(
+            &events[0],
+            Ok(ProviderEvent::MessageStarted { .. })
+        ));
+        assert!(matches!(
+            &events[1],
+            Ok(ProviderEvent::MessageCompleted { tool_calls: Some(calls), .. }) if calls.len() == 1 && calls[0].name == "read_file"
+        ));
+
+        // Second turn: apply_patch
+        let messages = vec![
+            LlmMessage::text(MessageRole::Developer, "update"),
+            LlmMessage::tool_result("read-call", "file contents"),
+        ];
+        let events = collect_events(
+            provider
+                .send_message(messages, tools.clone())
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert!(matches!(
+            &events[1],
+            Ok(ProviderEvent::MessageCompleted { tool_calls: Some(calls), .. }) if calls.len() == 1 && calls[0].name == "apply_patch"
+        ));
+
+        // Third turn: run_command
+        let messages = vec![
+            LlmMessage::text(MessageRole::Developer, "update"),
+            LlmMessage::tool_result("read-call", "file contents"),
+            LlmMessage::tool_result("edit-call", "patched"),
+        ];
+        let events = collect_events(
+            provider
+                .send_message(messages, tools.clone())
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert!(matches!(
+            &events[1],
+            Ok(ProviderEvent::MessageCompleted { tool_calls: Some(calls), .. }) if calls.len() == 1 && calls[0].name == "run_command"
+        ));
+
+        // Fourth turn: final text
+        let messages = vec![
+            LlmMessage::text(MessageRole::Developer, "update"),
+            LlmMessage::tool_result("read-call", "file contents"),
+            LlmMessage::tool_result("edit-call", "patched"),
+            LlmMessage::tool_result("cmd-call", "verified"),
+        ];
+        let events = collect_events(provider.send_message(messages, tools).await.unwrap()).await;
+        assert!(matches!(
+            &events.last().unwrap(),
+            Ok(ProviderEvent::MessageCompleted {
+                tool_calls: None,
+                ..
+            })
+        ));
+    }
+
+    async fn collect_events(stream: ProviderStream) -> Vec<Result<ProviderEvent, ProviderError>> {
+        stream.collect().await
+    }
 
     #[tokio::test]
     async fn echo_provider_streams_developer_message_back() {
