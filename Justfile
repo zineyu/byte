@@ -126,10 +126,26 @@ fmt: _desktop-install
 # Check all Rust and desktop frontend formatting without modifying files.
 fmt-check: _rust-fmt-check _desktop-fmt-check
 
-_verify-rust: _rust-fmt-check _rust-clippy _rust-test
+_verify-rust: _rust-fmt-check _rust-clippy _ts-export-check _rust-test
 
 _rust-fmt-check:
     cargo fmt --all -- --check
+
+# Regenerate ts-rs bindings from byte-protocol and fail if the committed
+# TypeScript files under apps/desktop/src/generated have drifted. Must run
+# before any other cargo test invocation refreshes the bindings in place.
+_ts-export-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    tmpdir="$(mktemp -d)"
+    trap 'rm -rf "$tmpdir"' EXIT
+    cp -r apps/desktop/src/generated "$tmpdir/generated"
+    cargo test -p byte-protocol --quiet
+    if ! diff -r "$tmpdir/generated" apps/desktop/src/generated; then
+      echo "ts-rs generated bindings are out of sync with byte-protocol." >&2
+      echo "The re-exported files are left in apps/desktop/src/generated; commit them." >&2
+      exit 1
+    fi
 
 _rust-clippy:
     cargo clippy --workspace --all-targets -- -D warnings

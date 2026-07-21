@@ -175,6 +175,11 @@ fn runner_error_response(
             -32603,
             format!("session view error: {view_error}"),
         ),
+        RunnerError::SkillRegistry(skill_error) => JsonRpcResponse::failure(
+            request.id.clone(),
+            -32603,
+            format!("skill error: {skill_error}"),
+        ),
         RunnerError::Provider(provider_error) => JsonRpcResponse::failure(
             request.id.clone(),
             -32603,

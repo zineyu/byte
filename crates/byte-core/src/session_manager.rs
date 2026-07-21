@@ -134,17 +134,64 @@ impl SessionManager {
     /// Concurrent runs on the same session return `RunnerError::Busy` from the
     /// underlying runner.
     ///
+    /// A message starting with `/skill:<name>` explicitly activates the named
+    /// skill before the run starts: the activation is persisted to the session
+    /// and injected into the model context through the message stream (see
+    /// ADR 0021), while the original message text is sent unchanged. An
+    /// unknown skill name aborts the request with an error and no run is
+    /// started.
+    ///
     /// # Errors
     ///
-    /// Returns an error if the runner cannot be created or the run cannot be
-    /// started.
+    /// Returns an error if the runner cannot be created, the run cannot be
+    /// started, or a `/skill:` command names an unknown skill.
     #[instrument(skip(self, params))]
     pub async fn send_message(
         &self,
         params: byte_protocol::SendMessageParams,
     ) -> Result<crate::runner::RunId, RunnerError> {
+        if let Some(skill_name) = parse_skill_command(&params.message) {
+            self.activate_skill_for_session(&params.session_id, skill_name)
+                .await?;
+        }
         let runner = self.pool.get_or_create(&params.session_id).await;
         runner.send_message(params).await
+    }
+
+    /// Activate a skill for a session outside the model-driven
+    /// `activate_skill` tool flow.
+    ///
+    /// The activation snapshot is persisted before the in-memory handle is
+    /// updated, mirroring the write-through order of
+    /// [`crate::activate_skill::ActivateSkillTool`].
+    async fn activate_skill_for_session(
+        &self,
+        session_id: &str,
+        skill_name: &str,
+    ) -> Result<(), RunnerError> {
+        let view = self.services.view_repo.load_session(session_id).await?;
+        let definition = self
+            .services
+            .skill_registry
+            .activate(Some(std::path::Path::new(&view.workspace)), skill_name)
+            .await?;
+
+        self.services
+            .store
+            .append_skill_activation(session_id, &definition.name, &definition.content)
+            .await?;
+
+        self.pool
+            .record_skill_activation(
+                session_id,
+                byte_protocol::ActivatedSkill {
+                    name: definition.name,
+                    content: definition.content,
+                },
+            )
+            .await;
+        info!(%session_id, skill = skill_name, "skill activated via command");
+        Ok(())
     }
 
     /// Cancel the active run for a session, if any.
@@ -177,6 +224,19 @@ impl SessionManager {
             .emit(RuntimeEventKind::SessionChanged { session_id, action })
             .await;
     }
+}
+
+/// Parse a `/skill:<name>` command at the start of a message.
+///
+/// Returns the skill name when the message (after leading whitespace) begins
+/// with `/skill:` followed by a non-empty name. The name runs until the next
+/// whitespace character; any remaining text is left untouched and stays part
+/// of the user message sent to the model.
+fn parse_skill_command(message: &str) -> Option<&str> {
+    let trimmed = message.trim_start();
+    let rest = trimmed.strip_prefix("/skill:")?;
+    let name = rest.split_whitespace().next()?;
+    if name.is_empty() { None } else { Some(name) }
 }
 
 #[cfg(test)]
@@ -538,5 +598,191 @@ mod tests {
             result.is_ok(),
             "cancel_run should succeed when session has no runner"
         );
+    }
+
+    #[test]
+    fn parse_skill_command_matches_line_start_only() {
+        assert_eq!(super::parse_skill_command("/skill:review"), Some("review"));
+        assert_eq!(
+            super::parse_skill_command("/skill:review check this code"),
+            Some("review")
+        );
+        assert_eq!(
+            super::parse_skill_command("  /skill:review\nmore text"),
+            Some("review")
+        );
+        assert_eq!(super::parse_skill_command("/skill:"), None);
+        assert_eq!(super::parse_skill_command("/skill"), None);
+        assert_eq!(super::parse_skill_command("hello /skill:review"), None);
+        assert_eq!(super::parse_skill_command("/other:review"), None);
+    }
+
+    /// Create a workspace directory containing one `review` skill plus a
+    /// skill registry whose home directory is empty.
+    fn skill_workspace() -> (tempfile::TempDir, Arc<dyn SkillRegistry>) {
+        let workspace = tempdir().expect("temp workspace");
+        let skill_dir = workspace.path().join(".byte").join("skills").join("review");
+        std::fs::create_dir_all(&skill_dir).expect("create skill dir");
+        std::fs::write(
+            skill_dir.join("skill.md"),
+            "---\nname: review\ndescription: Review code\n---\n# Review\n\nReview carefully.\n",
+        )
+        .expect("write skill file");
+
+        let home = tempdir().expect("temp home");
+        let registry: Arc<dyn SkillRegistry> =
+            Arc::new(MvpSkillRegistry::with_home_dir(home.path()));
+        (workspace, registry)
+    }
+
+    #[tokio::test]
+    async fn send_message_with_skill_command_activates_skill_and_runs() {
+        let (workspace, registry) = skill_workspace();
+        let workspace_path = workspace.path().to_str().unwrap().to_owned();
+        let provider: Arc<dyn ModelProvider> = Arc::new(EchoProvider::default());
+        let store = temp_store();
+        let recording_bus = Arc::new(RecordingEventBus::new());
+        let bus: Arc<dyn RuntimeEventBus> = recording_bus.clone();
+        let mut services = services_without_tools(provider, Arc::clone(&store), bus);
+        services.skill_registry = registry;
+        let manager = SessionManager::new(services);
+        manager.new_session("s1", &workspace_path).await.unwrap();
+        recording_bus.take_events().await;
+
+        let params = SendMessageParams {
+            session_id: "s1".into(),
+            message: "/skill:review please check src".into(),
+        };
+        manager
+            .send_message(params)
+            .await
+            .expect("run accepted after skill activation");
+
+        let runner = manager.pool.get_or_create("s1").await;
+        runner.wait_until_idle().await;
+
+        let entries = store.read_entries("s1").await.expect("read entries");
+        let activations: Vec<_> = entries
+            .iter()
+            .filter_map(|entry| match entry {
+                byte_protocol::SessionEntry::SkillActivated(skill) => Some(skill),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(activations.len(), 1, "activation must be persisted");
+        assert_eq!(activations[0].name, "review");
+        assert!(activations[0].content.contains("Review carefully."));
+
+        // The run still executed: the original user message and an assistant
+        // response are persisted.
+        let messages: Vec<_> = entries
+            .iter()
+            .filter_map(|entry| match entry {
+                byte_protocol::SessionEntry::Message(message) => Some(message),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.role == byte_protocol::MessageRole::Assistant),
+            "run should produce an assistant message"
+        );
+
+        // The reconstructed LLM context contains the synthetic skill message.
+        let active_path = crate::session::active_path::build_active_path(&entries);
+        assert!(
+            active_path.iter().any(|message| {
+                message.body.0.iter().any(|block| matches!(
+                    block,
+                    byte_protocol::MessageBlock::Text { text } if text.contains("Review carefully.")
+                ))
+            }),
+            "active path should inject the activated skill content"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_message_with_unknown_skill_errors_without_starting_run() {
+        let (workspace, registry) = skill_workspace();
+        let workspace_path = workspace.path().to_str().unwrap().to_owned();
+        let provider: Arc<dyn ModelProvider> = Arc::new(EchoProvider::default());
+        let store = temp_store();
+        let recording_bus = Arc::new(RecordingEventBus::new());
+        let bus: Arc<dyn RuntimeEventBus> = recording_bus.clone();
+        let mut services = services_without_tools(provider, Arc::clone(&store), bus);
+        services.skill_registry = registry;
+        let manager = SessionManager::new(services);
+        manager.new_session("s1", &workspace_path).await.unwrap();
+        recording_bus.take_events().await;
+
+        let params = SendMessageParams {
+            session_id: "s1".into(),
+            message: "/skill:missing do something".into(),
+        };
+        let error = manager
+            .send_message(params)
+            .await
+            .expect_err("unknown skill must fail");
+        assert!(matches!(
+            error,
+            crate::runner::RunnerError::SkillRegistry(byte_skills::SkillError::NotFound(name)) if name == "missing"
+        ));
+
+        let events = recording_bus.take_events().await;
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(&event.kind, RuntimeEventKind::RunStarted { .. })),
+            "no run should start when skill activation fails"
+        );
+        let entries = store.read_entries("s1").await.expect("read entries");
+        assert!(
+            !entries
+                .iter()
+                .any(|entry| matches!(entry, byte_protocol::SessionEntry::SkillActivated(_))),
+            "failed activation must not be persisted"
+        );
+    }
+
+    #[tokio::test]
+    async fn repeated_skill_command_deduplicates_in_memory_activation() {
+        let (workspace, registry) = skill_workspace();
+        let workspace_path = workspace.path().to_str().unwrap().to_owned();
+        let provider: Arc<dyn ModelProvider> = Arc::new(EchoProvider::default());
+        let store = temp_store();
+        let recording_bus = Arc::new(RecordingEventBus::new());
+        let bus: Arc<dyn RuntimeEventBus> = recording_bus.clone();
+        let mut services = services_without_tools(provider, Arc::clone(&store), bus);
+        services.skill_registry = registry;
+        let manager = SessionManager::new(services);
+        manager.new_session("s1", &workspace_path).await.unwrap();
+
+        for text in ["/skill:review first", "/skill:review second"] {
+            manager
+                .send_message(SendMessageParams {
+                    session_id: "s1".into(),
+                    message: text.into(),
+                })
+                .await
+                .expect("run accepted");
+            let runner = manager.pool.get_or_create("s1").await;
+            runner.wait_until_idle().await;
+        }
+
+        // Both activations are persisted as snapshots; the reconstructed
+        // context contains the skill content exactly once.
+        let entries = store.read_entries("s1").await.expect("read entries");
+        let active_path = crate::session::active_path::build_active_path(&entries);
+        let occurrences = active_path
+            .iter()
+            .filter(|message| {
+                message.body.0.iter().any(|block| matches!(
+                    block,
+                    byte_protocol::MessageBlock::Text { text } if text.contains("Skill `review` has been activated")
+                ))
+            })
+            .count();
+        assert_eq!(occurrences, 1, "repeated activation must be deduplicated");
     }
 }

@@ -521,6 +521,76 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn compact_if_needed_preserves_activated_skill_content() {
+        let store = temp_store();
+        store
+            .new_session("s1", "/workspace")
+            .await
+            .expect("create session");
+
+        let long = "x".repeat(100);
+        let entries = vec![
+            SessionEntry::Session {
+                version: 1,
+                id: "s1".into(),
+                workspace: "/workspace".into(),
+                created_at: "t".into(),
+            },
+            session_message("m1", MessageRole::Developer, &long),
+            SessionEntry::SkillActivated(byte_protocol::ActivatedSkill {
+                name: "review".into(),
+                content: "Review carefully.".into(),
+            }),
+            session_message("m2", MessageRole::Assistant, &long),
+            session_message("m3", MessageRole::Developer, &long),
+            session_message("m4", MessageRole::Assistant, &long),
+        ];
+
+        let service = CompactionService::new(
+            Arc::new(FixedSummaryProvider),
+            store.clone(),
+            CompactionConfig {
+                context_budget: 130,
+                threshold_percent: 90,
+            },
+        );
+
+        let entry = service
+            .compact_if_needed("run-1", "s1", &entries, None)
+            .await
+            .expect("compaction succeeds")
+            .expect("compaction should trigger");
+
+        // Rebuild the active path from the pre-compaction entries plus the
+        // new compaction entry, as the runner does on the next run.
+        let mut updated_entries = entries.clone();
+        updated_entries.push(SessionEntry::CompactionEntry(entry));
+        let active_path = CompactionService::build_active_path(&updated_entries);
+
+        let skill_occurrences = active_path
+            .iter()
+            .filter(|message| {
+                message.body.0.iter().any(|block| {
+                    matches!(
+                        block,
+                        MessageBlock::Text { text } if text.contains("Review carefully.")
+                    )
+                })
+            })
+            .count();
+        assert_eq!(
+            skill_occurrences, 1,
+            "activated skill content must survive compaction of surrounding messages"
+        );
+        assert!(
+            active_path
+                .iter()
+                .any(|message| message.role == MessageRole::Summary),
+            "compaction summary should be present in the rebuilt context"
+        );
+    }
+
+    #[tokio::test]
     async fn compact_if_needed_returns_none_when_below_threshold() {
         let store = temp_store();
         store

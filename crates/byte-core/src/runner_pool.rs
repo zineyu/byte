@@ -74,7 +74,7 @@ impl RunnerPool {
             .or_insert_with(|| {
                 Arc::new(SessionRunner::with_active_skills(
                     self.services.clone(),
-                    active_skills,
+                    &active_skills,
                 ))
             })
             .clone()
@@ -119,6 +119,23 @@ impl RunnerPool {
             .clone()
     }
 
+    /// Record a skill activation performed outside the `activate_skill` tool
+    /// (for example a `/skill:name` command), updating the shared per-session
+    /// handle so an existing runner observes the deduplicated state.
+    ///
+    /// The caller must persist the activation to the session store before
+    /// calling this method, mirroring the write-through order of
+    /// [`crate::activate_skill::ActivateSkillTool`].
+    pub async fn record_skill_activation(&self, session_id: &str, skill: ActivatedSkill) {
+        let active = self.active_skills_for(session_id).await;
+        let mut skills = active.lock().await;
+        if let Some(existing) = skills.iter_mut().find(|s| s.name == skill.name) {
+            existing.content.clone_from(&skill.content);
+        } else {
+            skills.push(skill);
+        }
+    }
+
     /// Load activated skills for `session_id` from the persistent session store.
     ///
     /// When a skill has been activated multiple times, the latest activation
@@ -154,7 +171,7 @@ mod tests {
     use std::sync::Arc;
 
     use byte_models::{EchoProvider, ModelProvider};
-    use byte_protocol::SendMessageParams;
+    use byte_protocol::{ActivatedSkill, SendMessageParams};
     use byte_session::SessionStore;
     use byte_skills::MvpSkillRegistry;
     use byte_tools::{
@@ -274,6 +291,54 @@ mod tests {
         store.new_session("s1", &temp_workspace()).await.unwrap();
 
         assert_eq!(pool.close("s1").await, CloseResult::Absent);
+    }
+
+    #[tokio::test]
+    async fn record_skill_activation_updates_shared_handle_with_dedup() {
+        let store = temp_store();
+        let bus: Arc<dyn RuntimeEventBus> = Arc::new(RecordingEventBus::new());
+        let pool = RunnerPool::new(services(
+            Arc::new(EchoProvider::default()),
+            Arc::clone(&store),
+            bus,
+        ));
+        let workspace = temp_workspace();
+        store.new_session("s1", &workspace).await.unwrap();
+        store
+            .append_skill_activation("s1", "review", "First version.")
+            .await
+            .unwrap();
+
+        pool.record_skill_activation(
+            "s1",
+            ActivatedSkill {
+                name: "review".into(),
+                content: "First version.".into(),
+            },
+        )
+        .await;
+        pool.record_skill_activation(
+            "s1",
+            ActivatedSkill {
+                name: "review".into(),
+                content: "Updated version.".into(),
+            },
+        )
+        .await;
+        pool.record_skill_activation(
+            "s1",
+            ActivatedSkill {
+                name: "testing".into(),
+                content: "Test everything.".into(),
+            },
+        )
+        .await;
+
+        let skills = pool.active_skills_for("s1").await;
+        let skills = skills.lock().await;
+        assert_eq!(skills.len(), 2);
+        let review = skills.iter().find(|s| s.name == "review").unwrap();
+        assert_eq!(review.content, "Updated version.");
     }
 
     #[tokio::test]

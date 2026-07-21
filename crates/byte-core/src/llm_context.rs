@@ -1,5 +1,5 @@
 use byte_protocol::{
-    ActivatedSkill, LlmMessage, MessageBlock, MessageBody, MessageRole, SkillEntry, ToolDefinition,
+    LlmMessage, MessageBlock, MessageBody, MessageRole, SkillEntry, ToolDefinition,
 };
 use std::fmt::Write;
 
@@ -9,12 +9,11 @@ pub struct LlmContextInput {
     /// The current user message for this run.
     pub user_message: String,
     /// Prior messages in the session, in chronological order, as LLM context
-    /// messages (including summary-role compaction entries).
+    /// messages (including summary-role compaction entries and synthetic
+    /// skill-activation messages produced by the active-path builder).
     pub history: Vec<LlmMessage>,
     /// Tool definitions available to the model for this run.
     pub tools: Vec<ToolDefinition>,
-    /// Skills that have been activated for the current session.
-    pub active_skills: Vec<ActivatedSkill>,
     /// Skills that are installed and can be activated by name.
     pub available_skills: Vec<SkillEntry>,
     /// Raw content of the workspace's AGENTS.md instruction file, if found.
@@ -22,14 +21,13 @@ pub struct LlmContextInput {
 }
 
 impl LlmContextInput {
-    /// Create a context with no history, tools, skills, active
-    /// skills, or workspace instructions.
+    /// Create a context with no history, tools, skills, or workspace
+    /// instructions.
     pub fn new(user_message: impl Into<String>) -> Self {
         Self {
             user_message: user_message.into(),
             history: Vec::new(),
             tools: Vec::new(),
-            active_skills: Vec::new(),
             available_skills: Vec::new(),
             workspace_instructions: None,
         }
@@ -54,11 +52,7 @@ impl LlmContextBuilder {
 
         messages.push(LlmMessage::text(
             MessageRole::System,
-            Self::build_system_prompt(
-                &context.tools,
-                &context.active_skills,
-                &context.available_skills,
-            ),
+            Self::build_system_prompt(&context.tools, &context.available_skills),
         ));
 
         // Inject workspace instructions as a separate system message so they
@@ -95,10 +89,15 @@ impl LlmContextBuilder {
         messages
     }
 
-    /// Build the system prompt from tool definitions and active/available skills.
+    /// Build the system prompt from tool definitions and the skill catalog.
+    ///
+    /// The prompt intentionally contains only the compact skill catalog
+    /// (name + description), never activated skill bodies. Activated skill
+    /// content travels through the message stream instead (see
+    /// [`crate::session::active_path`]), keeping the system prompt stable so
+    /// provider prompt caches stay valid across turns and runs.
     pub(crate) fn build_system_prompt(
         tools: &[ToolDefinition],
-        active_skills: &[ActivatedSkill],
         available_skills: &[SkillEntry],
     ) -> String {
         let mut prompt = String::new();
@@ -107,32 +106,15 @@ impl LlmContextBuilder {
             "You are Byte Agent, a local coding assistant running on the user's machine.\n\n",
         );
 
-        if !active_skills.is_empty() {
-            prompt.push_str("Active skills:\n");
-            for skill in active_skills {
-                let _ = writeln!(prompt, "## {}", skill.name);
-                prompt.push_str(&skill.content);
-                prompt.push('\n');
-            }
-            prompt.push('\n');
-        }
-
         prompt.push_str("Available tools:\n");
         for tool in tools {
             let _ = writeln!(prompt, "- {}: {}", tool.name, tool.description);
             let _ = writeln!(prompt, "  parameters: {}", tool.parameters);
         }
 
-        let active_names: std::collections::HashSet<_> =
-            active_skills.iter().map(|s| &s.name).collect();
-        let inactive_skills: Vec<_> = available_skills
-            .iter()
-            .filter(|skill| !active_names.contains(&skill.name))
-            .collect();
-
-        if !inactive_skills.is_empty() {
+        if !available_skills.is_empty() {
             prompt.push_str("\nAvailable skills (activate with the activate_skill tool):\n");
-            for skill in inactive_skills {
+            for skill in available_skills {
                 let _ = writeln!(prompt, "- {}: {}", skill.name, skill.description);
             }
         }
@@ -179,7 +161,6 @@ mod tests {
                 description: "Read a file.".into(),
                 parameters: serde_json::json!({"path": "string"}),
             }],
-            active_skills: vec![],
             available_skills: vec![],
             workspace_instructions: None,
         };
@@ -206,7 +187,6 @@ mod tests {
                 },
             ],
             tools: vec![],
-            active_skills: vec![],
             available_skills: vec![],
             workspace_instructions: None,
         };
@@ -233,7 +213,6 @@ mod tests {
                 body: MessageBody::text("tool output"),
             }],
             tools: vec![],
-            active_skills: vec![],
             available_skills: vec![],
             workspace_instructions: None,
         };
@@ -251,7 +230,6 @@ mod tests {
             user_message: "hello".into(),
             history: vec![],
             tools: vec![],
-            active_skills: vec![],
             available_skills: vec![
                 SkillEntry {
                     name: "rust".into(),
@@ -275,20 +253,16 @@ mod tests {
     }
 
     #[test]
-    fn builder_lists_only_inactive_available_skills() {
+    fn builder_never_injects_skill_bodies_into_system_prompt() {
         let builder = LlmContextBuilder::new();
         let context = LlmContextInput {
             user_message: "hello".into(),
             history: vec![],
             tools: vec![],
-            active_skills: vec![ActivatedSkill {
-                name: "rust".into(),
-                content: "Rust content.".into(),
-            }],
             available_skills: vec![
                 SkillEntry {
                     name: "rust".into(),
-                    description: "Rust best practices.".into(),
+                    description: "Rust best practices with full body that must not leak".into(),
                 },
                 SkillEntry {
                     name: "testing".into(),
@@ -301,10 +275,11 @@ mod tests {
 
         assert_eq!(messages.len(), 2);
         let system = body_text(&messages[0].body);
-        assert!(system.contains("Active skills:"));
-        assert!(system.contains("## rust"));
+        // The catalog lists every skill, including already-activated ones,
+        // keeping the system prompt stable across activations.
+        assert!(system.contains("rust: Rust best practices"));
         assert!(system.contains("testing: Testing guidelines."));
-        assert!(!system.contains("rust: Rust best practices."));
+        assert!(!system.contains("Active skills:"));
     }
 
     #[test]
@@ -314,7 +289,6 @@ mod tests {
             user_message: "hello".into(),
             history: vec![],
             tools: vec![],
-            active_skills: vec![],
             available_skills: vec![],
             workspace_instructions: Some("Always write tests.".into()),
         };

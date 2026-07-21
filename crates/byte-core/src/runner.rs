@@ -86,6 +86,9 @@ pub enum RunnerError {
     /// An error originating from the session view repository.
     #[error(transparent)]
     SessionView(#[from] SessionViewError),
+    /// An error originating from the skill registry.
+    #[error(transparent)]
+    SkillRegistry(#[from] SkillError),
     /// An error originating from the model provider.
     #[error(transparent)]
     Provider(#[from] ProviderError),
@@ -99,8 +102,6 @@ pub enum RunnerError {
 pub struct SessionRunner {
     /// Aggregated runtime services used by the runner.
     services: RuntimeServices,
-    /// Skills currently activated for this session.
-    active_skills: Arc<Mutex<Vec<ActivatedSkill>>>,
     /// Optional in-progress run id and its cancellation token.
     active_run: Arc<Mutex<Option<(RunId, CancellationToken)>>>,
 }
@@ -110,20 +111,24 @@ impl SessionRunner {
     /// skills.
     #[must_use]
     pub fn new(services: RuntimeServices) -> Self {
-        Self::with_active_skills(services, Arc::new(Mutex::new(Vec::new())))
+        Self::with_active_skills(services, &Arc::new(Mutex::new(Vec::new())))
     }
 
     /// Create a new runner with the given pre-loaded active skills.
+    ///
+    /// The handle is shared with the session-scoped `activate_skill` tool so
+    /// activations are visible to the owning [`crate::runner_pool::RunnerPool`];
+    /// the runner itself does not read it.
     #[must_use]
     pub fn with_active_skills(
         services: RuntimeServices,
-        active_skills: Arc<Mutex<Vec<ActivatedSkill>>>,
+        active_skills: &Arc<Mutex<Vec<ActivatedSkill>>>,
     ) -> Self {
         let tool_registry = Arc::new(crate::activate_skill::SessionToolRegistry::new(
             Arc::clone(&services.tool_registry),
             Arc::new(crate::activate_skill::ActivateSkillTool::new(
                 Arc::clone(&services.skill_registry),
-                Arc::clone(&active_skills),
+                Arc::clone(active_skills),
                 Arc::clone(&services.store),
             )),
             Arc::new(AllowAllPolicy),
@@ -132,7 +137,6 @@ impl SessionRunner {
         services.tool_registry = tool_registry;
         Self {
             services,
-            active_skills,
             active_run: Arc::new(Mutex::new(None)),
         }
     }
@@ -549,12 +553,15 @@ impl RunExecutor {
         let active_path = crate::session::active_path::build_active_path(&entries);
 
         let tools = runner.services.tool_registry.definitions();
-        let active_skills = runner.active_skills.lock().await.clone();
+        // The system prompt is built once per run and stays stable across
+        // model turns so provider prompt caches remain valid. Activated
+        // skill content reaches the model through the message stream (tool
+        // results in-run, synthetic activation messages from the active
+        // path), never through the system prompt. See ADR 0021.
         let prompt_context = LlmContextInput {
             user_message: self.message.clone(),
             history: active_path,
-            tools,
-            active_skills,
+            tools: tools.clone(),
             available_skills: available_skills.clone(),
             workspace_instructions: self.workspace_instructions.clone(),
         };
@@ -577,23 +584,10 @@ impl RunExecutor {
                 turn_messages = Vec::new();
             }
 
-            // Rebuild the system prompt on every turn so skills activated
-            // mid-run are reflected in subsequent provider requests. Available
-            // skills are cached from the initial turn; they are stable for a run.
-            let tools = runner.services.tool_registry.definitions();
-            let active_skills = runner.active_skills.lock().await.clone();
-            if !messages.is_empty() && messages[0].role == MessageRole::System {
-                messages[0].body = MessageBody::text(LlmContextBuilder::build_system_prompt(
-                    &tools,
-                    &active_skills,
-                    &available_skills,
-                ));
-            }
-
             let stream = runner
                 .services
                 .provider
-                .send_message(messages.clone(), tools)
+                .send_message(messages.clone(), tools.clone())
                 .await?;
 
             let outcome = self
@@ -1119,6 +1113,150 @@ mod tests {
                 expected_tool_call_id
             );
         }
+    }
+
+    /// A provider that activates the `review` skill via an `activate_skill`
+    /// tool call on the first Model Turn, then finishes on the second,
+    /// recording every request for assertions.
+    struct ActivateSkillLoopProvider {
+        calls: Arc<Mutex<Vec<Vec<LlmMessage>>>>,
+    }
+
+    #[async_trait]
+    impl ModelProvider for ActivateSkillLoopProvider {
+        async fn send_message(
+            &self,
+            messages: Vec<LlmMessage>,
+            _tools: Vec<ToolDefinition>,
+        ) -> Result<ProviderStream, ProviderError> {
+            self.calls.lock().await.push(messages.clone());
+            let message_id = uuid::Uuid::new_v4().to_string();
+            let has_tool_results = messages
+                .iter()
+                .any(|message| message.role == MessageRole::Tool);
+            if !has_tool_results {
+                let events: Vec<Result<ProviderEvent, ProviderError>> = vec![
+                    Ok(ProviderEvent::MessageStarted {
+                        message_id: message_id.clone(),
+                    }),
+                    Ok(ProviderEvent::MessageCompleted {
+                        message_id,
+                        tool_calls: Some(vec![ToolCall {
+                            id: "skill-call".into(),
+                            name: "activate_skill".into(),
+                            arguments: serde_json::json!({"name": "review"}),
+                        }]),
+                    }),
+                ];
+                return Ok(Box::pin(stream::iter(events)));
+            }
+            let events: Vec<Result<ProviderEvent, ProviderError>> = vec![
+                Ok(ProviderEvent::MessageStarted {
+                    message_id: message_id.clone(),
+                }),
+                Ok(ProviderEvent::TextDelta {
+                    message_id: message_id.clone(),
+                    delta: "Done".into(),
+                }),
+                Ok(ProviderEvent::MessageCompleted {
+                    message_id,
+                    tool_calls: None,
+                }),
+            ];
+            Ok(Box::pin(stream::iter(events)))
+        }
+    }
+
+    fn llm_body_text(message: &LlmMessage) -> String {
+        message
+            .body
+            .0
+            .iter()
+            .filter_map(|block| match block {
+                MessageBlock::Text { text } => Some(text.as_str()),
+                MessageBlock::ToolCall(_) => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn mid_run_skill_activation_uses_tool_result_with_stable_system_prompt() {
+        let bus = Arc::new(RecordingEventBus::new());
+        let store = temp_store();
+        let temp = tempdir().expect("temp dir");
+        let workspace = temp.path().to_path_buf();
+        let skill_dir = workspace.join(".byte").join("skills").join("review");
+        std::fs::create_dir_all(&skill_dir).expect("create skill dir");
+        std::fs::write(
+            skill_dir.join("skill.md"),
+            "---\nname: review\ndescription: Review code\n---\nReview carefully.\n",
+        )
+        .expect("write skill file");
+        let home = tempdir().expect("temp home");
+        store
+            .new_session("s1", workspace.to_str().unwrap())
+            .await
+            .expect("create session with workspace");
+
+        let provider = ActivateSkillLoopProvider {
+            calls: Arc::new(Mutex::new(Vec::new())),
+        };
+        let calls = Arc::clone(&provider.calls);
+        let services = RuntimeServices::new(
+            Arc::new(provider),
+            store.clone(),
+            bus.clone(),
+            Arc::new(MvpToolRegistry::new()),
+            Arc::new(MvpSkillRegistry::with_home_dir(home.path())),
+            CompactionConfig::default(),
+        );
+        let runner = SessionRunner::new(services);
+
+        let run_id = runner
+            .send_message(SendMessageParams {
+                session_id: "s1".into(),
+                message: "review my code".into(),
+            })
+            .await
+            .expect("send accepted");
+        runner.wait_until_idle().await;
+
+        let events = bus.take_events().await;
+        assert!(
+            events.iter().any(|event| matches!(
+                &event.kind,
+                RuntimeEventKind::RunFinished { run_id: rid, status: RunStatus::Succeeded, .. } if rid == &run_id
+            )),
+            "run should finish successfully"
+        );
+
+        let calls = calls.lock().await;
+        assert_eq!(calls.len(), 2, "activation turn plus final turn");
+
+        // The system prompt is byte-identical across model turns so provider
+        // prompt caches remain valid.
+        assert_eq!(
+            calls[0][0], calls[1][0],
+            "system prompt must stay stable across model turns"
+        );
+        assert!(
+            !llm_body_text(&calls[1][0]).contains("Review carefully."),
+            "skill body must not be injected into the system prompt"
+        );
+
+        // The structured skill content reaches the model through the tool
+        // result message of the activation turn.
+        let tool_message = calls[1]
+            .iter()
+            .find(|message| {
+                message.role == MessageRole::Tool
+                    && message.tool_call_id.as_deref() == Some("skill-call")
+            })
+            .expect("activate_skill tool result should be in the second request");
+        let output: serde_json::Value =
+            serde_json::from_str(&llm_body_text(tool_message)).expect("structured tool output");
+        assert_eq!(output["name"], "review");
+        assert_eq!(output["content"], "Review carefully.");
     }
 
     #[tokio::test]

@@ -165,6 +165,18 @@ jobs:
         if: steps.rust.outputs.present == 'true'
         run: cargo test --workspace --all-targets
 
+      # cargo test re-exports ts-rs bindings via TS_RS_EXPORT_DIR; the
+      # committed files must match, otherwise the PR forgot to commit them.
+      - name: Check ts-rs generated bindings are in sync
+        if: steps.rust.outputs.present == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! git diff --exit-code -- apps/desktop/src/generated; then
+            echo "::error::ts-rs generated bindings drifted from byte-protocol. Run 'cargo test -p byte-protocol' and commit apps/desktop/src/generated."
+            exit 1
+          fi
+
   desktop-web:
     name: Desktop web quality gates
     runs-on: ubuntu-latest

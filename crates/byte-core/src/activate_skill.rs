@@ -92,12 +92,15 @@ impl Tool for ActivateSkillTool {
         }
 
         let mut active_skills = self.active_skills.lock().await;
+        let already_active = active_skills
+            .iter()
+            .any(|skill| skill.name == definition.name);
         if let Some(existing) = active_skills
             .iter_mut()
             .find(|skill| skill.name == definition.name)
         {
-            // Refresh the content of an already-active skill instead of
-            // creating a duplicate entry in the system prompt.
+            // Refresh the persisted snapshot of an already-active skill
+            // instead of creating a duplicate entry.
             existing.content.clone_from(&definition.content);
         } else {
             active_skills.push(ActivatedSkill {
@@ -107,7 +110,23 @@ impl Tool for ActivateSkillTool {
         }
         drop(active_skills);
 
-        let output = definition.content;
+        // First activation returns the full structured skill definition so
+        // the model receives the instructions through this tool result.
+        // Repeated activation only confirms the state; the content is
+        // already present in the conversation (see ADR 0021).
+        let output = if already_active {
+            format!(
+                "Skill `{}` is already active; its instructions are provided in the conversation.",
+                definition.name
+            )
+        } else {
+            serde_json::json!({
+                "name": definition.name,
+                "description": definition.description,
+                "content": definition.content,
+            })
+            .to_string()
+        };
         Ok(byte_tools::single_event_stream(Ok(ToolStreamEvent::done(
             output,
         ))))
@@ -297,9 +316,14 @@ mod tests {
             .await
             .unwrap();
         let event = collect_one(stream).await;
-        assert!(
-            matches!(event, ToolStreamEvent::Done { result } if result.output == "Review carefully." && !result.is_error)
-        );
+        let ToolStreamEvent::Done { result } = event else {
+            panic!("expected done event");
+        };
+        assert!(!result.is_error);
+        let output: serde_json::Value = serde_json::from_str(&result.output).unwrap();
+        assert_eq!(output["name"], "review");
+        assert_eq!(output["description"], "Review skill");
+        assert_eq!(output["content"], "Review carefully.");
 
         let skills = active_skills.lock().await;
         assert_eq!(skills.len(), 1);
@@ -362,9 +386,14 @@ mod tests {
             .await
             .unwrap();
         let first_event = collect_one(first_stream).await;
-        assert!(
-            matches!(first_event, ToolStreamEvent::Done { result } if result.output == "First version." && !result.is_error)
-        );
+        let ToolStreamEvent::Done {
+            result: first_result,
+        } = first_event
+        else {
+            panic!("expected done event");
+        };
+        let first_output: serde_json::Value = serde_json::from_str(&first_result.output).unwrap();
+        assert_eq!(first_output["content"], "First version.");
 
         // Simulate a refreshed skill definition from the registry.
         {
@@ -382,8 +411,10 @@ mod tests {
             .await
             .unwrap();
         let second_event = collect_one(second_stream).await;
+        // Repeated activation returns a short confirmation instead of the
+        // full content, which is already present in the conversation.
         assert!(
-            matches!(second_event, ToolStreamEvent::Done { result } if result.output == "Updated version." && !result.is_error)
+            matches!(second_event, ToolStreamEvent::Done { result } if result.output.contains("already active") && !result.is_error)
         );
 
         let skills = active_skills.lock().await;

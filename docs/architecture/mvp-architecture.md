@@ -128,10 +128,10 @@ Constraint: one active run per session. A run can be cancelled. The daemon may l
 
 Builds context from:
 
-- fixed system prompt;
+- fixed system prompt (built once per run, stable across model turns);
 - tool definitions from `ToolRegistry`;
-- skill catalog from `SkillRegistry`;
-- activated skills maintained by `SessionRunner`;
+- skill catalog from `SkillRegistry` (name + description only, never activated skill bodies);
+- activated skill content injected as synthetic user-role messages by the active-path builder (ADR 0021);
 - root workspace instruction files: `AGENTS.md`, `CONTEXT.md`;
 - active session path;
 - visible `CompactionEntry` summaries when old history has been compacted.
