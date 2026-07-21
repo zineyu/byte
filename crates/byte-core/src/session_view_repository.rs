@@ -104,7 +104,9 @@ impl SessionViewRepository {
                 SessionEntry::CompactionEntry(compaction) => {
                     compaction_entries.push(compaction.clone());
                 }
-                SessionEntry::Session { .. } | SessionEntry::SkillActivated { .. } => {}
+                // Session headers, skill activations, and unknown variants from
+                // newer protocol versions do not contribute to the message view.
+                _ => {}
             }
         }
 

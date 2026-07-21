@@ -155,8 +155,14 @@ pub struct CompactionEntry {
 }
 
 /// A single persisted record inside a Session JSONL file.
+///
+/// Marked `#[non_exhaustive]` so new record variants can be added without
+/// breaking downstream `match` expressions; readers must ignore unknown
+/// variants, matching the forward-compatible decode policy in
+/// `byte_session::persistence`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum SessionEntry {
     /// Session header record.
     Session {

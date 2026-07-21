@@ -44,6 +44,9 @@ impl Node {
             SessionEntry::Message(message) => Some(Self::Message(message)),
             SessionEntry::SkillActivated(skill) => Some(Self::SkillActivated(skill)),
             SessionEntry::CompactionEntry(entry) => Some(Self::CompactionEntry(entry)),
+            // Unknown variants from newer protocol versions are ignored, matching
+            // the forward-compatible decode policy in `crate::persistence`.
+            _ => None,
         }
     }
 
