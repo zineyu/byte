@@ -10,15 +10,15 @@ import type { SessionChangeAction } from "./SessionChangeAction";
 /**
  * Specific kind of a [`RuntimeEvent`].
  */
-export type RuntimeEventKind = { "daemon_started": { 
+export type RuntimeEventKind = { "type": "daemon_started", 
 /**
  * Current daemon state.
  */
-state: DaemonState, } } | { "state_changed": { 
+state: DaemonState, } | { "type": "state_changed", 
 /**
  * Updated daemon state.
  */
-state: DaemonState, } } | { "error": { 
+state: DaemonState, } | { "type": "error", 
 /**
  * Error message.
  */
@@ -26,7 +26,7 @@ message: string,
 /**
  * Optional run identifier associated with the error.
  */
-run_id: string | null, } } | { "run_started": { 
+run_id: string | null, } | { "type": "run_started", 
 /**
  * Session identifier.
  */
@@ -34,7 +34,7 @@ session_id: string,
 /**
  * Run identifier.
  */
-run_id: string, } } | { "run_finished": { 
+run_id: string, } | { "type": "run_finished", 
 /**
  * Run identifier.
  */
@@ -46,7 +46,7 @@ status: RunStatus,
 /**
  * Optional error message if the run failed.
  */
-error: string | null, } } | { "message_started": { 
+error: string | null, } | { "type": "message_started", 
 /**
  * Run identifier.
  */
@@ -58,7 +58,7 @@ message_id: string,
 /**
  * Role of the message being generated.
  */
-role: MessageRole, } } | { "message_delta": { 
+role: MessageRole, } | { "type": "message_delta", 
 /**
  * Run identifier.
  */
@@ -74,7 +74,7 @@ block_index: number,
 /**
  * Incremental block update.
  */
-delta: BlockDelta, } } | { "message_completed": { 
+delta: BlockDelta, } | { "type": "message_completed", 
 /**
  * Run identifier.
  */
@@ -86,7 +86,7 @@ message_id: string,
 /**
  * Final message body, including any tool-call blocks not streamed as deltas.
  */
-body: MessageBody | null, } } | { "tool_started": { 
+body: MessageBody | null, } | { "type": "tool_started", 
 /**
  * Run identifier.
  */
@@ -98,7 +98,7 @@ tool_call_id: string,
 /**
  * Tool name.
  */
-name: string, } } | { "tool_finished": { 
+name: string, } | { "type": "tool_finished", 
 /**
  * Run identifier.
  */
@@ -118,7 +118,7 @@ is_error: boolean,
 /**
  * Exit code returned by the tool, if any.
  */
-exit_code: number | null, } } | { "tool_output_delta": { 
+exit_code: number | null, } | { "type": "tool_output_delta", 
 /**
  * Run identifier.
  */
@@ -130,11 +130,11 @@ tool_call_id: string,
 /**
  * Incremental output chunk.
  */
-chunk: string, } } | { "run_cancelled": { 
+chunk: string, } | { "type": "run_cancelled", 
 /**
  * Run identifier.
  */
-run_id: string, } } | { "session_changed": { 
+run_id: string, } | { "type": "session_changed", 
 /**
  * Session identifier.
  */
@@ -142,7 +142,7 @@ session_id: string,
 /**
  * Change action.
  */
-action: SessionChangeAction, } } | { "compaction_started": { 
+action: SessionChangeAction, } | { "type": "compaction_started", 
 /**
  * Run identifier.
  */
@@ -154,7 +154,7 @@ session_id: string,
 /**
  * Identifiers of the messages being compacted.
  */
-compacted_range: CompactionRange, } } | { "compaction_completed": { 
+compacted_range: CompactionRange, } | { "type": "compaction_completed", 
 /**
  * Run identifier.
  */
@@ -174,7 +174,7 @@ summary: string,
 /**
  * Identifiers of the messages that were compacted.
  */
-compacted_range: CompactionRange, } } | { "compaction_failed": { 
+compacted_range: CompactionRange, } | { "type": "compaction_failed", 
 /**
  * Run identifier.
  */
@@ -186,4 +186,4 @@ session_id: string,
 /**
  * Human-readable error message.
  */
-error: string, } };
+error: string, };

@@ -2,13 +2,12 @@ import type {
   AppState,
   ChatMessage,
   Message,
-  MessageBody,
   RuntimeEvent,
   RuntimeEventLogEntry,
+  SessionView,
   StoreAction,
   ToolCallState,
 } from "./types";
-import type { CompactionEntry } from "../generated/CompactionEntry";
 import { getMessageBodyText, getMessageBodyToolCalls } from "./types";
 
 // Hard cap for the in-memory runtime event log.
@@ -89,18 +88,12 @@ export function reducer(state: AppState, action: StoreAction): AppState {
   return state;
 }
 
-function loadSession(
-  state: AppState,
-  session: {
-    sessionId: string;
-    workspaceInstructions: string | null;
-    workspaceInstructionsError: string | null;
-    messages: Message[];
-    compactionEntries: CompactionEntry[];
-  },
-): AppState {
+function loadSession(state: AppState, session: SessionView): AppState {
   const compactionById = new Map(
-    session.compactionEntries.map((entry) => [entry.id, entry.compactedRange]),
+    (session.compactionEntries ?? []).map((entry) => [
+      entry.id,
+      entry.compactedRange,
+    ]),
   );
   const messages: ChatMessage[] = session.messages
     .filter(
@@ -266,7 +259,7 @@ function applyRuntimeEvent(state: AppState, event: RuntimeEvent): AppState {
       };
     }
     case "message_completed": {
-      const completedBody = event.body as MessageBody | null;
+      const completedBody = event.body;
       const toolCallsFromBody =
         completedBody?.reduce<Record<string, ToolCallState>>((acc, block) => {
           if (block.type !== "toolCall") return acc;

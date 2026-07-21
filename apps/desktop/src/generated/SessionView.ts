@@ -29,4 +29,4 @@ messages: Array<Message>,
 /**
  * Compaction entries present in the session, keyed by their message ID in the view.
  */
-compactionEntries: Array<CompactionEntry>, };
+compactionEntries?: Array<CompactionEntry>, };

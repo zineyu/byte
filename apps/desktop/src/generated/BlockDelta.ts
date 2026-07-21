@@ -4,11 +4,11 @@
  * A block-level delta used during streaming to update a single [`MessageBlock`]
  * without replacing the whole [`MessageBody`].
  */
-export type BlockDelta = { "textDelta": { 
+export type BlockDelta = { "type": "textDelta", 
 /**
  * The text fragment to append.
  */
-delta: string, } } | { "toolCallDelta": { 
+delta: string, } | { "type": "toolCallDelta", 
 /**
  * Optional tool-call identifier fragment.
  */
@@ -20,4 +20,4 @@ name: string | null,
 /**
  * Optional arguments JSON fragment.
  */
-arguments_delta: string | null, } };
+arguments_delta: string | null, };

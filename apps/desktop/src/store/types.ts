@@ -1,85 +1,25 @@
-import type { CompactionEntry } from "../generated/CompactionEntry";
-import type { CompactionRange } from "../generated/CompactionRange";
-import type { DaemonConnectionView as GeneratedDaemonConnectionView } from "../generated/DaemonConnectionView";
+import type { DaemonConnectionView } from "../generated/DaemonConnectionView";
 import type { JsonValue } from "../generated/serde_json/JsonValue";
-import type { RuntimeEvent as GeneratedRuntimeEvent } from "../generated/RuntimeEvent";
-import type { SessionSummary as GeneratedSessionSummary } from "../generated/SessionSummary";
-import type { SessionView as GeneratedSessionView } from "../generated/SessionView";
-import type { Message as GeneratedMessage } from "../generated/Message";
-import type { MessageBody as GeneratedMessageBody } from "../generated/MessageBody";
+import type { MessageBody } from "../generated/MessageBody";
+import type { RuntimeEvent } from "../generated/RuntimeEvent";
+import type { SessionSummary } from "../generated/SessionSummary";
+import type { SessionView } from "../generated/SessionView";
 import type { ToolCall } from "../generated/ToolCall";
 
+// ts-rs is configured with its `serde-compat` feature, so the generated
+// protocol types match the on-the-wire JSON shapes (internally tagged enums,
+// flattened fields, optional serde defaults) and are used directly without a
+// correction layer.
+export type { BlockDelta } from "../generated/BlockDelta";
+export type { DaemonConnectionView } from "../generated/DaemonConnectionView";
+export type { Message } from "../generated/Message";
+export type { MessageBlock } from "../generated/MessageBlock";
+export type { MessageBody } from "../generated/MessageBody";
+export type { RuntimeEvent } from "../generated/RuntimeEvent";
+export type { SessionSummary } from "../generated/SessionSummary";
+export type { SessionView } from "../generated/SessionView";
+
 export type LoadState = "loading" | "ready" | "error";
-
-// ts-rs emits an externally-tagged shape for MessageBlock, but the wire format
-// is internally tagged (Rust: #[serde(tag = "type", rename_all = "camelCase")]).
-// Use runtime-correct types at the frontend boundaries and cast generated values.
-export type MessageBlock =
-  | { type: "text"; text: string }
-  | ({ type: "toolCall" } & ToolCall);
-
-export type MessageBody = Array<MessageBlock>;
-
-// ts-rs emits an externally-tagged shape for BlockDelta, but the wire format
-// is internally tagged (Rust: #[serde(tag = "type", rename_all = "camelCase")]).
-// Use the runtime-correct discriminated union at frontend boundaries.
-export type BlockDelta =
-  | { type: "textDelta"; delta: string }
-  | {
-      type: "toolCallDelta";
-      id: string | null;
-      name: string | null;
-      argumentsDelta: string | null;
-    };
-
-export type Message = Omit<GeneratedMessage, "body" | "toolCallId"> & {
-  body: MessageBody;
-  toolCallId?: string | null;
-};
-
-export type SessionView = Omit<GeneratedSessionView, "messages"> & {
-  messages: Message[];
-  compactionEntries: CompactionEntry[];
-};
-
-export type SessionSummary = GeneratedSessionSummary;
-
-export function asMessageBody(body: GeneratedMessageBody): MessageBody {
-  return body as unknown as MessageBody;
-}
-
-export function asMessage(message: GeneratedMessage): Message {
-  return { ...message, body: asMessageBody(message.body) };
-}
-
-export function asSessionView(session: GeneratedSessionView): SessionView {
-  return {
-    ...session,
-    messages: session.messages.map(asMessage),
-    compactionEntries: session.compactionEntries,
-  };
-}
-
-// ts-rs flattens tagged enums into an intersection whose keys are the variant
-// names. Project that back into a TypeScript-friendly discriminated union that
-// mirrors the on-the-wire JSON shape (`{ type, ...fields }`).
-type RuntimeEventVariant<E> = E extends { sequence: number } & infer U
-  ? U extends infer U1
-    ? U1 extends object
-      ? {
-          [K in keyof U1]: K extends "message_completed"
-            ? { type: K } & Omit<U1[K], "body"> & { body: MessageBody | null }
-            : K extends "message_delta"
-              ? { type: K } & Omit<U1[K], "delta"> & { delta: BlockDelta }
-              : { type: K } & U1[K];
-        }[keyof U1]
-      : never
-    : never
-  : never;
-
-export type RuntimeEvent = {
-  sequence: GeneratedRuntimeEvent["sequence"];
-} & RuntimeEventVariant<GeneratedRuntimeEvent>;
 
 export type RuntimeEventLogEntry = RuntimeEvent & {
   receivedAt: Date;
@@ -126,8 +66,6 @@ export type ChatRunState = {
   runId: string | null;
   isSending: boolean;
 };
-
-export type DaemonConnectionView = GeneratedDaemonConnectionView;
 
 export type AppState = {
   loadState: LoadState;

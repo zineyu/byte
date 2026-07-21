@@ -21,7 +21,7 @@ role: MessageRole,
 /**
  * Identifier of the tool call this message answers, if any.
  */
-toolCallId: string | null, 
+toolCallId?: string | null, 
 /**
  * Message body content.
  */

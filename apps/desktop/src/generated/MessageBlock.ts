@@ -4,8 +4,8 @@ import type { ToolCall } from "./ToolCall";
 /**
  * A single block inside a [`MessageBody`].
  */
-export type MessageBlock = { "text": { 
+export type MessageBlock = { "type": "text", 
 /**
  * The text value.
  */
-text: string, } } | { "toolCall": ToolCall };
+text: string, } | { "type": "toolCall" } & ToolCall;
